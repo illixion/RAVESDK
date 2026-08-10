@@ -1,0 +1,11 @@
+# Finder
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode - User files
+xcuserdata/
+DerivedData/
