@@ -10,9 +10,16 @@ let package = Package(
     platforms: [.visionOS(.v26), .macOS(.v14)],
     products: [
         .library(name: "RAVENet", targets: ["RAVENet"]),
+        .library(name: "RAVEUI", targets: ["RAVEUI"]),
+        .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
     ],
     targets: [
         .target(name: "RAVENet"),
         .testTarget(name: "RAVENetTests", dependencies: ["RAVENet"]),
+        .target(name: "RAVEUI"),
+        // Separate from RAVEUI on purpose: two of the five apps want an
+        // on-device log viewer and have no tab bar at all to hang it off.
+        .target(name: "RAVEConsole"),
+        .testTarget(name: "RAVEConsoleTests", dependencies: ["RAVEConsole"]),
     ]
 )
