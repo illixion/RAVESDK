@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "RAVENet", targets: ["RAVENet"]),
         .library(name: "RAVEUI", targets: ["RAVEUI"]),
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
+        .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
     ],
     targets: [
         .target(name: "RAVENet"),
@@ -21,5 +22,13 @@ let package = Package(
         // on-device log viewer and have no tab bar at all to hang it off.
         .target(name: "RAVEConsole"),
         .testTarget(name: "RAVEConsoleTests", dependencies: ["RAVEConsole"]),
+        // Core ML depth + the windowed-stereo warp. visionOS is the product;
+        // the depth half also builds on macOS so `swift test` can reach the
+        // conversion arithmetic. `RAVEStereoShaders.metal` is a plain target
+        // source: Xcode compiles it into the target's own `default.metallib`,
+        // which is why nothing here reads the app's default library. (The
+        // SwiftPM CLI ignores `.metal` altogether — see RAVEMediaMetal.)
+        .target(name: "RAVEMedia"),
+        .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"]),
     ]
 )

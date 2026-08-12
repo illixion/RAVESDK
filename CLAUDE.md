@@ -54,6 +54,7 @@ is easy to skip.
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
 | `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry |
 | `RAVEConsole` | On-device log viewer over `OSLogStore` |
+| `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 
 ### RAVENet — the transport never decides it is ready
 
@@ -119,6 +120,64 @@ which is why app-side logging facades take an already-interpolated `String` and 
 `.public` — without the privacy annotation os_log redacts interpolated values and every
 line reads `<private>`.
 
+### RAVEMedia — the pump pulls frames through a seam, not from AVPlayer
+
+This is Spatial Stash's fake-3D pipeline, moved wholesale: monocular depth (Depth
+Anything V2) drives a per-eye warp that turns mono video into windowed stereo in an
+ordinary Shared-Space window. Unlike the other targets it is **not** a convergence of
+two implementations — it has one consumer today and a second (Raven, the browser)
+being built against it, which is why the seams below exist before their second caller
+does.
+
+**`PumpFrameSource` is the reason this is a package.** `StereoPump` used to hold an
+`AVPlayerItemVideoOutput` and pull `copyPixelBuffer(forItemTime:)` directly. It now
+asks a `PumpFrameSource` for "the newest frame you have not given me yet".
+`AVPlayerFrameSource` is that pull, unchanged; a browser pushes decoded WebCodecs
+frames into a single-slot buffer instead, with no AVPlayer anywhere. Sources must
+return nil rather than repeat a frame — a tick that re-warps the same frame costs a
+full GPU pass and enqueues a duplicate.
+
+**All per-frame GPU work is off-main, and that is not a style choice.** An earlier
+version pumped on the main actor and blocked it with `waitUntilCompleted` ~90×/s,
+which starved Core Animation commits (backboardd render-watchdog SIGKILL) and the
+main-queue AVPlayer prepare callbacks. The pump owns its own `MTLCommandQueue` for
+the same reason: warp work must never queue behind the host's image uploads.
+
+**The shaders are a target source, not a declared resource.** `RAVEStereoShaders.metal`
+sits under `Sources/RAVEMedia/Stereo/` so Xcode compiles it into the target's own
+`default.metallib`; nothing here ever calls a bare `device.makeDefaultLibrary()`,
+which would search the *app* bundle and silently find no kernels. Two consequences
+worth knowing before touching it:
+
+- The SwiftPM CLI ignores `.metal` entirely, so it synthesises no `Bundle.module`.
+  `RAVEMediaMetal` therefore locates `RAVESDK_RAVEMedia.bundle` by hand. Under
+  `swift build` it finds nothing and every caller degrades to "fake-3D unavailable",
+  which on a Mac test host is the truth. Do not "fix" this by declaring the metal
+  file as a resource — that copies it instead of compiling it.
+- `stereoQuadVertex` is a verbatim copy of the app's `imageVertexShader`. A Metal
+  library cannot span module boundaries, so the duplication is structural; both must
+  keep producing a top-left-origin fullscreen quad.
+
+**Two things the host must supply.** `RAVEMediaPolicy.depthCacheCap` gives the depth
+cache its byte budget — unset means *never evict*, so a host that forgets it grows the
+cache without bound. Spatial Stash wires it to `CacheBudget.cap(for: .depth,)` in
+`AppModel.init`. `RAVEMediaLog` keeps `Bundle.main.bundleIdentifier` as its subsystem
+so `RAVEConsole` still sees these lines; only the categories are the package's own.
+
+**What deliberately stayed in the app:** the SwiftUI view (window-chrome constants,
+gestures), the binding of transport to a per-app playback model (the engine publishes
+`RAVEPlaybackState` and knows nothing about what consumes it), and the audio *session*
+category — `AudioSessionConfig.configureMixedPlayback` is a whole-app decision about
+stealing audio focus, while the per-player spatial-audio policy moved here with the
+engine that applies it.
+
+**Wire-format constraint:** `DepthCacheStore.pipelineVersion` keys every cache entry.
+Changing the converter's output — including the histogram percentile, which is
+interpolating rather than the nearest-rank one `RAVEDiagnostics` uses — invalidates
+every conversion on every device. `Pseudo3DSettings.init(from:)` has the same
+constraint for persisted JSON, including its normalisation of the retired `0.45`
+convergence default.
+
 ## How consumers use this
 
 Five visionOS apps under `~/Projects/`. During development each references this package as
@@ -129,7 +188,7 @@ no tag-and-push cycle. Once a target stabilises, tag it and switch that app to
 | App | Links |
 |---|---|
 | `VisionProHomeAssistant` (SpatialHome) | `RAVENet`, `RAVEUI`, `RAVEConsole` |
-| `spatialstash` | `RAVENet`, `RAVEUI`, `RAVEConsole`, + Engine's `RAVEDiagnostics` |
+| `spatialstash` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, + Engine's `RAVEDiagnostics` |
 | `Longwave` | `RAVEUI`, `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Spatialcraft` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Lambda_VisionPro` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
