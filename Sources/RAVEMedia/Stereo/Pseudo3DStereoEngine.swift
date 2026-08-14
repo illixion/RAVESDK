@@ -582,6 +582,70 @@ public final class Pseudo3DStereoEngine {
         }
     }
 
+    /// Mount an externally-driven frame source instead of opening a player.
+    ///
+    /// The browser case: the page's own `<video>` stays the decoder, the clock
+    /// and the audio source, and only pixels are diverted here. No `AVPlayer`
+    /// is created, which has a consequence worth stating rather than
+    /// discovering — this engine then publishes **no** transport and no
+    /// `RAVEPlaybackState`. `play()`/`pause()`/`seek(to:)` become no-ops
+    /// (they act on a nil player) and `currentTime` reads 0. A caller that
+    /// wants a scrubber drives the page and reports its own state; the engine
+    /// is a display, and here it is only a display.
+    ///
+    /// Realtime-only by design: cached depth needs a stable per-video identity
+    /// and a conversion pass up front, and arbitrary browsing has neither.
+    ///
+    /// - Returns: false when there is no depth model or no Metal warp — the
+    ///   same "no fake-3D" answer `load(url:…)` gives, which callers already
+    ///   handle by staying on the flat page.
+    @discardableResult
+    public func attach(frameSource: PumpFrameSource) -> Bool {
+        // Fake-3D requires real depth; there is no heuristic fallback. Checked
+        // before teardown so a failed attach leaves any current playback alone.
+        guard Pseudo3DDiagnostics.useStaticTestPattern || CoreMLDepthProvider.hasAvailableModel(role: .realtime),
+              let warp = RAVEStereoWarpResources.shared else {
+            Task { @MainActor in self.onPlaybackError?() }
+            return false
+        }
+
+        cleanupPlayer()
+        depthMode = .realtime
+        isRoomActive = true
+        knownVideoSize = nil
+        refitBurstTask?.cancel()
+
+        if !didStartSynchronizer {
+            didStartSynchronizer = true
+            synchronizer.setRate(1, time: .zero)
+        }
+
+        let sizeCallback: @Sendable (CGSize) -> Void = { [weak self] size in
+            Task { @MainActor in
+                self?.knownVideoSize = size
+                self?.onVideoSizeKnown?(size)
+                self?.scheduleRefitBurst()
+            }
+        }
+
+        guard let pump = StereoPump(
+            videoRenderer: videoRenderer,
+            frameSource: frameSource,
+            warp: warp,
+            startHostTime: CACurrentMediaTime(),
+            depthSource: RealtimeDepthSource(device: warp.device),
+            frameInterval: 1.0 / 60.0,
+            onVideoSizeKnown: sizeCallback
+        ) else {
+            Task { @MainActor in self.onPlaybackError?() }
+            return false
+        }
+        pump.updateConfig(makePumpConfig())
+        pump.start()
+        self.pump = pump
+        return true
+    }
+
     public func play() { isRoomActive = true; player?.play() }
     public func pause() { player?.pause() }
 

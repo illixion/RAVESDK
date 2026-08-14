@@ -156,6 +156,16 @@ frames into a single-slot buffer instead, with no AVPlayer anywhere. Sources mus
 return nil rather than repeat a frame — a tick that re-warps the same frame costs a
 full GPU pass and enqueues a duplicate.
 
+`attach(frameSource:)` is the entry point for that second case, and it is not a
+variant of `load(url:…)` — it opens no player at all. The consequence is worth
+stating because it looks like a bug from the outside: an engine driven this way
+publishes **no** transport. `play()`/`pause()`/`seek(to:)` act on a nil player and do
+nothing, `currentTime` reads 0, and `onPlaybackUpdate` never fires. That is correct —
+whatever produced the frames owns the clock, and in Raven's case it is a `<video>`
+inside a web page that also owns the audio. It is realtime-depth only for the same
+reason: cached depth needs a stable per-video identity and a conversion pass up
+front, and arbitrary browsing has neither.
+
 **All per-frame GPU work is off-main, and that is not a style choice.** An earlier
 version pumped on the main actor and blocked it with `waitUntilCompleted` ~90×/s,
 which starved Core Animation commits (backboardd render-watchdog SIGKILL) and the
