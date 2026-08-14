@@ -95,9 +95,28 @@ deciding both.
 `onSelect:` exists because a plain selection binding cannot observe re-selection of the
 already-current tab, which one app uses as a pop-to-root gesture.
 
-`RAVECodableSize` and `RAVEWindowSessionRegistry` are present but **not yet wired into any
-app** — their call sites are entangled with per-app window-restoration machinery that
-genuinely differs. Extracting the types without that surrounding logic buys little.
+`RAVEWindowSessionRegistry` is wired into Spatial Stash (which deleted its local twin);
+`RAVECodableSize` is still unwired — window *values* persist through scene restoration, so
+swapping the type in an app is a compatibility decision, not a rename.
+
+**`RAVEOpenMainWindowIntent`** is the workaround for a visionOS gap: an icon tap with any
+window alive anywhere skips the launch-scene machinery and *summons the nearest window to
+the user* (dragging pinned windows out of their rooms) — no public API redirects that
+(forums 748187/789355). The intent lets Siri/Shortcuts open a fresh main window instead.
+Design points that will look like bugs if lost:
+
+- It **always opens a new main window** — a registered main may be parked in another room
+  (registration tracks scene existence, not visibility), so no-op-when-one-exists would
+  fail exactly the case the intent exists for. The single exception: a main window that
+  registered within the last few seconds means *this activation* already presented one
+  (restoration / `defaultLaunchBehavior(.presented)` / an app-delegate fallback), so it
+  skips. Its settle delay is deliberately longer than typical app-side "ensure main
+  window" delays so it observes their result instead of racing them.
+- Hosts must capture actions with `captureOpenWindowAction()` on every scene root, count
+  mains with `registerAsMainWindow()`, and add two app-target pieces a package cannot
+  provide: an `AppIntentsPackage` conformer listing `RAVEUIAppIntentsPackage` (a
+  **standalone struct** — the `App` struct is MainActor-isolated and can't satisfy the
+  nonisolated protocol under Swift 6) and an `AppShortcutsProvider` with Siri phrases.
 
 ### RAVEConsole — separate from RAVEUI on purpose
 

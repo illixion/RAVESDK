@@ -45,6 +45,11 @@ public final class RAVEWindowSessionRegistry {
 
     public private(set) var mainWindowCount: Int = 0
 
+    /// When the most recent main window registered. `RAVEOpenMainWindowIntent`
+    /// uses this to tell "this activation just presented one" apart from "a
+    /// main window exists somewhere" (possibly parked in another room).
+    public private(set) var lastMainWindowRegistration: Date?
+
     /// The identifier `ensureMainWindowVisible` opens. Set once at launch if
     /// the app's main scene is not called "main".
     public var mainWindowID: String = "main"
@@ -62,6 +67,7 @@ public final class RAVEWindowSessionRegistry {
 
     public func registerMainWindow() {
         mainWindowCount += 1
+        lastMainWindowRegistration = Date()
     }
 
     public func unregisterMainWindow() {
@@ -77,6 +83,18 @@ public final class RAVEWindowSessionRegistry {
             return
         }
         log?("ensureMainWindowVisible: summoning main window")
+        openWindow(id: mainWindowID, value: UUID())
+    }
+
+    /// Unconditionally open a fresh main window, regardless of how many are
+    /// already up. This is the "give me a window *here*" primitive behind
+    /// `RAVEOpenMainWindowIntent`; use `ensureMainWindowVisible()` for the
+    /// no-op-when-one-exists semantic.
+    public func openNewMainWindow() {
+        guard let openWindow else {
+            log?("openNewMainWindow: no openWindow action captured")
+            return
+        }
         openWindow(id: mainWindowID, value: UUID())
     }
 
