@@ -95,9 +95,13 @@ deciding both.
 `onSelect:` exists because a plain selection binding cannot observe re-selection of the
 already-current tab, which one app uses as a pop-to-root gesture.
 
-`RAVEWindowSessionRegistry` is wired into Spatial Stash (which deleted its local twin);
-`RAVECodableSize` is still unwired — window *values* persist through scene restoration, so
-swapping the type in an app is a compatibility decision, not a rename.
+`RAVEWindowSessionRegistry` and `RAVECodableSize` are both wired into Spatial Stash and
+Spatial Home; both apps deleted their local twins. The size type was the one that needed
+thinking about, because window *values* persist through scene restoration — swapping it is
+a compatibility decision, not a rename. It was safe here only because both twins were
+byte-identical to this one: same `width`/`height` property names, so the archived
+`{"width", "height"}` payload is unchanged and `Codable` never records the type's name.
+Anything with different property names would need a migrating `init(from:)`, not a swap.
 
 **`RAVEOpenMainWindowIntent`** is the workaround for a visionOS gap: an icon tap with any
 window alive anywhere skips the launch-scene machinery and *summons the nearest window to
