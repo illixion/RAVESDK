@@ -149,6 +149,19 @@ public final class StereoPump: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "com.illixion.ravemedia.stereo-pump", qos: .userInteractive)
     private var timer: DispatchSourceTimer?
+    /// Backgrounded: **visionOS refuses GPU submission from a background app**,
+    /// so every command buffer a tick builds is aborted with
+    /// `kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`. An
+    /// `AVPlayer`-driven pump never noticed, because backgrounding pauses the
+    /// player and a paused player yields no new frames — but a pump fed by a
+    /// source that keeps producing (a web page's `<video>`, which keeps decoding
+    /// and playing audio) ticks straight through it: ~6,800 aborted command
+    /// buffers in 20 seconds on device, plus depth inference for every one of
+    /// them. Read and written under `lifecycleLock`; only ever set from the
+    /// notification observers below.
+    private var isBackgrounded = false
+    private let lifecycleLock = NSLock()
+    private var lifecycleObservers: [NSObjectProtocol] = []
 
     private var textureCache: CVMetalTextureCache?
     /// BGRA Metal render targets for the warp (intermediate, not handed to the
@@ -239,6 +252,7 @@ public final class StereoPump: @unchecked Sendable {
     }
 
     public func start() {
+        observeAppLifecycle()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: frameInterval, leeway: .milliseconds(2))
         timer.setEventHandler { [weak self] in self?.tick() }
@@ -247,6 +261,8 @@ public final class StereoPump: @unchecked Sendable {
     }
 
     public func stop() {
+        for observer in lifecycleObservers { NotificationCenter.default.removeObserver(observer) }
+        lifecycleObservers = []
         timer?.cancel()
         timer = nil
         // Drain on the pump queue so no tick races teardown.
@@ -262,9 +278,41 @@ public final class StereoPump: @unchecked Sendable {
         }
     }
 
+    /// The timer keeps running while backgrounded rather than being cancelled:
+    /// the flag is one lock away on a path that already takes locks, and
+    /// tearing the timer down and back up would have to be ordered against
+    /// `stop()` racing a notification. Ticks become a lock and a return.
+    private func observeAppLifecycle() {
+        guard lifecycleObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        let setBackgrounded: @Sendable (Bool) -> Void = { [weak self] backgrounded in
+            guard let self else { return }
+            lifecycleLock.lock()
+            isBackgrounded = backgrounded
+            lifecycleLock.unlock()
+        }
+        lifecycleObservers = [
+            center.addObserver(
+                forName: RAVEAppLifecycle.didEnterBackground, object: nil, queue: nil
+            ) { _ in setBackgrounded(true) },
+            center.addObserver(
+                forName: RAVEAppLifecycle.willEnterForeground, object: nil, queue: nil
+            ) { _ in setBackgrounded(false) }
+        ]
+    }
+
     // MARK: Per-frame work (always on `queue`)
 
     private func tick() {
+        lifecycleLock.lock()
+        let backgrounded = isBackgrounded
+        lifecycleLock.unlock()
+        // No GPU work at all while backgrounded — not the warp, and not the
+        // depth inference that feeds it. The frame source keeps taking frames
+        // and discarding all but the newest, so foregrounding resumes on
+        // current content rather than replaying a backlog.
+        guard !backgrounded else { return }
+
         guard videoRenderer.isReadyForMoreMediaData, let textureCache else { return }
 
         let hostTime = CACurrentMediaTime()

@@ -170,6 +170,17 @@ inside a web page that also owns the audio. It is realtime-depth only for the sa
 reason: cached depth needs a stable per-video identity and a conversion pass up
 front, and arbitrary browsing has neither.
 
+**The pump stops ticking while the app is backgrounded.** visionOS refuses GPU
+submission from a background app, so every command buffer a tick builds is aborted with
+`kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`. An `AVPlayer`-driven
+pump never revealed this, because backgrounding pauses the player and a paused player
+yields no new frames — the failure needs a source that keeps producing while the app is
+away, which is exactly what a web page's `<video>` does (it keeps decoding and playing
+audio). Measured on device before the guard: ~6,800 aborted command buffers in 20 seconds,
+each preceded by a depth inference. `StereoPump` watches `RAVEAppLifecycle`'s two
+notifications and returns early from `tick()`; the timer keeps running rather than being
+cancelled, so `stop()` never has to be ordered against a notification.
+
 **All per-frame GPU work is off-main, and that is not a style choice.** An earlier
 version pumped on the main actor and blocked it with `waitUntilCompleted` ~90×/s,
 which starved Core Animation commits (backboardd render-watchdog SIGKILL) and the
