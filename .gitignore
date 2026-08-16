@@ -9,3 +9,6 @@ Package.resolved
 # Xcode - User files
 xcuserdata/
 DerivedData/
+
+# xcodebuild output (the visionOS build line writes here)
+build/

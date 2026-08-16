@@ -191,6 +191,15 @@ worth knowing before touching it:
   library cannot span module boundaries, so the duplication is structural; both must
   keep producing a top-left-origin fullscreen quad.
 
+**`RAVEDepthModelSetupView` is shared; the preference it writes is not.** The variant
+catalogue, the Hugging Face download and the progress UI are one view now, because two
+apps had written the same twenty lines of SwiftUI in front of the same
+`DepthModelManager`. What stayed app-side is what a choice *means*: Spatial Stash sets
+both roles and adds a note about its own push script, Raven sets the realtime role only
+and has no settings screen at all. `onSelect` fires only once the model is genuinely
+installed — a failed download leaves the sheet up with its error rather than dismissing
+into a conversion that cannot run.
+
 **Two things the host must supply.** `RAVEMediaPolicy.depthCacheCap` gives the depth
 cache its byte budget — unset means *never evict*, so a host that forgets it grows the
 cache without bound. Spatial Stash wires it to `CacheBudget.cap(for: .depth,)` in
