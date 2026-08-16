@@ -54,6 +54,13 @@ public struct PumpFrame {
 /// whatever its decoder most recently deposited. Both must return nil rather
 /// than repeat a frame the pump has already seen — a tick that re-warps the
 /// same frame costs a full GPU pass and enqueues a duplicate.
+///
+/// **Frames must be `kCVPixelFormatType_32BGRA` and Metal-compatible.** The pump
+/// binds plane 0 as one `.bgra8Unorm` texture, so a 4:2:0 buffer does not fail —
+/// it renders, with each texel eating four luma bytes, which comes out as four
+/// side-by-side greyscale copies of the frame at a quarter width each. Configure
+/// `AVPlayerItemVideoOutput` or the `VTDecompressionSession` accordingly;
+/// `makeTexture` logs the format once if it sees anything else.
 public protocol PumpFrameSource: AnyObject, Sendable {
     /// The newest not-yet-delivered frame, or nil if none is ready.
     /// - Parameter hostTime: the pump's `CACurrentMediaTime()` for this tick, so
@@ -188,6 +195,8 @@ public final class StereoPump: @unchecked Sendable {
     /// heuristic warp only, e.g. a restored window whose model vanished).
     private let depthSource: PumpDepthSource?
     private var lastReportedSize: CGSize?
+    /// Pump-queue only. One line per pump, not one per frame at 60Hz.
+    private var didWarnAboutPixelFormat = false
     /// When the depth source last transitioned unavailable → available; drives
     /// the flat→3D strength ramp in flatten mode (cached seek gaps, startup).
     private var depthResumeTime: CFTimeInterval?
@@ -612,6 +621,17 @@ public final class StereoPump: @unchecked Sendable {
     private func makeTexture(from pixelBuffer: CVPixelBuffer, cache: CVMetalTextureCache) -> MTLTexture? {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
+        // A non-BGRA buffer binds successfully and renders garbage (see the
+        // `PumpFrameSource` note), so nothing downstream can report it. Say it
+        // here, once, rather than leaving a new frame source to be debugged
+        // from a screenshot.
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        if format != kCVPixelFormatType_32BGRA, !didWarnAboutPixelFormat {
+            didWarnAboutPixelFormat = true
+            RAVEMediaLog.pipeline.error(
+                "frame source is not 32BGRA (\(fourCC(format), privacy: .public)) — the warp will render garbage"
+            )
+        }
         var cvTexture: CVMetalTexture?
         guard CVMetalTextureCacheCreateTextureFromImage(
             nil, cache, pixelBuffer, nil, .bgra8Unorm, width, height, 0, &cvTexture
@@ -625,6 +645,16 @@ public final class StereoPump: @unchecked Sendable {
         lastReportedSize = size
         onVideoSizeKnown(size)
     }
+}
+
+/// An OSType reads as gibberish in decimal; these are four-character codes
+/// (`BGRA`, `420f`, `420v`) and naming them is the whole point of the log.
+/// File scope, not a method: an os_log interpolation is a closure, and a method
+/// call inside one is an implicit `self` capture the compiler rejects.
+private func fourCC(_ value: OSType) -> String {
+    let bytes = [24, 16, 8, 0].map { UInt8((value >> $0) & 0xFF) }
+    guard bytes.allSatisfy({ $0 >= 0x20 && $0 < 0x7F }) else { return String(value) }
+    return String(bytes.map { Character(UnicodeScalar($0)) })
 }
 
 #endif
