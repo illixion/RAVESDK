@@ -52,7 +52,7 @@ is easy to skip.
 | Target | Purpose |
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
-| `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry |
+| `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager |
 | `RAVEConsole` | On-device log viewer over `OSLogStore` |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 
@@ -121,6 +121,54 @@ Design points that will look like bugs if lost:
   provide: an `AppIntentsPackage` conformer listing `RAVEUIAppIntentsPackage` (a
   **standalone struct** — the `App` struct is MainActor-isolated and can't satisfy the
   nonisolated protocol under Swift 6) and an `AppShortcutsProvider` with Siri phrases.
+
+**`RAVEWindowRegistry` / `RAVEWindowManagerView`** are the user-facing window inventory —
+distinct from `RAVEWindowSessionRegistry`, which answers the narrow lifecycle question
+("is a main window up, how do I open one?"). Longwave's Sessions tab and Spatial Stash's
+Windows tab converge here.
+
+**Summon is a recycle, not a recall, and that is the whole point.** Longwave's original
+summon called `openWindow(id:)` against the live scene to drag it to the user. On
+visionOS 27 that exact call can activate a parked scene *without re-attaching it to a
+compositor placement*: the window is then permanently invisible and non-interactable while
+the scene keeps reporting itself active, `isHidden == false`, `alpha == 1`. Nothing
+app-side recovers it — geometry round-trips do nothing and views added afterwards never
+get a layout pass. So `summon` dismisses and reopens instead, which serves both the
+other-room case and the orphaned-scene case. Reproduces with the stock Clock app; Spatial
+Stash keeps the Feedback write-up at `internal_docs/visionos27-invisible-window-feedback.md`.
+
+Design points that will look like over-engineering until they bite:
+
+- **`recreate:` is what makes the recycle race-free.** A fresh value carrying a new
+  instance id cannot match the scene being torn down, so dismiss and open can be issued in
+  the same turn. Without one, `reopenRequiresTeardown` makes the reopen *wait* for the old
+  scene to unregister — otherwise the open just recalls the dying scene. Value windows with
+  a UUID id want `recreate:`; `.singleton` (plain `Window`, addressed by id alone) and
+  identity-is-the-content values cannot have it.
+- **The factories are `@MainActor`** so they can capture non-`Sendable` app window values
+  into the `@MainActor` action closures. Making them nonisolated forces every consuming
+  app's window value to be `Sendable`, which they are not.
+- **The registration token is not the window value's id**, because a recycled window comes
+  back under a new value and must not inherit the dead scene's row.
+- **`RAVEWindowScenes.destroyAll(except:)` goes underneath SwiftUI on purpose.** A scene
+  that never ran `onAppear` never registered — which is exactly what the launch-time
+  variant of the same bug produces — so the bulk escape hatch walks UIKit's
+  `connectedScenes` rather than the registry.
+- **A manager hosted inside a managed window leaves itself off the list** via
+  `EnvironmentValues.raveWindowToken`, which the modifier publishes into its subtree. That
+  is what lets an app register its *main* windows too, so a second main parked in another
+  room is recoverable — Longwave's version had to exclude "main" wholesale.
+
+Labels are re-pushed on change (`RAVEWindowLabel` is `Equatable`) so a row can carry a live
+subtitle — Longwave's connection names, Stash's media titles. The action closures are taken
+once, which is correct: a window's identity never changes after it opens.
+
+**Longwave has not been migrated yet** — it still runs its own `WindowSessionRegistry` +
+`SessionsView`. The API here was shaped against both apps, but its migration is not
+mechanical: Longwave's registry does double duty, since `sessions` is also read for
+*functional* decisions (the Native window hides its inline audio UI while the popped-out
+audio window is alive). That consumer needs a home before the local copy can go, and the
+Mac target compiles the same sources.
 
 ### RAVEConsole — separate from RAVEUI on purpose
 
