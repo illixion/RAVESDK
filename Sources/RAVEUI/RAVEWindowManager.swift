@@ -57,6 +57,14 @@ public struct RAVEWindowLabel: Equatable, Sendable {
 public struct RAVEManagedWindow {
     public let sceneID: String
     public var label: RAVEWindowLabel
+    /// Type-erased escape hatch for an app that wants to get from a registry
+    /// entry back to its own live content object — e.g. a window model, so
+    /// another window can hand it something (a tab, a document) directly.
+    /// `RAVEWindowRegistry` deliberately carries no window catalogue of its
+    /// own (see the file header), so this is the one field that lets an app
+    /// build one on top without a second, parallel registry. Left `nil` and
+    /// untouched by every app that doesn't need it.
+    public var payload: Any?
 
     let close: @MainActor (DismissWindowAction) -> Void
     /// `nil` when this window cannot be recreated, which hides Summon for it.
@@ -81,11 +89,13 @@ public struct RAVEManagedWindow {
         id sceneID: String,
         _ value: V,
         label: RAVEWindowLabel,
-        recreate: ((V) -> V)? = nil
+        recreate: ((V) -> V)? = nil,
+        payload: Any? = nil
     ) -> RAVEManagedWindow {
         RAVEManagedWindow(
             sceneID: sceneID,
             label: label,
+            payload: payload,
             close: { dismiss in dismiss(id: sceneID, value: value) },
             reopen: { open in open(id: sceneID, value: recreate.map { $0(value) } ?? value) },
             reopenRequiresTeardown: recreate == nil
@@ -94,10 +104,11 @@ public struct RAVEManagedWindow {
 
     /// A window addressed by scene id alone — SwiftUI's plain `Window` scene.
     @MainActor
-    public static func singleton(id sceneID: String, label: RAVEWindowLabel) -> RAVEManagedWindow {
+    public static func singleton(id sceneID: String, label: RAVEWindowLabel, payload: Any? = nil) -> RAVEManagedWindow {
         RAVEManagedWindow(
             sceneID: sceneID,
             label: label,
+            payload: payload,
             close: { dismiss in dismiss(id: sceneID) },
             reopen: { open in open(id: sceneID) },
             reopenRequiresTeardown: true
@@ -108,10 +119,11 @@ public struct RAVEManagedWindow {
     /// content that cannot be rebuilt from a value (a live session that would
     /// be lost), where closing and reopening is not the same window.
     @MainActor
-    public static func closableOnly(id sceneID: String, label: RAVEWindowLabel) -> RAVEManagedWindow {
+    public static func closableOnly(id sceneID: String, label: RAVEWindowLabel, payload: Any? = nil) -> RAVEManagedWindow {
         RAVEManagedWindow(
             sceneID: sceneID,
             label: label,
+            payload: payload,
             close: { dismiss in dismiss(id: sceneID) },
             reopen: nil,
             reopenRequiresTeardown: false
@@ -149,6 +161,10 @@ public final class RAVEWindowRegistry {
 
         /// Whether this window can be recycled (see `RAVEManagedWindow.value`).
         public var canSummon: Bool { window.reopen != nil }
+
+        /// The app-specific content object this window was registered with, if
+        /// any — see `RAVEManagedWindow.payload`.
+        public var payload: Any? { window.payload }
     }
 
     /// Open windows in the order they were opened.
