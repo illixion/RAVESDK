@@ -53,7 +53,7 @@ is easy to skip.
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
 | `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager |
-| `RAVEConsole` | On-device log viewer over `OSLogStore` |
+| `RAVEConsole` | On-device log viewer over `OSLogStore`, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 
 ### RAVENet — the transport never decides it is ready
@@ -191,6 +191,20 @@ which is why app-side logging facades take an already-interpolated `String` and 
 `.public` — without the privacy annotation os_log redacts interpolated values and every
 line reads `<private>`.
 
+**`RAVESystemMonitor`/`RAVESystemMonitorView` are Spatial Stash's GPU memory monitor,
+generalised.** That app built it to compare lossy against lossless texture storage — a
+question only `MTLDevice.currentAllocatedSize` answers — and it lived there as an
+app-specific window. It moved here, not into Engine's `RAVEDiagnostics` (which stays
+scoped to frame timing), because "how much memory does this feature actually cost" is a
+question every app with a log viewer eventually asks, and every app that wants this
+already links `RAVEConsole`. `RAVESystemReading` adds two facts the original monitor did
+not read: `physicalMemory` (so a gauge is sized to what is actually installed rather than
+a hardcoded per-model constant) and `thermalState` (so a decode/encode-heavy feature that
+looks like a memory problem is not mistaken for one when it is actually throttling). Raven
+is the first consumer without its own Metal renderer to hand over — it passes a fresh
+`MTLCreateSystemDefaultDevice()` rather than nil, since on a single-GPU platform that still
+reads the same process-wide allocation everything else is charged against.
+
 ### RAVEMedia — the pump pulls frames through a seam, not from AVPlayer
 
 This is Spatial Stash's fake-3D pipeline, moved wholesale: monocular depth (Depth
@@ -281,7 +295,7 @@ convergence default.
 
 ## How consumers use this
 
-Five visionOS apps under `~/Projects/`. During development each references this package as
+Six visionOS apps under `~/Projects/`. During development each references this package as
 a **local** Swift package (`XCLocalSwiftPackageReference`), so edits are immediate and need
 no tag-and-push cycle. Once a target stabilises, tag it and switch that app to
 `.package(url:)`.
@@ -293,6 +307,7 @@ no tag-and-push cycle. Once a target stabilises, tag it and switch that app to
 | `Longwave` | `RAVEUI`, `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Spatialcraft` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Lambda_VisionPro` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
+| `Raven` | `RAVEUI`, `RAVEConsole`, `RAVENet`, `RAVEMedia` |
 
 **A green `swift test` here proves very little.** Local package references mean the
 consuming app builds are the real integration test — a signature change compiles fine here
