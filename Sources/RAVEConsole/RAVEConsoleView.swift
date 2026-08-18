@@ -221,16 +221,36 @@ struct RAVELogEntryRow: View {
 public struct RAVEConsoleScreen: View {
     private let store: RAVELogStore
     private let onPopOut: (() -> Void)?
+    private let onClose: (() -> Void)?
 
-    public init(store: RAVELogStore = .shared, onPopOut: (() -> Void)? = nil) {
+    /// - Parameter onClose: shown as a toolbar button when non-nil. A screen
+    ///   reached through a section switcher rather than a tab bar has no
+    ///   chrome of its own left over to switch back with — the switcher that
+    ///   got here lives in the *other* section's toolbar, not this one's —
+    ///   so a caller in that shape needs to hand back a way out explicitly.
+    ///   Nil is right for a genuine tab, where the tab bar itself is that way
+    ///   out and a second button would be redundant chrome.
+    public init(
+        store: RAVELogStore = .shared,
+        onPopOut: (() -> Void)? = nil,
+        onClose: (() -> Void)? = nil
+    ) {
         self.store = store
         self.onPopOut = onPopOut
+        self.onClose = onClose
     }
 
     public var body: some View {
         NavigationStack {
             RAVEConsoleView(store: store, onPopOut: onPopOut)
                 .navigationTitle("Console")
+                .toolbar {
+                    if let onClose {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close", action: onClose)
+                        }
+                    }
+                }
         }
     }
 }

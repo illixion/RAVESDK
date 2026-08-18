@@ -267,9 +267,16 @@ public struct RAVESystemMonitorView: View {
 /// bare. Mirrors `RAVEConsoleScreen`.
 public struct RAVESystemMonitorScreen: View {
     private let device: (any MTLDevice)?
+    private let onClose: (() -> Void)?
 
-    public init(device: (any MTLDevice)? = nil) {
+    /// - Parameter onClose: shown as a toolbar button when non-nil — see
+    ///   `RAVEConsoleScreen`'s parameter of the same name. A screen reached
+    ///   through a section switcher rather than a tab bar has no way back
+    ///   without one, since the switcher lives in the *other* section's
+    ///   chrome, not this one's.
+    public init(device: (any MTLDevice)? = nil, onClose: (() -> Void)? = nil) {
         self.device = device
+        self.onClose = onClose
     }
 
     public var body: some View {
@@ -277,6 +284,13 @@ public struct RAVESystemMonitorScreen: View {
             RAVESystemMonitorView(device: device)
                 .padding()
                 .navigationTitle("System")
+                .toolbar {
+                    if let onClose {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close", action: onClose)
+                        }
+                    }
+                }
         }
     }
 }
