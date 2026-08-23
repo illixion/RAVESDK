@@ -7,7 +7,12 @@ let package = Package(
     // RAVENet is visionOS-specific and `swift test` needs a host platform to
     // build for — visionOS-only targets added later (RAVEUI) guard with
     // `#if os(visionOS)` rather than forcing the whole package to one platform.
-    platforms: [.visionOS(.v26), .macOS(.v14)],
+    // iOS is declared for the same reason and matters more than it looks:
+    // leaving a platform out does not exclude it, it silently gives that
+    // platform SwiftPM's own ancient default floor, and RAVEConsole then fails
+    // to build for an iOS client with "'Color' is only available in iOS 13.0 or
+    // newer" — a version nothing here has ever targeted.
+    platforms: [.visionOS(.v26), .macOS(.v14), .iOS(.v26)],
     products: [
         .library(name: "RAVENet", targets: ["RAVENet"]),
         .library(name: "RAVEUI", targets: ["RAVEUI"]),
