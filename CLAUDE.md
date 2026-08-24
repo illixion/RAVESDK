@@ -173,8 +173,8 @@ Mac target compiles the same sources.
 ### RAVEConsole — separate from RAVEUI on purpose
 
 Two of the five consuming apps want a log viewer and have **no tab bar at all** to hang one
-off (Spatialcraft's main window is a singleton launcher; Lambda renders through
-CompositorServices). Hence a separate target rather than a corner of `RAVEUI`.
+off (Spatialcraft; Lambda renders through CompositorServices). Hence a
+separate target rather than a corner of `RAVEUI`.
 
 Two details are easy to lose in a rewrite and will silently break the console:
 
