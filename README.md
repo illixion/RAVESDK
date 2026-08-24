@@ -21,9 +21,13 @@ than forcing the whole package to one platform.
 | Target | Status | Purpose |
 |---|---|---|
 | `RAVENet` | shipping | WebSocket transport with reconnect, keepalive, path gating, wake probing |
-| `RAVEUI` | planned | Tab-ornament shell, hover effects, small shared types |
-| `RAVEMedia` | planned | Depth/3D conversion + stereo playback |
+| `RAVEUI` | shipping | Tab-ornament shell, hover effects, shared window manager, small shared types |
+| `RAVEConsole` | shipping | On-device log viewer, GPU/system monitor, depth-model setup UI |
+| `RAVEMedia` | shipping | Core ML depth, windowed-stereo warp, shared graphic EQ |
 | `RAVECamera` | planned | Persona camera |
+
+`RAVEConsole` is separate from `RAVEUI` on purpose: two of the consuming apps
+want the log viewer and have no tab bar at all to hang it off.
 
 ## RAVENet
 
@@ -84,6 +88,36 @@ await transport.start()
 Call `probeOrReconnect()` — not `forceReconnectNow()` — on a scene-phase wake.
 visionOS flutters `scenePhase` on gaze shifts, and unconditionally reconnecting
 there churns the server; a healthy socket answers the ping and is left alone.
+
+## Consuming this package
+
+The visionOS apps link this package as a **local** Swift package — an Xcode
+`XCLocalSwiftPackageReference` with a relative path, not a versioned remote
+dependency. There are no tags and no `Package.resolved` entry; a build always
+compiles the working copy you have checked out.
+
+That is deliberate. The packages and the apps co-evolve continuously — a target
+usually arrives here by being lifted out of an app that already shipped it — and
+a path reference makes "move this code into the package and update its callers"
+one atomic edit instead of a commit, a tag, and a pin bump in every app.
+
+The cost is a layout convention. Clone this package as a **sibling** of any app
+that uses it:
+
+```
+some-parent/
+├── RAVESDK/          <- this package
+├── RAVEEngine/       <- its sibling package
+├── Spatialcraft/
+└── Longwave/
+```
+
+Each app's project points at `../RAVESDK` or `../../RAVESDK` depending on how
+deeply its `.xcodeproj` is nested; both resolve to the same parent directory, so
+the only requirement is that the app repo's parent also contains `RAVESDK` (and
+`RAVEEngine`, for an app that links it) under exactly those directory names. The
+app repo's own directory name does not matter. Get it wrong and Xcode fails at
+package resolution rather than at compile time.
 
 ## Testing
 
