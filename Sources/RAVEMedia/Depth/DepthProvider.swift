@@ -659,12 +659,4 @@ public final class CoreMLDepthProvider: DepthProvider, @unchecked Sendable {
             return nil
         }
     }
-
-    // Minimal IEEE-754 half<->float helpers (avoids a Float16 platform dependency).
-    private static func float16ToFloat(_ h: UInt16) -> Float {
-        Float(Float16(bitPattern: h))
-    }
-    private static func floatToFloat16(_ f: Float) -> UInt16 {
-        Float16(f).bitPattern
-    }
 }
