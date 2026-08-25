@@ -170,11 +170,25 @@ public nonisolated struct EQSettings: Codable, Equatable, Sendable {
 
     /// RBJ cookbook coefficients (unnormalized — a0 included) for the
     /// band's filter type.
-    public static func coefficients(for band: EQBandSetting)
+    ///
+    /// - Parameter sampleRate: the rate the filter will actually run at.
+    ///   Defaults to `displaySampleRate` so the editor's curve math is
+    ///   unchanged; a host that *renders audio* through these coefficients
+    ///   (an `MTAudioProcessingTap`, an offline render) must pass the rate its
+    ///   graph negotiated instead, or every band lands at the wrong frequency
+    ///   by the ratio between the two rates — inaudible-looking on paper and
+    ///   very audible in practice on 44.1 kHz material.
+    ///
+    /// A band above Nyquist has no meaningful biquad (ω₀ ≥ π folds the
+    /// response), so the centre frequency is clamped just below it. At the
+    /// 48 kHz display rate this can never bite — the editor's own ceiling is
+    /// 20 kHz — so it changes nothing for existing callers.
+    public static func coefficients(for band: EQBandSetting, sampleRate: Double = displaySampleRate)
         -> (b0: Double, b1: Double, b2: Double, a0: Double, a1: Double, a2: Double) {
         let band = band.clamped()
         let A = pow(10, band.gain / 40)
-        let w0 = 2 * Double.pi * band.frequency / displaySampleRate
+        let frequency = min(band.frequency, sampleRate * 0.49)
+        let w0 = 2 * Double.pi * frequency / sampleRate
         let cosw = cos(w0)
         let sinw = sin(w0)
         // Shelves use a fixed gentle slope (Q ≈ 0.71) regardless of the
