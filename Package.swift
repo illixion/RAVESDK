@@ -23,6 +23,13 @@ let package = Package(
         .target(name: "RAVENet"),
         .testTarget(name: "RAVENetTests", dependencies: ["RAVENet"]),
         .target(name: "RAVEUI"),
+        // Unit tests, despite the name: SwiftPM has no UI-testing product type
+        // and XCUITest needs a host app, so driving these views for real
+        // happens in a host app's UI test target (Spatial Stash's, which links
+        // RAVEUI and matches on `RAVEA11y`). What runs here is the arithmetic
+        // and bookkeeping — the views are visionOS-only and `swift test` is on
+        // the host.
+        .testTarget(name: "RAVEUITests", dependencies: ["RAVEUI"]),
         // Separate from RAVEUI on purpose: two of the five apps want an
         // on-device log viewer and have no tab bar at all to hang it off.
         .target(name: "RAVEConsole"),

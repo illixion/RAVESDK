@@ -397,6 +397,7 @@ public struct RAVEWindowManagerView<Actions: View>: View {
 
                 actions()
             }
+            .accessibilityIdentifier(RAVEA11y.windowList)
             .navigationTitle(title)
         }
     }
@@ -459,6 +460,7 @@ public struct RAVEWindowManagerRow: View {
                     Label("Summon", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier(RAVEA11y.windowSummon(entry.label.title))
             }
 
             Button(role: .destructive, action: close) {
@@ -466,6 +468,8 @@ public struct RAVEWindowManagerRow: View {
             }
             .buttonStyle(.borderless)
             .help("Close this window")
+            .accessibilityLabel("Close \(entry.label.title)")
+            .accessibilityIdentifier(RAVEA11y.windowClose(entry.label.title))
         }
         .padding(.vertical, 6)
     }

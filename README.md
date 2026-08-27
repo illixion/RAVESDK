@@ -125,3 +125,10 @@ package resolution rather than at compile time.
 swift test                                                              # pure-logic targets, on the host
 xcodebuild -scheme RAVESDK -sdk xros -destination 'generic/platform=visionOS' build
 ```
+
+The UI here is not tested from this package, and cannot be: SwiftPM has no UI-testing
+product type and XCUITest attaches to a host app. `Tests/RAVEUITests` covers RAVEUI's
+arithmetic and bookkeeping; the views themselves are driven by a host app's UI test
+target matching on `RAVEA11y` identifiers (Spatial Stash's `SpatialStashUITests`).
+`RAVEA11y`'s exact strings are therefore API — another repository's tests compute them
+without linking anything here.

@@ -27,6 +27,10 @@ public protocol RAVETabItem: Hashable, Identifiable {
     var title: String { get }
     /// SF Symbol name.
     var systemImage: String { get }
+    /// What XCUITest matches this tab on. Defaults to the title, which is
+    /// display copy — override it with something stable (an enum case name) in
+    /// any app whose tab titles are expected to change.
+    var accessibilityIdentifier: String { get }
 }
 
 public extension RAVETabItem where Self: RawRepresentable, Self.RawValue == String {
@@ -35,6 +39,10 @@ public extension RAVETabItem where Self: RawRepresentable, Self.RawValue == Stri
 
 public extension RAVETabItem where Self: Hashable {
     var id: Self { self }
+}
+
+public extension RAVETabItem {
+    var accessibilityIdentifier: String { RAVEA11y.tab(title) }
 }
 
 /// The ornament bar: a row of tab buttons, optionally followed by app-specific
@@ -76,6 +84,7 @@ public struct RAVETabBar<Tab: RAVETabItem, Accessory: View>: View {
                     title: tab.title,
                     systemImage: tab.systemImage,
                     isSelected: selection == tab,
+                    identifier: tab.accessibilityIdentifier,
                     action: {
                         // A hook, not a replacement: an app that wants to
                         // notice re-selection of the current tab (a "pop to
@@ -113,12 +122,21 @@ public struct RAVETabBarButton: View {
     public let title: String
     public let systemImage: String
     public let isSelected: Bool
+    /// Nil derives one from the title. See `RAVEA11y`.
+    public let identifier: String?
     public let action: () -> Void
 
-    public init(title: String, systemImage: String, isSelected: Bool, action: @escaping () -> Void) {
+    public init(
+        title: String,
+        systemImage: String,
+        isSelected: Bool,
+        identifier: String? = nil,
+        action: @escaping () -> Void
+    ) {
         self.title = title
         self.systemImage = systemImage
         self.isSelected = isSelected
+        self.identifier = identifier
         self.action = action
     }
 
@@ -142,6 +160,10 @@ public struct RAVETabBarButton: View {
         .buttonStyle(RAVETabBarButtonStyle(isSelected: isSelected))
         .hoverEffect(.highlight)
         .help(title)
+        // The button is icon-only until selected, so without an explicit label
+        // VoiceOver and XCUITest both see an SF Symbol name.
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier ?? RAVEA11y.tab(title))
         .animation(.smooth(duration: 0.22), value: isSelected)
     }
 }
@@ -176,11 +198,20 @@ public struct RAVETabBarButtonStyle: ButtonStyle {
 public struct RAVETabBarActionButton: View {
     public let systemImage: String
     public let help: String
+    /// Nil derives one from the symbol name — which, unlike `help`, is not
+    /// display copy. See `RAVEA11y`.
+    public let identifier: String?
     public let action: () -> Void
 
-    public init(systemImage: String, help: String, action: @escaping () -> Void) {
+    public init(
+        systemImage: String,
+        help: String,
+        identifier: String? = nil,
+        action: @escaping () -> Void
+    ) {
         self.systemImage = systemImage
         self.help = help
+        self.identifier = identifier
         self.action = action
     }
 
@@ -196,6 +227,8 @@ public struct RAVETabBarActionButton: View {
         .buttonStyle(RAVETabBarButtonStyle(isSelected: false))
         .hoverEffect(.highlight)
         .help(help)
+        .accessibilityLabel(help)
+        .accessibilityIdentifier(identifier ?? RAVEA11y.tabAction(systemImage))
     }
 }
 

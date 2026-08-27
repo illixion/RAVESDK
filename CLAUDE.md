@@ -36,6 +36,25 @@ build that names no source files did not happen.
 `swift test` only exercises the framework-free targets. Anything guarded by
 `#if os(visionOS)` is compiled by the `xcodebuild` line and by nothing else, so run both.
 
+### There is no XCUITest in this package, and there cannot be
+
+SwiftPM has no UI-testing product type, and XCUITest attaches to a *host app* — so the
+shared views cannot be driven from here at all. The split is:
+
+- **`Tests/RAVEUITests`** (a plain unit-test target despite the name) covers what is
+  testable without a window: `RAVEGridColumnLayout` arithmetic, the `RAVECodableSize`
+  archive shape, `RAVEA11y`'s identifier spelling, `RAVEWindowSessionRegistry` counting.
+- **Spatial Stash's `SpatialStashUITests`** drives `RAVETabBar` and
+  `RAVEWindowManagerView` for real, matching on `RAVEA11y` identifiers, because it links
+  RAVEUI and has an app to attach to. A failure there is a bug report against this
+  package. See `~/Projects/spatialstash/CLAUDE.md` → UI Tests.
+
+That is why `RAVEA11y` exists and why its exact strings are treated as API: another
+repository's tests compute them without linking anything of this app's. `RAVETabItem`
+and both tab-bar buttons take an overridable `identifier` so an app whose display copy
+is expected to change can pin something stable (Spatial Stash passes its enum case
+names).
+
 ## Platform declaration
 
 `Package.swift` declares `[.visionOS(.v26), .macOS(.v14)]`. visionOS is the product;
