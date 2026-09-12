@@ -15,9 +15,27 @@
 
 import SwiftUI
 
-/// Borderless glyph button with a platform-appropriate hit target: the plain
-/// `.borderless` look everywhere, plus an Apple-HIG 44-point minimum touchable
-/// area on touch platforms.
+// A `ButtonStyle` cannot delegate to a system style: `makeBody` hands back a
+// view built from `configuration.label`, and there is no way to say "and then
+// render that the way `.borderless` would". So on visionOS there is no custom
+// style at all — the platform's own `.borderless` draws the gaze hover
+// highlight and the padding that makes an ornament button look like one, and
+// re-deriving those by hand would mean guessing at hover shape, glyph inset
+// and pressed state, and drifting from them at the next OS release.
+//
+// `RAVEChromeButtonStyle` therefore does not exist on visionOS, which makes
+// the mistake structural rather than visual: `.buttonStyle(.raveChrome)` in
+// shared code fails to build for the headset instead of quietly shipping
+// flat, hover-less chrome. Use `View.raveChromeButtonStyle()` — it resolves
+// to the right thing on each platform.
+#if !os(visionOS)
+
+/// Borderless glyph button with a finger-sized hit target: an Apple-HIG
+/// 44-point minimum touchable area, and a press/disabled dimming to replace
+/// the feedback the system style would have given.
+///
+/// Prefer `View.raveChromeButtonStyle()` over naming this directly; it is the
+/// spelling that also compiles on visionOS.
 ///
 /// `contentShape` is what makes the transparent margin around the glyph count
 /// as part of the button; without it the enlarged frame is inert.
@@ -27,24 +45,36 @@ public struct RAVEChromeButtonStyle: ButtonStyle {
     public init() {}
 
     public func makeBody(configuration: Configuration) -> some View {
-        #if os(visionOS)
-        // Gaze targeting plus the ornament's own hover expansion already make
-        // these comfortable; growing them here would only spread the bar.
-        configuration.label
-        #else
         configuration.label
             .frame(minWidth: 44, minHeight: 44)
             .contentShape(.rect)
             .opacity(isEnabled ? (configuration.isPressed ? 0.4 : 1) : 0.35)
             .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
-        #endif
     }
 }
 
 public extension ButtonStyle where Self == RAVEChromeButtonStyle {
-    /// A glyph button in floating chrome. Use instead of `.borderless` for any
-    /// control that has to be hittable by a finger as well as by gaze.
+    /// A glyph button in floating chrome on a touch platform.
     static var raveChrome: RAVEChromeButtonStyle { RAVEChromeButtonStyle() }
+}
+
+#endif
+
+public extension View {
+    /// Styles the glyph buttons in this subtree as floating chrome: the
+    /// system `.borderless` style on visionOS, where gaze targeting and the
+    /// platform's own hover highlight already make a bare glyph comfortable,
+    /// and `RAVEChromeButtonStyle`'s 44-point touch target elsewhere.
+    ///
+    /// Use this instead of `.buttonStyle(.borderless)` for any control that
+    /// has to be hittable by a finger as well as by gaze.
+    func raveChromeButtonStyle() -> some View {
+        #if os(visionOS)
+        buttonStyle(.borderless)
+        #else
+        buttonStyle(RAVEChromeButtonStyle())
+        #endif
+    }
 }
 
 // The capsule is a touch-platform thing: `glassEffect` is unavailable on
@@ -67,13 +97,13 @@ public struct RAVEChromeBar<Content: View>: View {
     }
 
     public var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: RAVEChromeMetrics.spacing) {
             content
         }
-        .buttonStyle(.raveChrome)
+        .raveChromeButtonStyle()
         .font(.title3)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.horizontal, RAVEChromeMetrics.horizontalPadding)
+        .padding(.vertical, RAVEChromeMetrics.verticalPadding)
         .glassEffect(in: .capsule)
         .contentShape(.capsule)
         // Deliberately empty: claims the tap so it never reaches the content
