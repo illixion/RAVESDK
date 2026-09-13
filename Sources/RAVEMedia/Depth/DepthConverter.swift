@@ -73,8 +73,9 @@ private struct DepthHistogramParams {
     var invSpan: Float
 }
 
-/// CPU mirror of the Metal `DepthGuideParams` struct (2 float2s).
-private struct DepthGuideParams {
+/// CPU mirror of the Metal `DepthGuideParams` struct (2 float2s). Internal:
+/// `DepthPipelineSpike` drives the same guide kernel.
+struct DepthGuideParams {
     var uvScale: SIMD2<Float>
     var uvOffset: SIMD2<Float>
 }
@@ -137,9 +138,9 @@ final class DepthConverter: @unchecked Sendable {
     /// visible; σ=5 leaves ~8%. The luma term keeps real edges pinned despite
     /// the wide support, so only depth detail in luma-flat regions (which DA2
     /// can't measure reliably anyway) is traded away.
-    fileprivate static let bilateralRadius: Int32 = 12
-    fileprivate static let bilateralSigmaSpatial: Float = 5.0
-    fileprivate static let bilateralSigmaLuma: Float = 0.06
+    static let bilateralRadius: Int32 = 12
+    static let bilateralSigmaSpatial: Float = 5.0
+    static let bilateralSigmaLuma: Float = 0.06
     /// Encode the depth video at this multiple of the model's output resolution,
     /// joint-bilaterally upsampled (same kernels, radius/sigma below, guided by
     /// a decode-resolution luma guide). At 1× the depth texel lattice is the
@@ -149,9 +150,9 @@ final class DepthConverter: @unchecked Sendable {
     /// strength). 2× matches maxDecodeDimension (the guide's true fidelity —
     /// beyond it there is no new edge information), halving the step period
     /// while the guided upsample re-pins the edge sub-texel to the image edge.
-    fileprivate static let encodeUpsampleFactor = 2
-    fileprivate static let upsampleRadius: Int32 = 6
-    fileprivate static let upsampleSigmaSpatial: Float = 3.0
+    static let encodeUpsampleFactor = 2
+    static let upsampleRadius: Int32 = 6
+    static let upsampleSigmaSpatial: Float = 3.0
     /// Scene-cut detection: total-variation distance between consecutive frames'
     /// normalized depth histograms, plus raw-range jump checks. A cut both
     /// truncates the temporal window and snaps the display range.
