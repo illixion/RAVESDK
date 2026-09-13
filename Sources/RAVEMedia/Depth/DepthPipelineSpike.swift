@@ -42,8 +42,15 @@ public enum DepthPipelineSpike {
     /// Frames the refinement-chain GPU timing averages over.
     private static let refineSampleFrames = 30
     /// Lookahead probe: how long to play, and how far ahead to ask.
-    private static let lookaheadProbeSeconds: Double = 5
-    private static let lookaheadProbeHorizonSeconds: Double = 1
+    private static let lookaheadProbeSeconds: Double = 6
+    /// The first run's maximum lead sat right at a 1 s horizon, so the cap was
+    /// the measurement. 4 s is comfortably past any plausible decode queue.
+    private static let lookaheadProbeHorizonSeconds: Double = 4
+    /// Decode sizes (longest side) for the inference-input experiment: the
+    /// pump hands Vision the full frame today; the converter decodes at ≤1036.
+    /// How much of the per-frame time is Vision rescaling the input rather
+    /// than the ANE decides whether a GPU pre-downscale buys real headroom.
+    private static let inputSizeVariants = [1036, 518]
 
     /// Run every measurement against `videoURL` (a local file — the frame
     /// decode uses AVAssetReader). Lines arrive in order, on an arbitrary
@@ -85,7 +92,7 @@ public enum DepthPipelineSpike {
             }
             var lines: [String] = []
             for modelURL in models {
-                lines += measureModel(modelURL: modelURL, asset: asset, track: track, metal: metal, fps: fps)
+                lines += measureModel(modelURL: modelURL, asset: asset, track: track, naturalSize: naturalSize, metal: metal, fps: fps)
             }
             return lines
         }.value
@@ -99,7 +106,7 @@ public enum DepthPipelineSpike {
     // MARK: - 1 + 2: inference and refinement per model
 
     private static func measureModel(
-        modelURL: URL, asset: AVURLAsset, track: AVAssetTrack, metal: RAVEMediaMetal, fps: Double
+        modelURL: URL, asset: AVURLAsset, track: AVAssetTrack, naturalSize: CGSize, metal: RAVEMediaMetal, fps: Double
     ) -> [String] {
         let name = modelURL.deletingPathExtension().lastPathComponent
         var lines: [String] = ["", "Model: \(name)"]
@@ -160,6 +167,27 @@ public enum DepthPipelineSpike {
         }
         lines.append("  inference + stabilize (shipping live path): \(summary(fullMs))")
 
+        // Pass 3: raw inference again, with the frame decoded smaller before
+        // Vision sees it. The difference against pass 1 is Vision's own
+        // rescale cost — the part a GPU pre-downscale in the pump could remove.
+        for maxDimension in inputSizeVariants where CGFloat(maxDimension) < max(naturalSize.width, naturalSize.height) {
+            var sizedMs: [Double] = []
+            var decodedSize = (width: 0, height: 0)
+            frameIndex = 0
+            _ = forEachFrame(
+                asset: asset, track: track, limit: warmupFrames + inferenceSampleFrames,
+                maxDimension: maxDimension, naturalSize: naturalSize
+            ) { pixelBuffer in
+                defer { frameIndex += 1 }
+                decodedSize = (CVPixelBufferGetWidth(pixelBuffer), CVPixelBufferGetHeight(pixelBuffer))
+                let t0 = CACurrentMediaTime()
+                guard let (_, keepAlive) = provider.inferRawDepth(from: pixelBuffer) else { return }
+                if frameIndex >= warmupFrames { sizedMs.append((CACurrentMediaTime() - t0) * 1000) }
+                withExtendedLifetime(keepAlive) {}
+            }
+            lines.append("  inference (raw) with input decoded at \(decodedSize.width)×\(decodedSize.height): \(summary(sizedMs))")
+        }
+
         lines.append("  offline refine chain, GPU time (guide + joint bilateral r12 + guided ×2 upsample r6): \(summary(refineGPUMs))")
         lines.append("  same chain without the ×2 upsample: \(summary(refine1xGPUMs))")
         lines.append("  robust range (min/max reduce + 256-bin histogram + CPU percentile), wall: \(summary(statsWallMs))")
@@ -187,14 +215,23 @@ public enum DepthPipelineSpike {
     /// buffers, exactly as the pump receives them, and hand each to `body`.
     /// Returns false if the reader could not be set up.
     private static func forEachFrame(
-        asset: AVURLAsset, track: AVAssetTrack, limit: Int, body: (CVPixelBuffer) -> Void
+        asset: AVURLAsset, track: AVAssetTrack, limit: Int, maxDimension: Int? = nil,
+        naturalSize: CGSize = .zero, body: (CVPixelBuffer) -> Void
     ) -> Bool {
         guard let reader = try? AVAssetReader(asset: asset) else { return false }
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+        var settings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()
-        ])
+        ]
+        if let maxDimension, naturalSize.width > 0, naturalSize.height > 0 {
+            // Same downscale-at-decode the converter uses (aspect-preserving,
+            // never upscaled, even dimensions).
+            let scale = min(1, CGFloat(maxDimension) / max(naturalSize.width, naturalSize.height))
+            settings[kCVPixelBufferWidthKey as String] = Int(naturalSize.width * scale) & ~1
+            settings[kCVPixelBufferHeightKey as String] = Int(naturalSize.height * scale) & ~1
+        }
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { return false }
         reader.add(output)
@@ -478,6 +515,10 @@ public enum DepthPipelineSpike {
         lines.append("  ticks: \(ticks), frames pulled: \(leads.count), ticks with nothing new: \(emptyTicks)")
         lines.append("  lead ahead of now, in source frames: p10 \(format(percentile(sorted, 0.10))), median \(format(percentile(sorted, 0.5))), p90 \(format(percentile(sorted, 0.9))), max \(format(sorted.last ?? 0))")
         lines.append("  frames with lead ≥1: \(share(1)), ≥2: \(share(2)), ≥3: \(share(3)), ≥4: \(share(4))")
+        lines.append("  median lead in seconds: \(format(percentile(sorted, 0.5) / fps)) (probe horizon \(format(lookaheadProbeHorizonSeconds)) s)")
+        if (sorted.last ?? 0) >= lookaheadProbeHorizonSeconds * fps * 0.95 {
+            lines.append("  note: max lead reached the probe horizon — the real queue may be deeper")
+        }
         let p10 = percentile(sorted, 0.10)
         if p10 >= 2 {
             lines.append("  → the output sustains ≥2 frames of decode-ahead: a ±2 centered window can pull ahead and leave audio alone")
