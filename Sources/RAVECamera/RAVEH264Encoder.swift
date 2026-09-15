@@ -29,6 +29,7 @@
 
 import CoreMedia
 import Foundation
+import os
 import VideoToolbox
 
 public final class RAVEH264Encoder: @unchecked Sendable {
@@ -94,6 +95,9 @@ public final class RAVEH264Encoder: @unchecked Sendable {
     public let configuration: Configuration
     private var session: VTCompressionSession?
     private var currentParameterSets: ParameterSets?
+    /// Set by `requestKeyframe()` from any thread, consumed by the next
+    /// `encode` on the capture thread.
+    private let keyframeRequested = OSAllocatedUnfairLock(initialState: false)
 
     public init(configuration: Configuration) {
         self.configuration = configuration
@@ -112,9 +116,16 @@ public final class RAVEH264Encoder: @unchecked Sendable {
                           height: CVPixelBufferGetHeight(pixelBuffer))
         }
         guard let session else { return }
+        let forceKeyframe = keyframeRequested.withLock { requested in
+            defer { requested = false }
+            return requested
+        }
+        let frameProperties: CFDictionary? = forceKeyframe
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue as Any] as CFDictionary
+            : nil
         let status = VTCompressionSessionEncodeFrame(
             session, imageBuffer: pixelBuffer, presentationTimeStamp: presentationTime,
-            duration: .invalid, frameProperties: nil, infoFlagsOut: nil
+            duration: .invalid, frameProperties: frameProperties, infoFlagsOut: nil
         ) { [weak self] status, _, encodedBuffer in
             guard let self, status == noErr, let encodedBuffer else { return }
             self.emit(encodedBuffer)
@@ -122,6 +133,19 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         if status != noErr {
             onError?("VTCompressionSessionEncodeFrame failed (\(status))")
         }
+    }
+
+    /// Makes the next encoded frame a keyframe. Thread-safe; coalesces if
+    /// called more than once before a frame is encoded.
+    ///
+    /// This is what lets a downstream relay recover in one frame instead of
+    /// waiting out the GOP: a relay that had to drop a delta cannot resume
+    /// until a keyframe, and the natural one may be a whole
+    /// `keyframeInterval` away. With this available, callers can afford a
+    /// long interval — fewer large keyframes on the wire — and still rejoin
+    /// promptly, because they ask for one exactly when they need it.
+    public func requestKeyframe() {
+        keyframeRequested.withLock { $0 = true }
     }
 
     /// Flushes and tears the session down. The next `encode` starts a fresh
