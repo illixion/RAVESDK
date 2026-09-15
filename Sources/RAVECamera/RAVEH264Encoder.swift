@@ -35,6 +35,16 @@ import VideoToolbox
 public final class RAVEH264Encoder: @unchecked Sendable {
 
     public struct Configuration: Sendable {
+        /// H.264 unless asked otherwise. HEVC is here for one measured reason:
+        /// its SPS always states `sps_max_num_reorder_pics`, and VideoToolbox
+        /// writes 0 there when reordering is off, so a decoder can output each
+        /// frame as it lands. An H.264 SPS may omit that (VideoToolbox does),
+        /// and WebKit's WebCodecs decoder then holds the level's whole
+        /// decoded-picture-buffer — four frames at 1080p — in case B-frames
+        /// come. Everything else in this class is codec-neutral; only the
+        /// H.264 parameter-set callback (`onParameterSets`) stays H.264-only,
+        /// because its shape is what an RTP publisher needs.
+        public var codec: Codec
         /// Average bit rate in bits per second.
         public var bitrate: Int
         /// Expected input rate. A hint to the rate controller, not a cap.
@@ -43,7 +53,9 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         public var keyframeInterval: TimeInterval
         public var profile: Profile
 
-        public init(bitrate: Int, frameRate: Int = 30, keyframeInterval: TimeInterval = 1, profile: Profile = .main) {
+        public init(bitrate: Int, frameRate: Int = 30, keyframeInterval: TimeInterval = 1, profile: Profile = .main,
+                    codec: Codec = .h264) {
+            self.codec = codec
             self.bitrate = bitrate
             self.frameRate = frameRate
             self.keyframeInterval = keyframeInterval
@@ -51,20 +63,61 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         }
     }
 
+    public enum Codec: Sendable {
+        case h264
+        case hevc
+
+        var videoToolboxCodecType: CMVideoCodecType {
+            switch self {
+            case .h264: kCMVideoCodecType_H264
+            case .hevc: kCMVideoCodecType_HEVC
+            }
+        }
+
+        /// The key of the decoder configuration record in the format
+        /// description's sample-description extension atoms.
+        var configurationAtom: String {
+            switch self {
+            case .h264: "avcC"
+            case .hevc: "hvcC"
+            }
+        }
+    }
+
     /// Level is always left to the encoder (`AutoLevel`): it derives from the
     /// frame size and rate, which this class only learns at the first frame.
+    /// For HEVC `.baseline` and `.main` both mean Main; there is no lesser
+    /// profile, and `.high` means Main 10 is *not* asked for either — the
+    /// consumers here decode 8-bit.
     public enum Profile: Sendable {
         case baseline
         case main
         case high
 
-        var videoToolboxProfileLevel: CFString {
-            switch self {
-            case .baseline: kVTProfileLevel_H264_Baseline_AutoLevel
-            case .main: kVTProfileLevel_H264_Main_AutoLevel
-            case .high: kVTProfileLevel_H264_High_AutoLevel
+        func videoToolboxProfileLevel(for codec: Codec) -> CFString {
+            switch codec {
+            case .h264:
+                switch self {
+                case .baseline: kVTProfileLevel_H264_Baseline_AutoLevel
+                case .main: kVTProfileLevel_H264_Main_AutoLevel
+                case .high: kVTProfileLevel_H264_High_AutoLevel
+                }
+            case .hevc:
+                kVTProfileLevel_HEVC_Main_AutoLevel
             }
         }
+    }
+
+    /// What a WebCodecs `VideoDecoder` (or any ISO-BMFF consumer) needs to be
+    /// told about the stream: the codec string and the decoder configuration
+    /// record — `avcC` or `hvcC` — exactly as VideoToolbox built it, lifted
+    /// from the format description rather than reassembled from parameter
+    /// sets. Fires through `onDecoderConfiguration` when first available and
+    /// again only if it changes.
+    public struct DecoderConfiguration: Equatable, Sendable {
+        /// `avc1.PPCCLL` or `hvc1.P.C.LNNN.CC…` per RFC 6381 / ISO 14496-15.
+        public let codecString: String
+        public let record: Data
     }
 
     /// SPS and PPS, plus the NAL length-prefix size the access units use —
@@ -86,6 +139,10 @@ public final class RAVEH264Encoder: @unchecked Sendable {
     /// Fires when SPS/PPS first become available, and again only if they
     /// change. On the VideoToolbox output thread.
     public var onParameterSets: ((ParameterSets) -> Void)?
+    /// The codec string and `avcC`/`hvcC` record, for either codec. Fires when
+    /// first available and again only if they change. On the VideoToolbox
+    /// output thread.
+    public var onDecoderConfiguration: ((DecoderConfiguration) -> Void)?
     /// One access unit per encoded frame. On the VideoToolbox output thread.
     public var onAccessUnit: ((AccessUnit) -> Void)?
     /// A session that could not be created or a frame that could not be
@@ -95,6 +152,7 @@ public final class RAVEH264Encoder: @unchecked Sendable {
     public let configuration: Configuration
     private var session: VTCompressionSession?
     private var currentParameterSets: ParameterSets?
+    private var currentDecoderConfiguration: DecoderConfiguration?
     /// Set by `requestKeyframe()` from any thread, consumed by the next
     /// `encode` on the capture thread.
     private let keyframeRequested = OSAllocatedUnfairLock(initialState: false)
@@ -157,13 +215,14 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         }
         session = nil
         currentParameterSets = nil
+        currentDecoderConfiguration = nil
     }
 
     private func createSession(width: Int, height: Int) {
         var newSession: VTCompressionSession?
         let status = VTCompressionSessionCreate(
             allocator: nil, width: Int32(width), height: Int32(height),
-            codecType: kCMVideoCodecType_H264, encoderSpecification: nil,
+            codecType: configuration.codec.videoToolboxCodecType, encoderSpecification: nil,
             imageBufferAttributes: nil, compressedDataAllocator: nil,
             outputCallback: nil, refcon: nil, compressionSessionOut: &newSession)
         guard status == noErr, let newSession else {
@@ -172,7 +231,7 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         }
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel,
-                             value: configuration.profile.videoToolboxProfileLevel)
+                             value: configuration.profile.videoToolboxProfileLevel(for: configuration.codec))
         // No B-frames: PTS stays monotonic, so callers can timestamp RTP or
         // EncodedVideoChunk directly without a reorder buffer.
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
@@ -187,7 +246,8 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         VTCompressionSessionPrepareToEncodeFrames(newSession)
         session = newSession
         RAVECameraLog.encoder.info("""
-        H.264 encoder ready: \(width, privacy: .public)x\(height, privacy: .public) \
+        \(self.configuration.codec == .hevc ? "HEVC" : "H.264", privacy: .public) encoder ready: \
+        \(width, privacy: .public)x\(height, privacy: .public) \
         @ \(self.configuration.bitrate / 1_000_000, privacy: .public) Mbps
         """)
     }
@@ -202,7 +262,8 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         }()
 
         if let formatDescription = CMSampleBufferGetFormatDescription(encodedBuffer) {
-            refreshParameterSets(from: formatDescription)
+            if configuration.codec == .h264 { refreshParameterSets(from: formatDescription) }
+            refreshDecoderConfiguration(from: formatDescription)
         }
 
         guard let dataBuffer = CMSampleBufferGetDataBuffer(encodedBuffer) else { return }
@@ -238,6 +299,53 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         if sets != currentParameterSets {
             currentParameterSets = sets
             onParameterSets?(sets)
+        }
+    }
+
+    private func refreshDecoderConfiguration(from formatDescription: CMFormatDescription) {
+        guard let atoms = CMFormatDescriptionGetExtension(
+                formatDescription, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms
+              ) as? [String: Any],
+              let record = atoms[configuration.codec.configurationAtom] as? Data,
+              let codecString = Self.codecString(for: configuration.codec, record: record) else { return }
+        let config = DecoderConfiguration(codecString: codecString, record: record)
+        if config != currentDecoderConfiguration {
+            currentDecoderConfiguration = config
+            onDecoderConfiguration?(config)
+        }
+    }
+
+    /// RFC 6381 codec strings read straight off the configuration record.
+    static func codecString(for codec: Codec, record: Data) -> String? {
+        let b = [UInt8](record)
+        switch codec {
+        case .h264:
+            // avcC: version, profile_idc, constraint flags, level_idc.
+            guard b.count >= 4 else { return nil }
+            return String(format: "avc1.%02X%02X%02X", b[1], b[2], b[3])
+        case .hevc:
+            // hvcC (ISO 14496-15 §8.3.3.1): version; profile_space(2) tier(1)
+            // profile_idc(5); 32 compatibility flags; 48 constraint flags;
+            // level_idc. The string form is `hvc1.[ABC]P.<compat, bit-reversed
+            // hex>.[LH]<level>.<constraint bytes, trailing zeros dropped>`.
+            guard b.count >= 13 else { return nil }
+            let profileSpace = Int(b[1] >> 6)
+            let tier = (b[1] >> 5) & 1
+            let profileIDC = Int(b[1] & 0x1F)
+            let compat = UInt32(b[2]) << 24 | UInt32(b[3]) << 16 | UInt32(b[4]) << 8 | UInt32(b[5])
+            var reversed: UInt32 = 0
+            for bit in 0..<32 where compat & (1 << bit) != 0 { reversed |= 1 << (31 - bit) }
+            let spaceLetter = ["", "A", "B", "C"][profileSpace]
+            var parts = [
+                "hvc1",
+                "\(spaceLetter)\(profileIDC)",
+                String(reversed, radix: 16, uppercase: true),
+                "\(tier == 1 ? "H" : "L")\(Int(b[12]))",
+            ]
+            var constraints = Array(b[6..<12])
+            while constraints.last == 0 { constraints.removeLast() }
+            parts += constraints.map { String(format: "%02X", $0) }
+            return parts.joined(separator: ".")
         }
     }
 }
