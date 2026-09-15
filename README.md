@@ -24,10 +24,14 @@ than forcing the whole package to one platform.
 | `RAVEUI` | shipping | Tab-ornament shell, hover effects, shared window manager, small shared types |
 | `RAVEConsole` | shipping | On-device log viewer, GPU/system monitor, depth-model setup UI |
 | `RAVEMedia` | shipping | Core ML depth, windowed-stereo warp, shared graphic EQ |
-| `RAVECamera` | planned | Persona camera |
+| `RAVECamera` | shipping | Persona camera capture, realtime H.264 encoder, AVCC helpers |
 
 `RAVEConsole` is separate from `RAVEUI` on purpose: two of the consuming apps
 want the log viewer and have no tab bar at all to hang it off.
+
+`RAVECamera` is separate from `RAVEMedia` for a similar reason: two of its
+consumers are ReplayKit broadcast *extensions* that only want the encoder, and
+have no business linking Core ML and Metal shaders to encode a screen.
 
 ## RAVENet
 
@@ -88,6 +92,26 @@ await transport.start()
 Call `probeOrReconnect()` — not `forceReconnectNow()` — on a scene-phase wake.
 visionOS flutters `scenePhase` on gaze shifts, and unconditionally reconnecting
 there churns the server; a healthy socket answers the ping and is left alone.
+
+## RAVECamera
+
+Converged from Longwave's Broadcast tab (`BroadcastCaptureSession`,
+`BroadcastVideoEncoder`) and Raven's screen-share extension
+(`ScreenBroadcastEncoder`, `AVCCBuilder`) when Raven's camera proxy needed the
+same capture session Longwave had:
+
+- **`RAVEPersonaCamera`** — the Persona camera through `AVCaptureSession`, at the
+  device's native format. On visionOS that is a landscape 1920×1080 frame;
+  WebKit's `getUserMedia` reframes the same sensor to portrait or square and
+  never offers it, which is why a browser that wants the real frame has to own
+  the session.
+- **`RAVEH264Encoder`** — VideoToolbox H.264, realtime, no B-frames, 1 s GOP,
+  one AVCC access unit per frame plus the parameter sets whenever they change.
+- **`RAVEAVCC`** — the container both ways: an `avcC` box and `avc1.PPCCLL`
+  codec string for a WebCodecs `VideoDecoder`, and the NAL-unit split an RTP
+  packetizer wants.
+- **`RAVEMicrosecondClock`** — rebases capture timestamps to a stream's first
+  frame in microseconds, the shape `EncodedVideoChunk` takes.
 
 ## Consuming this package
 

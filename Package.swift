@@ -18,6 +18,7 @@ let package = Package(
         .library(name: "RAVEUI", targets: ["RAVEUI"]),
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
+        .library(name: "RAVECamera", targets: ["RAVECamera"]),
     ],
     targets: [
         .target(name: "RAVENet"),
@@ -42,5 +43,15 @@ let package = Package(
         // SwiftPM CLI ignores `.metal` altogether — see RAVEMediaMetal.)
         .target(name: "RAVEMedia"),
         .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"]),
+        // The Persona camera as AVCapture delivers it, plus the realtime H.264
+        // encoder and AVCC helpers every consumer of those frames needs. Its
+        // own product, not a corner of RAVEMedia, because two of its consumers
+        // are broadcast *extensions* (Longwave's and Raven's ReplayKit upload
+        // extensions) that have no business linking Core ML and Metal shaders
+        // to encode a screen. Builds on macOS so `swift test` reaches the
+        // container arithmetic; the interruption notifications are iOS-family
+        // only and guarded.
+        .target(name: "RAVECamera"),
+        .testTarget(name: "RAVECameraTests", dependencies: ["RAVECamera"]),
     ]
 )

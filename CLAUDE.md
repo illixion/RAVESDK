@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 **RAVE SDK** — *Robot-Assisted Vision Enhancements*, the **app-shaped** half of the RAVE
-packages: general UI, app networking, on-device diagnostics viewing, and (planned) camera
+packages: general UI, app networking, on-device diagnostics viewing, the Persona camera,
 and 2D/3D media conversion.
 
 Its sibling is **RAVE Engine** (`../RAVEEngine`), the XR/game-shaped half — input, frame
@@ -74,6 +74,7 @@ is easy to skip.
 | `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager |
 | `RAVEConsole` | On-device log viewer over `OSLogStore`, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
+| `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 
 ### RAVENet — the transport never decides it is ready
 
@@ -312,6 +313,43 @@ every conversion on every device. `Pseudo3DSettings.init(from:)` has the same
 constraint for persisted JSON, including its normalisation of the retired `0.45`
 convergence default.
 
+### RAVECamera — the frame WebKit never gives you
+
+A convergence of Longwave's Broadcast tab (`BroadcastCaptureSession` +
+`BroadcastVideoEncoder`) and Raven's screen-share extension (`ScreenBroadcastEncoder` +
+`AVCCBuilder`). The trigger was a measurement, and it is the reason to keep the capture
+half here rather than treating it as Longwave's: **on visionOS, `AVCaptureSession`
+delivers the Persona as a landscape 1920×1080 frame, and WebKit's `getUserMedia` delivers
+the same sensor reframed** — 720×1280 portrait for a 16:9 ask, 1080×1080 for an
+unconstrained one, never the native frame. Raven's camera proxy therefore captures with
+`RAVEPersonaCamera` itself and feeds the page H.264, which made the capture session and
+the encoder shared code by definition.
+
+Design points worth keeping:
+
+- **Its own product, not a corner of RAVEMedia.** Two consumers are ReplayKit broadcast
+  extensions (Longwave's `LongwaveBroadcast`, Raven's `RavenBroadcast`) that want the
+  encoder and nothing else; linking Core ML and Metal shaders into an extension to encode
+  a screen would be the wrong shape.
+- **`RAVEH264Encoder` emits AVCC access units verbatim and leaves the RTP shaping to the
+  caller.** That is the one thing the two original encoders genuinely disagreed on: a
+  WebCodecs decoder wants the buffer exactly as VideoToolbox produced it, RTP wants it
+  split into NAL units with SPS/PPS prepended to each IDR. Longwave's
+  `BroadcastVideoEncoder` is now a thin wrapper doing the latter with `RAVEAVCC.nalUnits`.
+  The tuning — realtime, no B-frames, 1 s GOP, lazy session from the first frame — was
+  identical in both and paid for on device.
+- **`RAVEAVCC` is `AVCCConfig`'s inverse**, and Raven's `AVCCRoundTripTests` pins them
+  together because the parser stayed in Raven (it belongs to the page→app decode side).
+  The builder's own layout tests are here in `RAVECameraTests`.
+- **Builds on macOS so `swift test` reaches the container arithmetic.** AVFoundation and
+  VideoToolbox exist there; only `AVCaptureSession`'s interruption notifications are
+  iOS-family and are guarded `#if os(iOS) || os(visionOS)`.
+- **The camera is device-exclusive across processes.** WebKit's capture runs in another
+  process, so a page holding the camera and this session cannot both have it — whichever
+  starts second is interrupted with `videoDeviceInUseByAnotherClient`. Raven's page script
+  stops the WebKit track *before* asking for this session; the type documents the rule,
+  the caller has to honour it.
+
 ## How consumers use this
 
 Six visionOS apps under `~/Projects/`. During development each references this package as
@@ -323,10 +361,10 @@ no tag-and-push cycle. Once a target stabilises, tag it and switch that app to
 |---|---|
 | `VisionProHomeAssistant` (SpatialHome) | `RAVENet`, `RAVEUI`, `RAVEConsole` |
 | `spatialstash` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, + Engine's `RAVEDiagnostics` |
-| `Longwave` | `RAVEUI`, `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
+| `Longwave` | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Spatialcraft` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Lambda_VisionPro` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
-| `Raven` | `RAVEUI`, `RAVEConsole`, `RAVENet`, `RAVEMedia` |
+| `Raven` | `RAVEUI`, `RAVEConsole`, `RAVENet`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
 
 **A green `swift test` here proves very little.** Local package references mean the
 consuming app builds are the real integration test — a signature change compiles fine here
