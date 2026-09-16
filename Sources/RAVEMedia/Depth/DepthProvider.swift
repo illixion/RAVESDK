@@ -318,7 +318,7 @@ public final class CoreMLDepthProvider: DepthProvider, @unchecked Sendable {
     /// `.mlpackage` is compiled and cached under Application Support (recompiled
     /// only when the source is newer), so dropping an `.mlpackage` into Documents
     /// to swap models works without a rebuild.
-    private static func compiledModelURL(for url: URL) -> URL? {
+    static func compiledModelURL(for url: URL) -> URL? {
         if url.pathExtension == "mlmodelc" { return url }
 
         let fm = FileManager.default

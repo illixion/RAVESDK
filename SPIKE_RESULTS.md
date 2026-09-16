@@ -22,6 +22,22 @@ Small F16 (518×392 input), the only one installed at the time.
 | `AVPlayerItemVideoOutput` lead ahead of the current item time | **p10 28.5 frames, median 42.5, max 58** (= the 1 s probe cap) |
 | Frames with ≥2 frames of lead | 100% |
 
+### Reference: Apple's published latency for the same model
+
+From the `apple/coreml-depth-anything-v2-small` model card (Small F16, Neural
+Engine, Core ML performance report):
+
+| Device | OS | Latency |
+|---|---|---|
+| iPhone 12 Pro Max | 18.0 | 31.1 ms |
+| iPhone 15 Pro Max | 17.4 | 33.9 ms |
+| MacBook Pro (M1 Max) | 15.0 | 32.8 ms |
+| MacBook Pro (M3 Max) | 15.0 | 24.6 ms |
+
+The 32.9 ms raw figure on the Vision Pro (M2) is that number. Vision's input
+rescale is therefore not where the time goes; 33 ms is what the Neural Engine
+needs for a 518×392 ViT-S forward pass on this generation of silicon.
+
 ### What they mean
 
 **The realtime path is inference-bound at roughly 25 Hz, not 30.** Every
@@ -30,9 +46,14 @@ on 60 fps content the video renders at ~24 fps with a fresh map each frame.
 The "infer at 30 Hz, hold for the in-between frame" design in
 `RealtimeDepthSource` only engages when inference finishes inside 1/35 s; at
 39 ms it never does, and every tick re-infers. The Small model does not fit a
-30 Hz budget on this device once Vision's preprocessing is counted. Whether
-the 33 ms raw figure is the ANE or Vision rescaling a 1080p frame is the
-follow-up measurement (the spike now decodes at 1036 and 518 px and re-times).
+30 Hz budget on this device with a synchronous tick. Apple's
+own numbers (above) say the 33 ms is the ANE itself, so the remaining headroom
+is in *overlap*, not in the model call: the tick serializes inference, the
+stabilize wait, the warp wait and the pixel transfer. The spike's second round
+measures pure `MLModel.prediction` per compute-unit setting, where each op is
+planned to run (`MLComputePlan`), and the effective per-frame time with two
+and three requests in flight; the pump now logs its own per-stage times every
+5 s on real content.
 
 **Edge-aware refinement and robust normalization are essentially free.** The
 whole offline refine chain is ~3 ms of GPU time per frame, and the percentile

@@ -215,6 +215,20 @@ public final class StereoPump: @unchecked Sendable {
     private let frameInterval: Double
     /// Seconds to ramp depth strength back after a flat gap (avoids a 3D "pop").
     private let depthRampDuration: Double = 0.15
+    /// Rolling per-stage wall time for the tick, logged once per window so the
+    /// serialized cost (depth → warp → transfer, each waited on in turn) is
+    /// readable in the in-app console on real content. Pump-queue only.
+    private var stageTiming = StageTiming()
+    private let stageTimingLogInterval: Double = 5
+
+    private struct StageTiming {
+        var depth = 0.0
+        var warp = 0.0
+        var transfer = 0.0
+        var tick = 0.0
+        var frames = 0
+        var windowStart = CACurrentMediaTime()
+    }
     /// Bounds in-flight eye buffers so a stalled compositor can never make the
     /// pool allocate IOSurfaces without limit.
     private let maxInFlightBuffers = 8
@@ -344,6 +358,7 @@ public final class StereoPump: @unchecked Sendable {
     /// `CVMutablePixelBuffer` is noncopyable, so the two eye buffers stay local:
     /// borrowed by `transfer`, then consumed by `CVReadOnlyPixelBuffer`.
     private func renderAndEnqueue(from src: CVPixelBuffer, itemTime: CMTime, cache: CVMetalTextureCache, pts: CMTime) {
+        let tickStart = CACurrentMediaTime()
         let width = CVPixelBufferGetWidth(src)
         let height = CVPixelBufferGetHeight(src)
         guard width > 0, height > 0,
@@ -369,6 +384,7 @@ public final class StereoPump: @unchecked Sendable {
         let depthState = signposter.beginInterval("pump-depth")
         let frameDepth = depthSource?.frameDepth(itemTime: itemTime, frame: src)
         signposter.endInterval("pump-depth", depthState)
+        let depthDone = CACurrentMediaTime()
 
         var cfg = currentConfig()
         if depthSource?.flattensWhenUnavailable == true {
@@ -392,6 +408,7 @@ public final class StereoPump: @unchecked Sendable {
         // must complete before VTPixelTransferSession reads the BGRA surfaces.
         cmdBuf.waitUntilCompleted()
         signposter.endInterval("pump-warp", warpState)
+        let warpDone = CACurrentMediaTime()
 
         // 2. Convert each BGRA eye → 420v from the recommended-attributes pool,
         // carrying the source's color tags so the compositor reads gamma/range
@@ -423,6 +440,28 @@ public final class StereoPump: @unchecked Sendable {
             duration: CMTime(value: 1, timescale: 90)
         )
         sample.withUnsafeSampleBuffer { videoRenderer.enqueue($0) }
+
+        let tickEnd = CACurrentMediaTime()
+        stageTiming.depth += depthDone - tickStart
+        stageTiming.warp += warpDone - depthDone
+        stageTiming.transfer += tickEnd - warpDone
+        stageTiming.tick += tickEnd - tickStart
+        stageTiming.frames += 1
+        let window = tickEnd - stageTiming.windowStart
+        if window >= stageTimingLogInterval {
+            // os_log interpolations are closures; pull the values into locals
+            // so they don't capture self.
+            let n = Double(stageTiming.frames)
+            let fps = n / window
+            let depthMs = stageTiming.depth / n * 1000
+            let warpMs = stageTiming.warp / n * 1000
+            let transferMs = stageTiming.transfer / n * 1000
+            let tickMs = stageTiming.tick / n * 1000
+            RAVEMediaLog.pipeline.info(
+                "pump \(width)×\(height): \(fps, format: .fixed(precision: 1), privacy: .public) fps over \(window, format: .fixed(precision: 1), privacy: .public) s — depth \(depthMs, format: .fixed(precision: 1), privacy: .public) ms, warp \(warpMs, format: .fixed(precision: 1), privacy: .public) ms, transfer+enqueue \(transferMs, format: .fixed(precision: 1), privacy: .public) ms, tick \(tickMs, format: .fixed(precision: 1), privacy: .public) ms"
+            )
+            stageTiming = StageTiming()
+        }
     }
 
     private func transfer(from source: CVPixelBuffer, to dest: borrowing CVMutablePixelBuffer) -> Bool {

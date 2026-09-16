@@ -26,7 +26,9 @@
  */
 
 import AVFoundation
+import CoreImage
 import CoreMedia
+import CoreML
 import CoreVideo
 import Foundation
 import Metal
@@ -93,6 +95,7 @@ public enum DepthPipelineSpike {
             var lines: [String] = []
             for modelURL in models {
                 lines += measureModel(modelURL: modelURL, asset: asset, track: track, naturalSize: naturalSize, metal: metal, fps: fps)
+                lines += await measureCoreML(modelURL: modelURL, asset: asset, track: track, naturalSize: naturalSize, metal: metal)
             }
             return lines
         }.value
@@ -445,6 +448,200 @@ public enum DepthPipelineSpike {
             let groups = MTLSize(width: (width + 15) / 16, height: (height + 15) / 16, depth: 1)
             encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
         }
+    }
+
+    // MARK: - 4: Core ML without Vision — compute units, op placement, concurrency
+
+    /// Apple's published latency for Small F16 is ~33 ms on the Neural Engine
+    /// on every device they list, which the Vision-path number matched. So the
+    /// headroom question is no longer "is Vision slow" but: does anything fall
+    /// off the ANE, and does the ANE pipeline two requests? These call
+    /// `MLModel.prediction` directly on pre-scaled inputs so nothing but Core
+    /// ML is in the measurement.
+    private static func measureCoreML(
+        modelURL: URL, asset: AVURLAsset, track: AVAssetTrack, naturalSize: CGSize, metal: RAVEMediaMetal
+    ) async -> [String] {
+        var lines: [String] = ["  — Core ML direct (no Vision) —"]
+        guard let compiled = CoreMLDepthProvider.compiledModelURL(for: modelURL) else {
+            lines.append("  no compiled model")
+            return lines
+        }
+        let allConfig = MLModelConfiguration()
+        allConfig.computeUnits = .all
+        guard let probeModel = try? MLModel(contentsOf: compiled, configuration: allConfig),
+              let (inputName, description) = probeModel.modelDescription.inputDescriptionsByName.first(where: { $0.value.type == .image }),
+              let constraint = description.imageConstraint else {
+            lines.append("  model has no image input — skipping")
+            return lines
+        }
+        let inputWidth = constraint.pixelsWide
+        let inputHeight = constraint.pixelsHigh
+        lines.append("  input: \(inputName) \(inputWidth)×\(inputHeight) \(fourCharCode(constraint.pixelFormatType))")
+
+        // Pre-scale frames to the exact input size once (stretched, not
+        // letterboxed — irrelevant for timing) so the timed call is only
+        // prediction.
+        let inputs = prepareInputs(
+            asset: asset, track: track, naturalSize: naturalSize, metal: metal,
+            width: inputWidth, height: inputHeight, format: constraint.pixelFormatType,
+            count: warmupFrames + coreMLSampleFrames
+        )
+        guard inputs.count > warmupFrames else {
+            lines.append("  could not prepare inputs")
+            return lines
+        }
+
+        // Compute-unit variants. `.cpuAndGPU` is expected to be far slower
+        // (it exists to show the cost of anything falling off the ANE).
+        let variants: [(String, MLComputeUnits, Int)] = [
+            ("all", .all, coreMLSampleFrames),
+            ("cpuAndNeuralEngine", .cpuAndNeuralEngine, coreMLSampleFrames),
+            ("cpuAndGPU", .cpuAndGPU, 10)
+        ]
+        var allModel: MLModel?
+        for (label, units, samples) in variants {
+            let config = MLModelConfiguration()
+            config.computeUnits = units
+            let loadStart = CACurrentMediaTime()
+            guard let model = try? MLModel(contentsOf: compiled, configuration: config) else {
+                lines.append("  \(label): failed to load")
+                continue
+            }
+            let loadMs = (CACurrentMediaTime() - loadStart) * 1000
+            let times = timePredictions(model: model, inputName: inputName, inputs: inputs, samples: samples)
+            lines.append("  prediction, computeUnits=\(label): \(summary(times)) — load \(format(loadMs)) ms")
+            if units == .all { allModel = model }
+        }
+
+        // Concurrency: does the ANE overlap two in-flight requests? Effective
+        // per-frame time under N workers vs the single-worker latency above.
+        if let allModel {
+            for workers in [2, 3] {
+                let effective = timeConcurrent(model: allModel, inputName: inputName, inputs: inputs, workers: workers)
+                lines.append("  \(workers) concurrent workers: effective \(format(effective)) ms/frame")
+            }
+        }
+
+        if #available(iOS 17.4, macOS 14.4, visionOS 1.1, *) {
+            lines += await computePlanSummary(compiled: compiled, config: allConfig)
+        }
+        return lines
+    }
+
+    private static let coreMLSampleFrames = 40
+
+    /// Decode frames (at ≤1036 px, like the converter) and scale each into a
+    /// fresh pixel buffer of the model's input size and format.
+    private static func prepareInputs(
+        asset: AVURLAsset, track: AVAssetTrack, naturalSize: CGSize, metal: RAVEMediaMetal,
+        width: Int, height: Int, format: OSType, count: Int
+    ) -> [CVPixelBuffer] {
+        let context = CIContext(mtlDevice: metal.device, options: [.cacheIntermediates: false])
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        var inputs: [CVPixelBuffer] = []
+        _ = forEachFrame(asset: asset, track: track, limit: count, maxDimension: 1036, naturalSize: naturalSize) { frame in
+            var out: CVPixelBuffer?
+            let attrs: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()]
+            guard CVPixelBufferCreate(nil, width, height, format, attrs as CFDictionary, &out) == kCVReturnSuccess, let out else { return }
+            let source = CIImage(cvPixelBuffer: frame)
+            let scaled = source.transformed(by: CGAffineTransform(
+                scaleX: CGFloat(width) / source.extent.width, y: CGFloat(height) / source.extent.height
+            ))
+            context.render(scaled, to: out, bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: colorSpace)
+            inputs.append(out)
+        }
+        return inputs
+    }
+
+    private static func timePredictions(model: MLModel, inputName: String, inputs: [CVPixelBuffer], samples: Int) -> [Double] {
+        var times: [Double] = []
+        for (i, buffer) in inputs.enumerated() where i < warmupFrames + samples {
+            guard let provider = try? MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(pixelBuffer: buffer)]) else { continue }
+            let t0 = CACurrentMediaTime()
+            guard (try? model.prediction(from: provider)) != nil else { continue }
+            if i >= warmupFrames { times.append((CACurrentMediaTime() - t0) * 1000) }
+        }
+        return times
+    }
+
+    /// `MLModel` and `CVPixelBuffer` aren't Sendable; the workers only read.
+    private final class ConcurrencyBox: @unchecked Sendable {
+        let model: MLModel
+        let inputName: String
+        let inputs: [CVPixelBuffer]
+        init(model: MLModel, inputName: String, inputs: [CVPixelBuffer]) {
+            self.model = model
+            self.inputName = inputName
+            self.inputs = inputs
+        }
+    }
+
+    /// Wall time for `workers` threads each predicting every sample, divided
+    /// by the total predictions — the throughput the ANE actually delivers
+    /// when requests overlap.
+    private static func timeConcurrent(model: MLModel, inputName: String, inputs: [CVPixelBuffer], workers: Int) -> Double {
+        let box = ConcurrencyBox(model: model, inputName: inputName, inputs: Array(inputs.dropFirst(warmupFrames)))
+        let perWorker = box.inputs.count
+        let t0 = CACurrentMediaTime()
+        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+            for i in 0..<perWorker {
+                let buffer = box.inputs[(i + worker) % perWorker]
+                guard let provider = try? MLDictionaryFeatureProvider(dictionary: [box.inputName: MLFeatureValue(pixelBuffer: buffer)]) else { continue }
+                _ = try? box.model.prediction(from: provider)
+            }
+        }
+        return (CACurrentMediaTime() - t0) * 1000 / Double(workers * perWorker)
+    }
+
+    /// Where Core ML plans to run each op, weighted by its own cost estimate.
+    /// Anything not on the Neural Engine is a handoff and a candidate for the
+    /// converter script's precision ladder or an op substitution.
+    @available(iOS 17.4, macOS 14.4, visionOS 1.1, *)
+    private static func computePlanSummary(compiled: URL, config: MLModelConfiguration) async -> [String] {
+        guard let plan = try? await MLComputePlan.load(contentsOf: compiled, configuration: config) else {
+            return ["  compute plan: unavailable"]
+        }
+        guard case .program(let program) = plan.modelStructure else {
+            return ["  compute plan: model is not an ML program (NeuralNetwork format — placement not reported)"]
+        }
+        var weightByDevice: [String: Double] = [:]
+        var countByDevice: [String: Int] = [:]
+        var offANE: [(String, Double)] = []
+        var totalWeight = 0.0
+        for (_, function) in program.functions {
+            for op in function.block.operations {
+                let weight = plan.estimatedCost(of: op)?.weight ?? 0
+                totalWeight += weight
+                let device: String
+                switch plan.deviceUsage(for: op)?.preferred {
+                case .neuralEngine: device = "ANE"
+                case .gpu: device = "GPU"
+                case .cpu: device = "CPU"
+                case .none: device = "unplanned"
+                @unknown default: device = "other"
+                }
+                weightByDevice[device, default: 0] += weight
+                countByDevice[device, default: 0] += 1
+                if device != "ANE", weight > 0 { offANE.append((op.operatorName, weight)) }
+            }
+        }
+        var lines = ["  compute plan (ops by preferred device, weight = Core ML's cost estimate):"]
+        for device in countByDevice.keys.sorted() {
+            let share = totalWeight > 0 ? (weightByDevice[device] ?? 0) / totalWeight * 100 : 0
+            lines.append("    \(device): \(countByDevice[device] ?? 0) ops, \(format(share))% of estimated cost")
+        }
+        let top = offANE.sorted { $0.1 > $1.1 }.prefix(6)
+        if !top.isEmpty {
+            let names = top.map { "\($0.0) (\(format(totalWeight > 0 ? $0.1 / totalWeight * 100 : 0))%)" }
+            lines.append("    heaviest ops off the ANE: \(names.joined(separator: ", "))")
+        }
+        return lines
+    }
+
+    private static func fourCharCode(_ value: OSType) -> String {
+        let bytes = [24, 16, 8, 0].map { UInt8((value >> $0) & 0xFF) }
+        guard bytes.allSatisfy({ $0 >= 0x20 && $0 < 0x7F }) else { return String(value) }
+        return String(bytes.map { Character(UnicodeScalar($0)) })
     }
 
     // MARK: - 3: AVPlayerItemVideoOutput decode-ahead
