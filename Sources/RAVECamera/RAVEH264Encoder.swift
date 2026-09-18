@@ -118,6 +118,11 @@ public final class RAVEH264Encoder: @unchecked Sendable {
         /// `avc1.PPCCLL` or `hvc1.P.C.LNNN.CC…` per RFC 6381 / ISO 14496-15.
         public let codecString: String
         public let record: Data
+
+        public init(codecString: String, record: Data) {
+            self.codecString = codecString
+            self.record = record
+        }
     }
 
     /// SPS and PPS, plus the NAL length-prefix size the access units use —
