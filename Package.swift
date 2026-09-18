@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
+        .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
     ],
     targets: [
         .target(name: "RAVENet"),
@@ -53,5 +54,10 @@ let package = Package(
         // only and guarded.
         .target(name: "RAVECamera"),
         .testTarget(name: "RAVECameraTests", dependencies: ["RAVECamera"]),
+        // Source-agnostic slideshow lifecycle, local sync payloads, display
+        // settings, and render hooks. Apps provide their own data adapters and
+        // chrome; depth/stereo stays in RAVEMedia and transport in RAVENet.
+        .target(name: "RAVESlideshow", dependencies: ["RAVEMedia"]),
+        .testTarget(name: "RAVESlideshowTests", dependencies: ["RAVESlideshow"]),
     ]
 )

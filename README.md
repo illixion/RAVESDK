@@ -11,10 +11,11 @@ on its own schedule. An app that is both simply links both.
 
 ## Platforms
 
-visionOS 26 is the product focus. macOS 14 is also declared because nothing in
-`RAVENet` is visionOS-specific and `swift test` needs a host platform to build
-for; visionOS-only targets added later guard with `#if os(visionOS)` rather
-than forcing the whole package to one platform.
+visionOS 26 is the product focus. iOS 26 is declared because several consumers
+share the same targets across flat and spatial platforms, and macOS 14 is
+declared because `swift test` needs a host platform to build for. visionOS-only
+surfaces guard with `#if os(visionOS)` rather than forcing the whole package to
+one platform.
 
 ## Targets
 
@@ -25,6 +26,7 @@ than forcing the whole package to one platform.
 | `RAVEConsole` | shipping | On-device log viewer, GPU/system monitor, depth-model setup UI |
 | `RAVEMedia` | shipping | Core ML depth, windowed-stereo warp, shared graphic EQ |
 | `RAVECamera` | shipping | Persona camera capture, realtime H.264 encoder, AVCC helpers |
+| `RAVESlideshow` | in extraction | Source-agnostic slideshow lifecycle, settings, local sync, render hooks |
 
 `RAVEConsole` is separate from `RAVEUI` on purpose: two of the consuming apps
 want the log viewer and have no tab bar at all to hang it off.
@@ -32,6 +34,37 @@ want the log viewer and have no tab bar at all to hang it off.
 `RAVECamera` is separate from `RAVEMedia` for a similar reason: two of its
 consumers are ReplayKit broadcast *extensions* that only want the encoder, and
 have no business linking Core ML and Metal shaders to encode a screen.
+
+## RAVESlideshow
+
+`RAVESlideshow` is the shared slideshow core extracted ahead of the Hypnos and
+RoboFrame client split. It is deliberately source-agnostic: apps adapt their
+own media records into `RAVESlideshowItem` and implement
+`RAVESlideshowContentProvider` for pagination, media loading, display URLs, and
+display side effects. The package does not contain RoboFrame protocol frames,
+Stash filters, profile persistence, app windows, ornaments, or WebSocket
+transport.
+
+The public surface is split into three layers:
+
+- **Contracts:** `RAVESlideshowItem`, `RAVESlideshowLoadedMedia`,
+  `RAVESlideshowFetchRequest`, and `RAVESlideshowContentProvider`.
+- **Engine/state:** `RAVESlideshowEngine` owns the lifecycle
+  (`idle → loading → displaying ⇄ paused/backgrounded → stopped`), bounded
+  prefetch, source reset cancellation, manual previous/next/jump navigation,
+  server-driven hold mode, display settings, visual settings, and memory/
+  background trimming.
+- **Presentation seams:** `RAVESlideshowSurface` provides generic SwiftUI slot
+  and crossfade scaffolding around app-supplied still/animated/video renderers;
+  `RAVESlideshowLocalSyncPayload` and `RAVESlideshowLocalSyncCoordinator` mirror
+  already-loaded state between local windows without any network transport.
+
+Depth and stereo mechanics remain in `RAVEMedia`. The target depends on
+`RAVEMedia` so visionOS clients can bridge slideshow color adjustments into the
+pseudo-3D renderer through `raveMediaColorAdjustments`, but the engine itself
+uses neutral value types and compiles on the host for deterministic tests. Apps
+own scene declarations, chrome, protocol readiness, remote controls, persistence
+keys, and platform-specific fallbacks.
 
 ## RAVENet
 
