@@ -76,21 +76,29 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
                 placeholder()
             }
 
-            if let incoming = engine.incoming {
-                render(incoming, role: .incoming)
-                    .opacity(engine.visualSettings.opacity)
-                    .transition(.opacity)
+            // Scoped to a Group of its own so the crossfade's `.animation`
+            // below can never reach the current layer's scaleEffect/offset —
+            // it used to sit on the whole ZStack, and applying it to the Ken
+            // Burns transform too meant the transform's near-maximum zoom for
+            // the outgoing image got revealed on the *new* current content at
+            // the moment of commit, as the incoming layer faded away above it.
+            Group {
+                if let incoming = engine.incoming {
+                    render(incoming, role: .incoming)
+                        .opacity(engine.visualSettings.opacity)
+                        .transition(.opacity)
+                }
             }
+            .animation(
+                .easeInOut(duration: engine.displaySettings.reduceMotion ? 0 : engine.displaySettings.transitionDuration),
+                value: engine.incoming?.item.id
+            )
         }
         .background(
             GeometryReader { geo in
                 Color.clear.onAppear { windowSize = geo.size }
                     .onChange(of: geo.size) { _, newSize in windowSize = newSize }
             }
-        )
-        .animation(
-            .easeInOut(duration: engine.displaySettings.reduceMotion ? 0 : engine.displaySettings.transitionDuration),
-            value: engine.incoming?.item.id
         )
         .onChange(of: engine.current?.item.id) { _, _ in
             startKenBurnsAnimation()
