@@ -39,6 +39,10 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
     private let video: (RAVESlideshowRenderContext) -> Video
     private let placeholder: () -> Placeholder
 
+    @State private var windowSize: CGSize = .zero
+    @State private var kenBurnsScale: CGFloat = 1.0
+    @State private var kenBurnsOffset: CGSize = .zero
+
     public init(
         engine: RAVESlideshowEngine,
         @ViewBuilder still: @escaping (RAVESlideshowRenderContext) -> Still,
@@ -56,8 +60,18 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
     public var body: some View {
         ZStack {
             if let current = engine.current {
+                // Bottom layer stays at a constant opacity regardless of an
+                // incoming crossfade — only the incoming layer above animates.
+                // Coupling this layer's opacity to `incoming == nil` used to
+                // make the engine's atomic current/incoming commit (see
+                // `RAVESlideshowEngine.display()`) double as an animation
+                // trigger: the content swap and a redundant fade-in landed in
+                // the same transaction, producing a visible flash/glitch
+                // right as the crossfade finished.
                 render(current, role: .current)
-                    .opacity(engine.incoming == nil ? engine.visualSettings.opacity : 0)
+                    .opacity(engine.visualSettings.opacity)
+                    .scaleEffect(kenBurnsScale)
+                    .offset(kenBurnsOffset)
             } else {
                 placeholder()
             }
@@ -65,12 +79,47 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
             if let incoming = engine.incoming {
                 render(incoming, role: .incoming)
                     .opacity(engine.visualSettings.opacity)
+                    .transition(.opacity)
             }
         }
+        .background(
+            GeometryReader { geo in
+                Color.clear.onAppear { windowSize = geo.size }
+                    .onChange(of: geo.size) { _, newSize in windowSize = newSize }
+            }
+        )
         .animation(
             .easeInOut(duration: engine.displaySettings.reduceMotion ? 0 : engine.displaySettings.transitionDuration),
             value: engine.incoming?.item.id
         )
+        .onChange(of: engine.current?.item.id) { _, _ in
+            startKenBurnsAnimation()
+        }
+    }
+
+    private func startKenBurnsAnimation() {
+        resetKenBurns()
+        guard engine.displaySettings.enableKenBurns, !engine.displaySettings.reduceMotion,
+              case .still? = engine.current?.media else { return }
+
+        let focus = engine.current?.focusPoint ?? CGPoint(x: 0.5, y: 0.5)
+        let targetScale: CGFloat = 1.3
+        let offsetX = (focus.x - 0.5) * windowSize.width * 0.15
+        let offsetY = (focus.y - 0.5) * windowSize.height * 0.15
+
+        withAnimation(.easeInOut(duration: engine.displaySettings.delay)) {
+            kenBurnsScale = targetScale
+            kenBurnsOffset = CGSize(width: -offsetX, height: -offsetY)
+        }
+    }
+
+    private func resetKenBurns() {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            kenBurnsScale = 1.0
+            kenBurnsOffset = .zero
+        }
     }
 
     @ViewBuilder
