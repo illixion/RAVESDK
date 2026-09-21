@@ -146,6 +146,7 @@ public enum RAVESystemMonitor {
 /// Stash's original (built to compare texture-compression modes) did.
 public struct RAVESystemMonitorView: View {
     private let device: (any MTLDevice)?
+    private let onPopOut: (() -> Void)?
 
     @State private var reading = RAVESystemReading()
     @State private var peakGPU: Int = 0
@@ -158,8 +159,13 @@ public struct RAVESystemMonitorView: View {
     ///     that already owns a device (a renderer, an engine) should hand it
     ///     over, since a second device handle is not guaranteed to report the
     ///     same process-wide allocation on every OS version.
-    public init(device: (any MTLDevice)? = nil) {
+    ///   - onPopOut: shown as a button when non-nil — the same affordance
+    ///     `RAVEConsoleView` carries, and for the same reason: a monitor is
+    ///     most useful *beside* the thing it measures, not in the tab you had
+    ///     to leave to look at it.
+    public init(device: (any MTLDevice)? = nil, onPopOut: (() -> Void)? = nil) {
         self.device = device
+        self.onPopOut = onPopOut
     }
 
     private var currentGPU: Int { reading.gpuAllocated ?? 0 }
@@ -199,8 +205,17 @@ public struct RAVESystemMonitorView: View {
                 )
             }
 
-            Button("Reset Peak") { peakGPU = currentGPU }
-                .buttonStyle(.bordered)
+            HStack(spacing: 12) {
+                Button("Reset Peak") { peakGPU = currentGPU }
+                    .buttonStyle(.bordered)
+                if let onPopOut {
+                    Button(action: onPopOut) {
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Open in separate window")
+                }
+            }
         }
         .onAppear { start() }
         .onDisappear { stop() }
@@ -267,21 +282,31 @@ public struct RAVESystemMonitorView: View {
 /// bare. Mirrors `RAVEConsoleScreen`.
 public struct RAVESystemMonitorScreen: View {
     private let device: (any MTLDevice)?
+    private let onPopOut: (() -> Void)?
     private let onClose: (() -> Void)?
 
+    /// Parameter order mirrors `RAVEConsoleScreen` so the two diagnostics
+    /// screens are called the same way — a tab passes `onPopOut`, a pop-out
+    /// window passes neither, and a section switcher passes `onClose`.
+    ///
     /// - Parameter onClose: shown as a toolbar button when non-nil — see
     ///   `RAVEConsoleScreen`'s parameter of the same name. A screen reached
     ///   through a section switcher rather than a tab bar has no way back
     ///   without one, since the switcher lives in the *other* section's
     ///   chrome, not this one's.
-    public init(device: (any MTLDevice)? = nil, onClose: (() -> Void)? = nil) {
+    public init(
+        device: (any MTLDevice)? = nil,
+        onPopOut: (() -> Void)? = nil,
+        onClose: (() -> Void)? = nil
+    ) {
         self.device = device
+        self.onPopOut = onPopOut
         self.onClose = onClose
     }
 
     public var body: some View {
         NavigationStack {
-            RAVESystemMonitorView(device: device)
+            RAVESystemMonitorView(device: device, onPopOut: onPopOut)
                 .padding()
                 .navigationTitle("System")
                 .toolbar {

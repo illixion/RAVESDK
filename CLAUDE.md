@@ -225,6 +225,13 @@ is the first consumer without its own Metal renderer to hand over — it passes 
 `MTLCreateSystemDefaultDevice()` rather than nil, since on a single-GPU platform that still
 reads the same process-wide allocation everything else is charged against.
 
+`RAVESystemMonitorScreen` takes `onPopOut` as well as `onClose`, in that order, so it is
+called exactly like `RAVEConsoleScreen`: a tab passes `onPopOut`, the pop-out window
+passes neither, a section switcher passes `onClose`. Spatial Home added it — it had bound
+a pop-out action to `onClose` and got a button labelled "Close" that opened a window. A
+monitor is most useful *beside* the thing it measures, so the pop-out belongs here as much
+as it does on the console.
+
 ### RAVEMedia — the pump pulls frames through a seam, not from AVPlayer
 
 This is Spatial Stash's fake-3D pipeline, moved wholesale: monocular depth (Depth
