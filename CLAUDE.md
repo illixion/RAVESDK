@@ -17,6 +17,11 @@ get there on its own schedule without dragging visionOS-only SDK targets along. 
 that needs both simply links both. If you find yourself wanting to `import RAVEEngine`
 here (or the reverse), the thing you want belongs in the app, or needs duplicating.
 
+**The RAVE family is fixed at exactly these two packages.** Code shared across apps
+becomes a **target inside SDK or Engine**, never a new third sibling package alongside
+them — see `~/Projects/RAVEEngine/CLAUDE.md` → "About the planned `RAVEPCVR` target" for
+the reasoning and the mistake it's guarding against.
+
 ## Build and test
 
 ```bash
