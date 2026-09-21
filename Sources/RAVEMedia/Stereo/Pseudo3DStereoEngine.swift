@@ -107,6 +107,8 @@ public final class Pseudo3DStereoEngine {
     private var playerItem: AVPlayerItem?
     private var videoOutput: AVPlayerItemVideoOutput?
     private var loadedURL: URL?
+    /// Headers for the loaded source — see `load(url:roomActive:…)`.
+    private var httpHeaderFields: [String: String] = [:]
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var failureObserver: NSObjectProtocol?
@@ -410,8 +412,15 @@ public final class Pseudo3DStereoEngine {
         setMuted(wasMuted)
     }
 
-    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false) {
+    /// - Parameter httpHeaderFields: sent with every request for `url`. Needed
+    ///   for a source whose server authenticates by header rather than by
+    ///   something carried in the URL; without them such a source 401s and the
+    ///   engine reports a playback failure indistinguishable from an
+    ///   undecodable file. Retained across `reloadDepthPipeline`, which reloads
+    ///   the same URL and would otherwise drop them.
+    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false, httpHeaderFields: [String: String]? = nil) {
         if let requestedMode { depthMode = requestedMode }
+        if let httpHeaderFields { self.httpHeaderFields = httpHeaderFields }
         guard loadedURL != url else { return }
 
         // Cached mode plays back baked depth and needs no model; resolve its
@@ -469,7 +478,15 @@ public final class Pseudo3DStereoEngine {
             return
         }
 
-        let asset = AVURLAsset(url: url)
+        // The Swift overlay no longer exposes `AVURLAssetHTTPHeaderFieldsKey`
+        // as a symbol — absent from every SDK's AVFoundation swiftinterface,
+        // present only in the linker's export list — so the literal is the
+        // documented value and the only way to reach the still-functional key.
+        // `self.` is load-bearing: the parameter of the same name shadows the
+        // stored one here, and it is the stored one that survives a reload.
+        let asset = self.httpHeaderFields.isEmpty
+            ? AVURLAsset(url: url)
+            : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": self.httpHeaderFields])
         let item = AVPlayerItem(asset: asset)
         item.applySpatialAudioPolicy()
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
