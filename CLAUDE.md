@@ -52,7 +52,7 @@ shared views cannot be driven from here at all. The split is:
 - **Spatial Stash's `SpatialStashUITests`** drives `RAVETabBar` and
   `RAVEWindowManagerView` for real, matching on `RAVEA11y` identifiers, because it links
   RAVEUI and has an app to attach to. A failure there is a bug report against this
-  package. See `~/Projects/spatialstash/CLAUDE.md` → UI Tests.
+  package. See `~/Projects/Hypnos/CLAUDE.md` → UI Tests.
 
 That is why `RAVEA11y` exists and why its exact strings are treated as API: another
 repository's tests compute them without linking anything of this app's. `RAVETabItem`
@@ -62,9 +62,14 @@ names).
 
 ## Platform declaration
 
-`Package.swift` declares `[.visionOS(.v26), .macOS(.v14)]`. visionOS is the product;
-macOS exists so `swift test` has a host to build for, and because `RAVEConsole` genuinely
-runs there (Longwave's Mac app uses it).
+`Package.swift` declares `[.visionOS(.v26), .macOS(.v14), .iOS(.v26)]`. visionOS is the
+product; macOS exists so `swift test` has a host to build for, and because `RAVEConsole`
+genuinely runs there (Longwave's Mac app uses it); iOS is declared because an omitted
+platform is not an excluded one — see the comment in `Package.swift`.
+
+**tvOS and watchOS are not declared**, which currently blocks two would-be consumers
+(`web-yt-dlp/player`, `worldcast/Worldcast`). Adding one is a deliberate decision about
+which targets must then compile there, not a one-line edit.
 
 Guard visionOS-only code with **`#if os(visionOS)`**, not `#if canImport(SwiftUI)`.
 SwiftUI imports fine on macOS — it is `CustomHoverEffect`, `glassBackgroundEffect` and
@@ -80,6 +85,7 @@ is easy to skip.
 | `RAVEConsole` | On-device log viewer over `OSLogStore`, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
+| `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
 
 ### RAVENet — the transport never decides it is ready
 
@@ -364,19 +370,27 @@ Design points worth keeping:
 
 ## How consumers use this
 
-Six visionOS apps under `~/Projects/`. During development each references this package as
-a **local** Swift package (`XCLocalSwiftPackageReference`), so edits are immediate and need
-no tag-and-push cycle. Once a target stabilises, tag it and switch that app to
-`.package(url:)`.
+Nine apps under `~/Projects/`. During development each references this package as a
+**local** Swift package (`XCLocalSwiftPackageReference`), so edits are immediate and need no
+tag-and-push cycle. Once a target stabilises, tag it and switch that app to `.package(url:)`.
 
-| App | Links |
+What each app is and where new code goes lives in `~/Projects/CLAUDE.md`; this table is only
+the link list.
+
+| App (directory) | Links |
 |---|---|
+| `Hypnos` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, + Engine's `RAVEDiagnostics` |
+| `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
+| `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
+| `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |
 | `VisionProHomeAssistant` (SpatialHome) | `RAVENet`, `RAVEUI`, `RAVEConsole` |
-| `spatialstash` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, + Engine's `RAVEDiagnostics` |
-| `Longwave` | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
-| `Spatialcraft` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
-| `Lambda_VisionPro` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
-| `Raven` | `RAVEUI`, `RAVEConsole`, `RAVENet`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
+| `xrTimer` | `RAVEUI`, `RAVEConsole` |
+| `Oneiros` (visionOS + macOS) | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
+| `halflife-visionos/LambdaVision` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics`, `RAVERig` |
+| `spatial-ai-character` | `RAVEConsole`, + Engine's `RAVEDiagnostics`, and `RAVERig` transitively through its own `CharacterKit` |
+
+Read this from `productName = RAVE…` in each `project.pbxproj`, not from `import RAVE…` —
+re-exports and typealiases hide a dependency from the import list.
 
 **A green `swift test` here proves very little.** Local package references mean the
 consuming app builds are the real integration test — a signature change compiles fine here
@@ -387,8 +401,10 @@ cd ~/Projects/spatialstash && xcodebuild -project SpatialStash/SpatialStash.xcod
   -scheme SpatialStash -sdk xros -destination 'generic/platform=visionOS' build CODE_SIGNING_ALLOWED=NO
 ```
 
-Longwave additionally compiles the shared `Longwave/` sources into its **Mac** target, so
-anything it links must be added to `LongwaveMac` too, and must build for macOS.
+Three consumers are not visionOS-only, and they are the ones a new API breaks: Hypnos builds
+for **iOS**, Longwave for **iOS and macOS** (it compiles the shared `Longwave/` sources into
+`LongwaveMac`, so anything it links must be added there too), and Oneiros has a macOS target.
+Anything they link must build for those platforms.
 
 ## Working on this codebase
 
