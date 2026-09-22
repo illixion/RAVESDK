@@ -34,14 +34,25 @@ public final class DepthConversionManager {
         public let videoIdentity: String
         public let title: String?
         public let sourceURL: URL
-        /// Server API key for authenticated downloads (nil for local files).
-        public let apiKey: String?
+        /// Headers that authenticate the download, empty for a local file or a
+        /// source whose URL already carries its credential.
+        ///
+        /// Deliberately not an API key: this used to be a `String?` sent as
+        /// `ApiKey`, which is one server's scheme written into a package that
+        /// knows nothing about servers — so every other media server's videos
+        /// downloaded as 401s. The caller resolves the URL to whatever its
+        /// credential actually is (a query parameter it has already appended,
+        /// a `Basic` header, nothing at all) and hands the result over.
+        public let httpHeaderFields: [String: String]
 
-        public init(videoIdentity: String, title: String?, sourceURL: URL, apiKey: String?) {
+        public init(videoIdentity: String,
+                    title: String?,
+                    sourceURL: URL,
+                    httpHeaderFields: [String: String] = [:]) {
             self.videoIdentity = videoIdentity
             self.title = title
             self.sourceURL = sourceURL
-            self.apiKey = apiKey
+            self.httpHeaderFields = httpHeaderFields
         }
     }
 
@@ -393,8 +404,8 @@ public final class DepthConversionManager {
         try? FileManager.default.removeItem(at: destinationURL)
 
         var urlRequest = URLRequest(url: request.sourceURL)
-        if let apiKey = request.apiKey, !apiKey.isEmpty {
-            urlRequest.setValue(apiKey, forHTTPHeaderField: "ApiKey")
+        for (name, value) in request.httpHeaderFields {
+            urlRequest.setValue(value, forHTTPHeaderField: name)
         }
 
         return try await withCheckedThrowingContinuation { continuation in
