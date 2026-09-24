@@ -69,7 +69,7 @@ platform is not an excluded one — see the comment in `Package.swift`.
 
 **tvOS is declared** (2026-09-24) for Hypnos on Apple TV, and every target builds there.
 What tvOS lacks is fenced with `#if !os(tvOS)`: pointer-driven views (`EQEditorView`), the
-pasteboard, and the multi-window session registry and its App Intent. Check a tvOS build
+pasteboard, and the open-a-window half of the window-session registry (openWindow capture) and its App Intent. Check a tvOS build
 (`xcodebuild -scheme RAVESDK-Package -destination 'generic/platform=tvOS'`) after UI changes.
 **watchOS is not declared**, which blocks `worldcast/Worldcast`.
 

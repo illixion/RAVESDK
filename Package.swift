@@ -14,7 +14,7 @@ let package = Package(
     // newer" — a version nothing here has ever targeted.
     // tvOS is a real target (Hypnos on Apple TV). What tvOS lacks is fenced
     // with `!os(tvOS)`: pointer-driven views (EQEditorView), the pasteboard,
-    // and the multi-window session registry and its App Intent.
+    // and the open-a-window half of the window-session registry (openWindow capture) and its App Intent.
     platforms: [.visionOS(.v26), .macOS(.v14), .iOS(.v26), .tvOS(.v26)],
     products: [
         .library(name: "RAVENet", targets: ["RAVENet"]),

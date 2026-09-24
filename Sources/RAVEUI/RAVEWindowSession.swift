@@ -7,8 +7,7 @@
  pop-out windows arrived at the same registry to answer that.
  */
 
-// tvOS has one window and no openWindow.
-#if canImport(SwiftUI) && !os(tvOS)
+#if canImport(SwiftUI)
 
 import CoreGraphics
 import SwiftUI
@@ -55,10 +54,12 @@ public final class RAVEWindowSessionRegistry {
     /// the app's main scene is not called "main".
     public var mainWindowID: String = "main"
 
+    #if !os(tvOS)
     /// Most recently captured `openWindow` action from a SwiftUI view.
     /// Refreshed by every scene root on appear, so the reference stays live
     /// whichever scene happens to be rendered.
     public var openWindow: OpenWindowAction?
+    #endif
 
     /// Where a warning goes when there is no captured action. Apps route this
     /// into their own logger; nil is silent.
@@ -79,12 +80,17 @@ public final class RAVEWindowSessionRegistry {
     /// so it is safe to call from scene and app lifecycle hooks.
     public func ensureMainWindowVisible() {
         guard mainWindowCount == 0 else { return }
+        #if os(tvOS)
+        // tvOS has no openWindow: its one window is the app, always up.
+        log?("ensureMainWindowVisible: no windows to open on tvOS")
+        #else
         guard let openWindow else {
             log?("ensureMainWindowVisible: no openWindow action captured")
             return
         }
         log?("ensureMainWindowVisible: summoning main window")
         openWindow(id: mainWindowID, value: UUID())
+        #endif
     }
 
     /// Unconditionally open a fresh main window, regardless of how many are
@@ -92,11 +98,15 @@ public final class RAVEWindowSessionRegistry {
     /// `RAVEOpenMainWindowIntent`; use `ensureMainWindowVisible()` for the
     /// no-op-when-one-exists semantic.
     public func openNewMainWindow() {
+        #if os(tvOS)
+        log?("openNewMainWindow: no windows to open on tvOS")
+        #else
         guard let openWindow else {
             log?("openNewMainWindow: no openWindow action captured")
             return
         }
         openWindow(id: mainWindowID, value: UUID())
+        #endif
     }
 
     /// Surface the main window, then run `close`.
@@ -106,6 +116,10 @@ public final class RAVEWindowSessionRegistry {
     /// Waiting for the main window to actually register first is what makes
     /// teardown reliable.
     public func closeAfterSurfacingMain(_ close: @escaping @MainActor () -> Void) {
+        #if os(tvOS)
+        // Nothing to surface: tvOS never loses its one window this way.
+        close()
+        #else
         guard mainWindowCount == 0 else {
             close()
             return
@@ -120,9 +134,11 @@ public final class RAVEWindowSessionRegistry {
             }
             close()
         }
+        #endif
     }
 }
 
+#if !os(tvOS)
 /// Keeps `RAVEWindowSessionRegistry.shared.openWindow` fresh from any scene root.
 private struct RAVECaptureOpenWindowModifier: ViewModifier {
     @Environment(\.openWindow) private var openWindow
@@ -133,11 +149,18 @@ private struct RAVECaptureOpenWindowModifier: ViewModifier {
         }
     }
 }
+#endif
 
 public extension View {
-    /// Capture this scene's `openWindow` into the shared registry.
+    /// Capture this scene's `openWindow` into the shared registry. Does
+    /// nothing on tvOS, which has no openWindow.
+    @ViewBuilder
     func captureOpenWindowAction() -> some View {
+        #if os(tvOS)
+        self
+        #else
         modifier(RAVECaptureOpenWindowModifier())
+        #endif
     }
 
     /// Count this view's scene as a main window for as long as it exists.
