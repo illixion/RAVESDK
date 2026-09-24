@@ -29,6 +29,7 @@ extension AVPlayerItem {
     /// Call once per item right after creation. Not KVO-compliant, so setting
     /// it eagerly (before playback) is the intended usage.
     public func applySpatialAudioPolicy() {
+        guard !RAVEMediaPolicy.spatializeStereo else { return }
         allowedAudioSpatializationFormats = .multichannel
     }
 }
@@ -51,6 +52,7 @@ extension AVPlayer {
     /// startup race); the policy upgrades to `.headTracked` only once the
     /// asset's audio is confirmed multichannel.
     public func applySpatialAudioPolicy(for asset: AVURLAsset) {
+        guard !RAVEMediaPolicy.spatializeStereo else { return }
         intendedSpatialAudioExperience = .bypassed
         Task { [weak self] in
             guard let surround = try? await asset.hasMultichannelAudio(), surround else { return }
