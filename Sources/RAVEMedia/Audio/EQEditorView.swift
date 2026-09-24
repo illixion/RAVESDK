@@ -1,3 +1,6 @@
+// Pointer-driven (drag handles, freehand drawing), so not on tvOS; the
+// EQSettings model it edits is.
+#if !os(tvOS)
 import SwiftUI
 
 /// DAW-style parametric EQ editor. Two modes:
@@ -403,3 +406,4 @@ public struct EQEditorView: View {
         (0.5 - Double(min(max(y / size.height, 0), 1))) * gainRange * 2
     }
 }
+#endif

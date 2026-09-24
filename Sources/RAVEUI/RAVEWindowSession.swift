@@ -7,7 +7,8 @@
  pop-out windows arrived at the same registry to answer that.
  */
 
-#if canImport(SwiftUI)
+// tvOS has one window and no openWindow.
+#if canImport(SwiftUI) && !os(tvOS)
 
 import CoreGraphics
 import SwiftUI

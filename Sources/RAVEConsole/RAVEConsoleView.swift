@@ -70,7 +70,9 @@ public struct RAVEConsoleView: View {
             .frame(width: 220)
 
             TextField("Filter…", text: $filter.searchText)
+                #if !os(tvOS)
                 .textFieldStyle(.roundedBorder)
+                #endif
                 .frame(maxWidth: 300)
 
             Spacer()
@@ -78,9 +80,13 @@ public struct RAVEConsoleView: View {
             Toggle(isOn: $autoScroll) {
                 Image(systemName: "arrow.down.to.line")
             }
+            #if !os(tvOS)
             .toggleStyle(.button)
+            #endif
             .help("Auto-scroll to newest")
 
+            // tvOS has no pasteboard.
+            #if !os(tvOS)
             Button {
                 copyToClipboard()
             } label: {
@@ -88,6 +94,7 @@ public struct RAVEConsoleView: View {
             }
             .help("Copy filtered entries to clipboard")
             .disabled(entries.isEmpty)
+            #endif
 
             Text("\(entries.count)")
                 .foregroundStyle(.secondary)
@@ -149,12 +156,14 @@ public struct RAVEConsoleView: View {
         }
     }
 
+    #if !os(tvOS)
     private func copyToClipboard() {
         let text = entries.exportText()
         #if canImport(UIKit)
         UIPasteboard.general.string = text
         #endif
     }
+    #endif
 }
 
 /// One row: time, severity initial, category chip, message.
@@ -192,7 +201,9 @@ struct RAVELogEntryRow: View {
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(messageColor)
                 .lineLimit(nil)
+                #if !os(tvOS)
                 .textSelection(.enabled)
+                #endif
         }
         .padding(.vertical, 2)
     }

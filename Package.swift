@@ -12,7 +12,10 @@ let package = Package(
     // platform SwiftPM's own ancient default floor, and RAVEConsole then fails
     // to build for an iOS client with "'Color' is only available in iOS 13.0 or
     // newer" — a version nothing here has ever targeted.
-    platforms: [.visionOS(.v26), .macOS(.v14), .iOS(.v26)],
+    // tvOS is a real target (Hypnos on Apple TV). What tvOS lacks is fenced
+    // with `!os(tvOS)`: pointer-driven views (EQEditorView), the pasteboard,
+    // and the multi-window session registry and its App Intent.
+    platforms: [.visionOS(.v26), .macOS(.v14), .iOS(.v26), .tvOS(.v26)],
     products: [
         .library(name: "RAVENet", targets: ["RAVENet"]),
         .library(name: "RAVEUI", targets: ["RAVEUI"]),

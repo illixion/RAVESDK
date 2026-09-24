@@ -15,7 +15,9 @@ visionOS 26 is the product focus. iOS 26 is declared because several consumers
 share the same targets across flat and spatial platforms, and macOS 14 is
 declared because `swift test` needs a host platform to build for. visionOS-only
 surfaces guard with `#if os(visionOS)` rather than forcing the whole package to
-one platform.
+one platform. tvOS 26 is declared for Hypnos on Apple TV; what tvOS lacks
+(pointer-driven views, the pasteboard, multi-window sessions) is fenced with
+`#if !os(tvOS)`.
 
 ## Targets
 

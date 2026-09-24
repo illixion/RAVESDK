@@ -176,6 +176,16 @@ public struct RAVESystemMonitorView: View {
     public var body: some View {
         VStack(spacing: 16) {
             if reading.gpuAllocated != nil {
+                #if os(tvOS)
+                // No Gauge on tvOS.
+                ProgressView(value: Double(currentGPU), total: Double(ceiling)) {
+                    Text("GPU Allocated")
+                } currentValueLabel: {
+                    Text("\(RAVESystemMonitor.format(currentGPU)) of \(RAVESystemMonitor.format(ceiling))")
+                        .font(.system(.title3, design: .monospaced))
+                        .fontWeight(.bold)
+                }
+                #else
                 Gauge(value: Double(currentGPU), in: 0...Double(ceiling)) {
                     Text("GPU Allocated")
                 } currentValueLabel: {
@@ -188,6 +198,7 @@ public struct RAVESystemMonitorView: View {
                     Text(RAVESystemMonitor.format(ceiling)).font(.caption2)
                 }
                 .gaugeStyle(.accessoryLinear)
+                #endif
             }
 
             HStack(spacing: 24) {

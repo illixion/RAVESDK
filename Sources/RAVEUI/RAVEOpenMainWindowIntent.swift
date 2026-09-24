@@ -25,7 +25,7 @@
  with `captureOpenWindowAction()` and count mains with `registerAsMainWindow()`.
  */
 
-#if canImport(AppIntents) && canImport(SwiftUI)
+#if canImport(AppIntents) && canImport(SwiftUI) && !os(tvOS)
 
 import AppIntents
 import Foundation
