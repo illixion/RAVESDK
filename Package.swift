@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
         .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
+        .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
     ],
     targets: [
         .target(name: "RAVENet"),
@@ -62,5 +63,32 @@ let package = Package(
         // chrome; depth/stereo stays in RAVEMedia and transport in RAVENet.
         .target(name: "RAVESlideshow", dependencies: ["RAVEMedia"]),
         .testTarget(name: "RAVESlideshowTests", dependencies: ["RAVESlideshow"]),
+        // The film player: a film's picture through AVSampleBufferDisplayLayer
+        // on a host-clock timebase, and its Atmos objects rendered as spatial
+        // sources on the same clock, both served by Hypnos's Jellyfin Atmos
+        // Objects plugin. Its object audio uses Synchronization.Atomic, so
+        // those types say macOS 15 while the package floor stays at 14 for
+        // Longwave's Mac app.
+        .target(
+            name: "RAVEFilm",
+            // UIWindow.avDisplayManager is an AVKit category; Swift's autolink
+            // drops the framework when nothing else from it is used.
+            linkerSettings: [.linkedFramework("AVKit", .when(platforms: [.tvOS, .visionOS]))]
+        ),
+        .testTarget(name: "RAVEFilmTests", dependencies: ["RAVEFilm"], resources: [.copy("Fixtures")]),
+        // Mac bench for RAVEFilm (scripts/run-film-lab.sh). Not a product, so
+        // no app builds it. Reads the server and token from the environment so
+        // none are committed. An unbundled executable has no Info.plist, so
+        // one is embedded in the binary: head tracking needs its
+        // NSMotionUsageDescription.
+        .executableTarget(
+            name: "RAVEFilmLab",
+            dependencies: ["RAVEFilm"],
+            exclude: ["Info.plist"],
+            linkerSettings: [.unsafeFlags([
+                "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
+                "-Xlinker", Context.packageDirectory + "/Sources/RAVEFilmLab/Info.plist",
+            ])]
+        ),
     ]
 )

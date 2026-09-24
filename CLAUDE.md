@@ -62,14 +62,20 @@ names).
 
 ## Platform declaration
 
-`Package.swift` declares `[.visionOS(.v26), .macOS(.v14), .iOS(.v26)]`. visionOS is the
+`Package.swift` declares `[.visionOS(.v26), .macOS(.v14), .iOS(.v26), .tvOS(.v26)]`. visionOS is the
 product; macOS exists so `swift test` has a host to build for, and because `RAVEConsole`
 genuinely runs there (Longwave's Mac app uses it); iOS is declared because an omitted
 platform is not an excluded one — see the comment in `Package.swift`.
 
-**tvOS and watchOS are not declared**, which currently blocks two would-be consumers
-(`web-yt-dlp/player`, `worldcast/Worldcast`). Adding one is a deliberate decision about
-which targets must then compile there, not a one-line edit.
+**tvOS is declared** (2026-09-24) for Hypnos on Apple TV, and every target builds there.
+What tvOS lacks is fenced with `#if !os(tvOS)`: pointer-driven views (`EQEditorView`), the
+pasteboard, and the multi-window session registry and its App Intent. Check a tvOS build
+(`xcodebuild -scheme RAVESDK-Package -destination 'generic/platform=tvOS'`) after UI changes.
+**watchOS is not declared**, which blocks `worldcast/Worldcast`.
+
+**The macOS floor stays at 14** because Longwave's Mac app deploys to 14.2. Code needing a
+newer macOS marks its types `@available(macOS 15.0, *)` instead of raising the floor, as
+`RAVEFilm` does for `Synchronization.Atomic`.
 
 Guard visionOS-only code with **`#if os(visionOS)`**, not `#if canImport(SwiftUI)`.
 SwiftUI imports fine on macOS — it is `CustomHoverEffect`, `glassBackgroundEffect` and
@@ -86,6 +92,7 @@ is easy to skip.
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 | `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
+| `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by Hypnos's Jellyfin Atmos Objects plugin; `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 
 ### RAVENet — the transport never decides it is ready
 
@@ -379,7 +386,7 @@ the link list.
 
 | App (directory) | Links |
 |---|---|
-| `Hypnos` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, + Engine's `RAVEDiagnostics` |
+| `Hypnos` (visionOS + iOS; tvOS bench `Hypnos/TVLab`) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm`, + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |
