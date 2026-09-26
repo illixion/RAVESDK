@@ -53,6 +53,17 @@ public struct FilmLibraryItem: Decodable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id = "Id", name = "Name", productionYear = "ProductionYear"
     }
+
+    /// A struct's synthesized memberwise init is internal, not public, so a
+    /// client module that already knows which item to load (e.g. Hypnos's
+    /// Library tab, which has its own id from `MediaServerLibrary` rather
+    /// than one of this type's own `search` results) needs this to construct
+    /// one directly instead of only ever decoding one from `search`.
+    public init(id: String, name: String, productionYear: Int?) {
+        self.id = id
+        self.name = name
+        self.productionYear = productionYear
+    }
 }
 
 public struct FilmServerClient: Sendable {
