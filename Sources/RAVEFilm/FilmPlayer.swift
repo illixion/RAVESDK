@@ -23,6 +23,9 @@ import CoreMedia
 import Foundation
 import Observation
 import os
+// Re-exported: `reverbPreset` is part of this API, so a client of RAVEFilm
+// shouldn't have to link the stage's product to set it.
+@_exported import RAVESpatialAudio
 import simd
 
 @MainActor
@@ -42,6 +45,9 @@ public final class FilmPlayer {
     public var masterGainDB: Float = 0
     public var lfeGainDB: Float = 0
     public var reverbDB: Float = 0
+    /// The room's reverb character; used by `FilmPhaseStageView` (RealityKit's
+    /// stage has only a level).
+    public var reverbPreset: RAVEReverbPreset = .mediumRoom
     public var roomHalfWidth: Float = 2.0
     public var roomHalfDepth: Float = 2.5
     public var roomHeight: Float = 1.6
@@ -175,7 +181,11 @@ public final class FilmPlayer {
             if !audio.isResident(segment) { self.logger.error("Audio segment \(segment) not ready; starting anyway") }
             self.outputLatency = AudioOutputLatency.current()
             let host = CMClockGetTime(CMClockGetHostTimeClock()) + CMTime(seconds: self.startLead, preferredTimescale: 1_000_000_000)
-            audio.start(at: frame, anchorHostTime: Self.machTicks(host))
+            // Before the audio track's first frame (a film starting at 0 whose
+            // audio begins 2 s in), frame 0 is due when the picture gets there,
+            // not now; renders before the anchor are silent.
+            let audioLead = max(0, scene.startSeconds - filmTime)
+            audio.start(at: frame, anchorHostTime: Self.machTicks(host + CMTime(seconds: audioLead, preferredTimescale: 1_000_000_000)))
             let pictureDelay = self.outputLatency + self.avOffsetMs / 1000
             self.video.start(filmTime: filmTime, atHostTime: host + CMTime(seconds: pictureDelay, preferredTimescale: 1_000_000_000))
             self.rateSample = nil
@@ -253,8 +263,9 @@ public final class FilmPlayer {
         var drift: Int64 = 0
         for ch in 0 ..< audio.channelCount { drift = max(drift, audio.maxDrift[ch]) }
         let resident = audio.slots.map { $0.segment.load(ordering: .relaxed) }.filter { $0 >= 0 }.sorted()
-        clockReport = String(format: "%.0f Hz, max drift %d frames, segments %@, %d underrun buffers",
-                             measuredRate, drift, resident.map(String.init).joined(separator: ","),
+        clockReport = String(format: "%.0f Hz, max drift %d frames, %d re-anchors, segments %@, %d underrun buffers",
+                             measuredRate, drift, audio.reanchors.load(ordering: .relaxed),
+                             resident.map(String.init).joined(separator: ","),
                              audio.underruns.load(ordering: .relaxed))
     }
 

@@ -93,6 +93,7 @@ is easy to skip.
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 | `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by Hypnos's Jellyfin Atmos Objects plugin; `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
+| `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb. RAVEFilm re-exports it (tvOS film audio); built for a game mixer to feed too |
 
 ### RAVENet — the transport never decides it is ready
 
@@ -338,6 +339,35 @@ every conversion on every device. `Pseudo3DSettings.init(from:)` has the same
 constraint for persisted JSON, including its normalisation of the retired `0.45`
 convergence default.
 
+### RAVESpatialAudio — PHASE, because of what the system gives it
+
+RealityKit's spatial audio exists on tvOS 26, but the system applies AirPods
+head tracking and the personalized spatial audio profile only to
+AVAudioEngine, AUSpatialMixer and PHASE, each behind an entitlement
+(`com.apple.developer.coremotion.head-pose`,
+`com.apple.developer.spatial-audio.profile-access`). Without them the head
+tracking flag is accepted and silently does nothing. PHASE won over
+AVAudioEnvironmentNode for its built-in room reverb, which the send
+meta-parameter changes live.
+
+Things measured on an Apple TV (2026-09-27) that the stage's defaults
+encode:
+
+- **Output is forced binaural.** Left automatic, PHASE chose plain panning
+  on an AirPlay HomePod pair.
+- **Each pull stream has its own sample timeline and can stall at start.**
+  Timestamps carry a valid sample and host time. A caller keeping streams
+  sample-locked aligns by host time and must survive a stall; RAVEFilm's
+  `AtmosObjectAudio` re-anchors past 50 ms of drift.
+- **Calibration is `.relativeSpl` at 0 dB, distance rolloff 0.** The caller
+  owns levels. LambdaVision's PHASE attempt on visionOS was deafening, but
+  that was the visionOS system spatializer, which is why visionOS doesn't
+  use this stage.
+
+A game can feed it the same way: one pull-stream source per mixer channel.
+LambdaVision's parked `PhaseAudioEngine` is sample-asset based and would
+need its channels turned into streams first.
+
 ### RAVECamera — the frame WebKit never gives you
 
 A convergence of Longwave's Broadcast tab (`BroadcastCaptureSession` +
@@ -386,7 +416,7 @@ the link list.
 
 | App (directory) | Links |
 |---|---|
-| `Hypnos` (visionOS + iOS; tvOS bench `Hypnos/TVLab`) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm`, + Engine's `RAVEDiagnostics` |
+| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |

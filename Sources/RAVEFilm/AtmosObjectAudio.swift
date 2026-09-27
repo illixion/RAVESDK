@@ -17,6 +17,14 @@
  scene frame against one shared anchor, stores the offset to its own sample
  time, and from then on reads at `sampleTime + offset`, sample-continuous.
 
+ Unless the renderer stalls: a stream whose sample time stops while host
+ time runs on falls behind by the stall and, sample-continuous, stays
+ there. PHASE on tvOS did this right after start (about 1.7 s, measured
+ 2026-09-27, Apple TV over AirPlay), which left the sound that far behind
+ the picture. So a channel whose played frame strays more than
+ `reanchorFrames` from the host clock's frame re-anchors to it: it skips
+ the gap, and every channel lands on the same host-derived frame.
+
  The anchor is chosen by the transport (`start(at:anchorHostTime:)`): "scene
  frame F plays at host time H". Choosing it up front, rather than taking
  whichever render comes first, is what lets the picture be scheduled
@@ -161,6 +169,11 @@ public final class AtmosObjectAudio: @unchecked Sendable {
     private let channelOffset: UnsafeMutablePointer<Int64>
     /// Largest |host-derived frame − played frame| seen per channel, i.e. drift.
     let maxDrift: UnsafeMutablePointer<Int64>
+    /// Channel re-anchors since load (a stall or a jump in host time).
+    public let reanchors = Atomic<Int>(0)
+    /// Drift that forces a re-anchor: 50 ms, well past buffer-to-buffer
+    /// jitter, well inside what reads as out of sync.
+    private var reanchorFrames: Int64 { Int64(sampleRate * 0.05) }
 
     public init(scene: AtmosScene, slotCount: Int = 6) {
         channelCount = scene.elements.count
@@ -280,8 +293,14 @@ public final class AtmosObjectAudio: @unchecked Sendable {
                 firstSampleTime[ch] = sampleTime
                 firstHostTime[ch] = hostTime
             }
-            let played = sampleTime + channelOffset[ch]
-            maxDrift[ch] = max(maxDrift[ch], abs(hostFrame - played))
+            var played = sampleTime + channelOffset[ch]
+            let drift = abs(hostFrame - played)
+            maxDrift[ch] = max(maxDrift[ch], drift)
+            if drift > reanchorFrames {
+                channelOffset[ch] = hostFrame - sampleTime
+                played = hostFrame
+                reanchors.add(1, ordering: .relaxed)
+            }
             frame = Int(played)
         } else {
             frame = fallbackCursor[ch]

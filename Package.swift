@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
         .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
         .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
+        .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
     ],
     targets: [
         .target(name: "RAVENet"),
@@ -69,8 +70,14 @@ let package = Package(
         // Objects plugin. Its object audio uses Synchronization.Atomic, so
         // those types say macOS 15 while the package floor stays at 14 for
         // Longwave's Mac app.
+        // A PHASE sound stage fed by pull streams: positioned sources and
+        // head-locked beds, head-tracked listener, live room reverb. First
+        // consumer is RAVEFilm on tvOS; built generic so a game's mixer
+        // (LambdaVision's parked PHASE backend) can feed it too.
+        .target(name: "RAVESpatialAudio"),
         .target(
             name: "RAVEFilm",
+            dependencies: ["RAVESpatialAudio"],
             // UIWindow.avDisplayManager is an AVKit category; Swift's autolink
             // drops the framework when nothing else from it is used.
             linkerSettings: [.linkedFramework("AVKit", .when(platforms: [.tvOS, .visionOS]))]
