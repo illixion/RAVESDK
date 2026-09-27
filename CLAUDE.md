@@ -94,6 +94,7 @@ is easy to skip.
 | `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by Hypnos's Jellyfin Atmos Objects plugin; `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb. RAVEFilm re-exports it (tvOS film audio); built for a game mixer to feed too |
+| `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
 
 ### RAVENet — the transport never decides it is ready
 
@@ -368,6 +369,34 @@ A game can feed it the same way: one pull-stream source per mixer channel.
 LambdaVision's parked `PhaseAudioEngine` is sample-asset based and would
 need its channels turned into streams first.
 
+### RAVEDeviceSetup — the QR code is the only channel the key travels on
+
+Written so Hypnos could provision an Apple TV (no AirDrop, no Files app, a Siri Remote
+for typing API keys); the app on both ends is the same app, and the payload is any
+`Codable` the app defines. The protocol is in `RAVESetupCode.swift`'s header. What
+matters when touching it:
+
+- **The receiver's public key is only ever in the QR code**, never in the Bonjour
+  record. That is the whole authentication story: a sender that didn't see the screen
+  can't seal a payload the receiver opens, and the receiver drops such a connection
+  without replying and keeps waiting. Every `start()` makes a new key pair; `stop()`
+  discards it.
+- **HPKE, not TLS-PSK.** A short code as a TLS pre-shared key can be brute-forced
+  offline from one recorded handshake; a QR code has room for a whole X25519 key. The
+  reply is sealed under a secret both sides export from the HPKE context, so the
+  sender's "sent" means the receiver really opened it.
+- **No permissions on the sender.** The system Camera opens the app's own URL scheme
+  (`<scheme>://setup?...`) on iPhone/iPad; everywhere else `RAVESetupScanPhotoButton`
+  reads a picked photo through the out-of-process `PhotosPicker` and Vision. No camera
+  or photo-library prompt either way.
+- **The sender connects to the named Bonjour instance directly**, with no browse, so it
+  enumerates nothing else on the network.
+- **Each consumer declares its `bonjourType` under `NSBonjourServices`** and has an
+  `NSLocalNetworkUsageDescription`. Without the first, the receiver can't advertise and
+  the sender can't resolve.
+- `swift test` runs real transfers over Bonjour on the host, including a forged key
+  being dropped while the receiver keeps waiting.
+
 ### RAVECamera — the frame WebKit never gives you
 
 A convergence of Longwave's Broadcast tab (`BroadcastCaptureSession` +
@@ -416,7 +445,7 @@ the link list.
 
 | App (directory) | Links |
 |---|---|
-| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), + Engine's `RAVEDiagnostics` |
+| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |

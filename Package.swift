@@ -25,6 +25,7 @@ let package = Package(
         .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
         .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
         .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
+        .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
     ],
     targets: [
         .target(name: "RAVENet"),
@@ -83,6 +84,12 @@ let package = Package(
             linkerSettings: [.linkedFramework("AVKit", .when(platforms: [.tvOS, .visionOS]))]
         ),
         .testTarget(name: "RAVEFilmTests", dependencies: ["RAVEFilm"], resources: [.copy("Fixtures")]),
+        // Hand an app's configuration, secrets included, to the same app on
+        // another device: the receiver shows a QR code carrying a fresh
+        // public key, the sender seals the payload to it with HPKE and sends
+        // it over Bonjour. First consumer is Hypnos provisioning an Apple TV.
+        .target(name: "RAVEDeviceSetup"),
+        .testTarget(name: "RAVEDeviceSetupTests", dependencies: ["RAVEDeviceSetup"]),
         // Mac bench for RAVEFilm (scripts/run-film-lab.sh). Not a product, so
         // no app builds it. Reads the server and token from the environment so
         // none are committed. An unbundled executable has no Info.plist, so
