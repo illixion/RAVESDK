@@ -125,6 +125,41 @@ assistant). The rules that keep it site-agnostic and safe:
 `swift test` runs the scripts against a real `WKWebView` on macOS (local fixtures, no
 network). The driver needs WebKit, so tvOS gets the model types only.
 
+**What else belongs in this target** (decided 2026-09-28, not built yet). Three apps want
+a web view, and each wants a different shell around it:
+
+- **Raven** is the full browser. It stays standalone and becomes a client of this target.
+- **spatial-ai-character** has a screen in the room that the character reads and drives.
+- **Longwave** plans OVR Toolkit-style web panels pinned to the hand (Twitch chat on the
+  wrist).
+
+So this target holds the web view **with nothing spatial**: `BrowserTab` lifted out of
+Raven (owns the `WKWebView`, KVO'd URL/title, hibernation and lazy restore), profiles and
+data stores (the character's logged-out one; a logged-in one for typing in Twitch chat),
+content blocking (Raven's ad blocking plus cookie and annoyance lists), the page-feature
+seam where each app registers its page scripts, the page tools above, **transparent pages**
+(a non-opaque view plus a page feature that clears the page's own background, for
+overlays), and **pausing** (below). Raven keeps the browser *product*: tab and window UI,
+Meet, WebRTC recovery, camera replay, screen share, the broadcast extension. The panel that
+shows a page in the room is **not** here. It is RAVEEngine's planned `RAVEPanel`,
+content-agnostic, and the app puts a browser view into it; neither package imports the
+other.
+
+**Pausing: WebKit will not do it for us** (measured on the AVP, 2026-09-28, a page counting
+its own `requestAnimationFrame` calls and 100 ms timer ticks). A page in a RealityKit
+attachment runs at the full ~120 animation frames/s and reports `visibilityState ==
+"visible"` while the screen is 2 m behind the user, while its entity is `isEnabled = false`,
+and even after the entity is removed from the scene. `isHidden = true` on the `WKWebView`
+changes nothing either. **Taking the web view out of its superview** is what WebKit honours:
+animation frames drop to 0/s, timers throttle to ~0.4/s, the page gets a real
+`visibilitychange` to hidden (which video and chat sites act on), and the page's JS can still
+be read. Putting it back resumes at once (~130 frames in the next half second) and it draws
+normally. So the pause API will be a container view this target owns: the representable
+returns the container, pausing moves the `WKWebView` out of it and back, and SwiftUI never
+sees a change. It also calls `setAllMediaPlaybackSuspended`, since whether a hidden page's
+media keeps playing is not measured yet. Deciding *when* nobody can see the page is the
+panel's job, not this target's.
+
 ### RAVENet — the transport never decides it is ready
 
 This merges two independently-hardened clients (Spatial Stash's `RemoteWebSocketClient`,

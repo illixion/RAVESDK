@@ -28,6 +28,10 @@ public struct RAVEPageInfo: Codable, Sendable, Equatable {
     public var title: String
     public var url: String
     public var readyState: String
+    /// `document.visibilityState`: "hidden" is WebKit's own verdict that
+    /// nobody can see the page, which is when it throttles timers and stops
+    /// animation frames.
+    public var visibility: String?
     public var viewport: RAVEPageViewport
     /// Filled in by the driver: whether the main frame is still loading.
     public var isLoading: Bool?

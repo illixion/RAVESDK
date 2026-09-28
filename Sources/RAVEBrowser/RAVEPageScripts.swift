@@ -350,7 +350,8 @@ enum RAVEPageScripts {
 
     /// No arguments.
     static let info = prelude + #"""
-        return JSON.stringify({ title: document.title, url: location.href, readyState: document.readyState, viewport: viewport() });
+        return JSON.stringify({ title: document.title, url: location.href, readyState: document.readyState,
+                                visibility: document.visibilityState, viewport: viewport() });
         """#
 
     /// Whether Readability is loaded into the world yet.
