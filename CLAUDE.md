@@ -152,15 +152,22 @@ a web view, and each wants a different shell around it:
 - **Longwave** plans OVR Toolkit-style web panels pinned to the hand (Twitch chat on the
   wrist).
 
-So this target holds the web view **with nothing spatial**: `BrowserTab` lifted out of
-Raven (owns the `WKWebView`, KVO'd URL/title, hibernation and lazy restore), profiles and
-data stores (the character's logged-out one; a logged-in one for typing in Twitch chat),
-content blocking (Raven's ad blocking plus cookie and annoyance lists), the page-feature
-seam where each app registers its page scripts, the page tools above, **transparent pages**
-(a non-opaque view plus a page feature that clears the page's own background, for
-overlays), and **pausing** (below). Raven keeps the browser *product*: tab and window UI,
-Meet, WebRTC recovery, camera replay, screen share, the broadcast extension. The panel that
-shows a page in the room is **not** here. It is RAVEEngine's planned `RAVEPanel`,
+So this target holds the web view **with nothing spatial**, and nothing unique to a site
+(decided 2026-09-28): the generic core of Raven's `BrowserTab` and its **WebKit quirk
+handling** (owns the `WKWebView`, KVO'd URL/title because same-document navigations fire no
+delegate callback, reload-when-visible after a content-process death, the Safari UA tail,
+hibernation and lazy restore), the **profile system** and data stores (the character's
+logged-out one; a logged-in one for typing in Twitch chat), optionally Raven's **UI shell**
+(tab strip, toolbar, window model), the page-feature seam where each app registers its own
+page scripts, the page tools above, **transparent pages** (a non-opaque view plus a page
+feature that clears the page's own background, for overlays), and **pausing** (below).
+
+**Not here:** Raven's ad blocker (its filter-list converter, AdGuard's SafariConverterLib, is
+GPL-3.0 and would carry GPL into every app linking this target), the native player, Google
+Meet / WebRTC recovery / call audio / camera replay / screen share, the broadcast extension,
+or anything else written for particular websites. Those stay Raven's, attached through the
+seam. The panel that shows a page in the room is **not** here either. It is RAVEEngine's
+`RAVEPanel`,
 content-agnostic, and the app puts a browser view into it; neither package imports the
 other.
 
