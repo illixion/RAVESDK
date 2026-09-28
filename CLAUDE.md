@@ -95,6 +95,35 @@ is easy to skip.
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by Hypnos's Jellyfin Atmos Objects plugin; `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb. RAVEFilm re-exports it (tvOS film audio); built for a game mixer to feed too |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
+| `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays |
+
+### RAVEBrowser — a model uses pages the way Chrome MCP does, with nothing per site
+
+`RAVEPageDriver` borrows a `WKWebView` and claims nothing on it — no navigation or UI
+delegate, no user scripts — so it can sit on top of any host's view (spatial-ai-character's
+`ScreenPanel` now; Raven's `BrowserTab` is the planned second consumer, for Raven's own
+assistant). The rules that keep it site-agnostic and safe:
+
+- **Everything runs in its own `WKContentWorld`.** The page can't see or redefine the
+  helpers, and element refs live in that world's global, so a navigation (fresh document,
+  fresh global) makes an old ref throw `stale ref N` rather than hit something else.
+- **No arbitrary-JavaScript tool, on purpose.** Page text reaches the model; a model that
+  can be talked into running script can do anything the page can.
+- **Refs, not coordinates.** `elements()` numbers what is visible *and not covered* (it
+  hit-tests each centre, walking open shadow roots), `snapshot(marks:)` draws those numbers
+  in Core Graphics — never into the page, so nothing flashes on the user's screen — and a
+  vision model answers "click 12". `click(x:y:)` exists only as a fallback.
+- **Typing goes through the prototype's `value` setter**, so React-style controlled inputs
+  notice. Events are synthetic (`isTrusted == false`); the few sites that check will ignore
+  them, and there is no public API for a real touch.
+- **New-window links are followed in place**, because a web view with no UI delegate
+  silently drops them.
+- **`read()` is Mozilla's Readability** (`Resources/Readability.js`, Apache 2.0, v0.6.0 —
+  Safari's Reader has no API). It reads a *copy* of the DOM, so overlays don't matter to it;
+  `dismissOverlays()` is the heuristic for when the page itself has to be usable.
+
+`swift test` runs the scripts against a real `WKWebView` on macOS (local fixtures, no
+network). The driver needs WebKit, so tvOS gets the model types only.
 
 ### RAVENet — the transport never decides it is ready
 

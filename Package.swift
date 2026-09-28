@@ -26,6 +26,7 @@ let package = Package(
         .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
         .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
+        .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
     ],
     targets: [
         .target(name: "RAVENet"),
@@ -90,6 +91,17 @@ let package = Package(
         // it over Bonjour. First consumer is Hypnos provisioning an Apple TV.
         .target(name: "RAVEDeviceSetup"),
         .testTarget(name: "RAVEDeviceSetupTests", dependencies: ["RAVEDeviceSetup"]),
+        // A tool surface over a WKWebView the app already shows — navigate,
+        // read (Mozilla's Readability, bundled), numbered elements, marked
+        // snapshots, click/type/scroll — for a language model to use pages
+        // with nothing site-specific. First consumer is spatial-ai-character's
+        // ambient browsing; Raven's assistant is the planned second. The
+        // driver needs WebKit, so on tvOS only the model types build.
+        .target(
+            name: "RAVEBrowser",
+            resources: [.copy("Resources/Readability.js"), .copy("Resources/Readability-LICENSE.md")]
+        ),
+        .testTarget(name: "RAVEBrowserTests", dependencies: ["RAVEBrowser"]),
         // Mac bench for RAVEFilm (scripts/run-film-lab.sh). Not a product, so
         // no app builds it. Reads the server and token from the environment so
         // none are committed. An unbundled executable has no Info.plist, so
