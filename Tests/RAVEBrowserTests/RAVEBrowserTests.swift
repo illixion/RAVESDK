@@ -188,6 +188,45 @@ import WebKit
         #expect(page.text.count == 50)
     }
 
+    /// The shapes real Reddit showed on the headset (2026-09-28): a fixed
+    /// header and sidebar full of "Log in", a cookie dialog in a shadow root,
+    /// and a feed card with a transparent link laid over it.
+    @Test func keepsSiteChromeAndFindsCardLinks() async throws {
+        let driver = driver
+        try await driver.load(html: """
+            <!doctype html><html><head><title>Feed</title><style>
+            body{margin:0;font:16px sans-serif} header{position:fixed;top:0;left:0;right:0;height:56px;background:#eee}
+            .side{position:fixed;top:56px;left:0;width:250px;bottom:0;background:#ddd}
+            .card{position:relative;margin:100px 0 0 300px;width:600px;height:300px}
+            .card .cover{position:absolute;inset:0}
+            .card h2,.card img{position:relative;z-index:1}
+            .card img{display:block;width:600px;height:200px;background:#999}
+            </style></head><body>
+            <header><a href="/">Home</a> <a href="/login">Log In</a> <a href="/signup">Sign Up</a></header>
+            <div class="side">Join the community. Log in to vote. <a href="/r/a">r/a</a></div>
+            <div class="card"><a class="cover" href="/post/1"><span style="position:absolute;left:-9999px">Card title</span></a>
+            <h2>Card title</h2><img alt=""></div>
+            <cookie-banner></cookie-banner>
+            <script>
+            customElements.define('cookie-banner', class extends HTMLElement {
+              connectedCallback() { this.attachShadow({mode:'open'}).innerHTML =
+                '<div style="position:fixed;right:0;bottom:0;width:400px;height:250px;background:#333;color:#fff">'
+                + 'We use cookies. <button>Accept All</button></div>'; }
+            });
+            </script></body></html>
+            """)
+        let list = try await driver.elements()
+        #expect(list.elements.contains { $0.href?.hasSuffix("/post/1") == true })
+
+        let overlays = try await driver.dismissOverlays()
+        #expect(overlays.hidden.count == 1)
+        #expect(overlays.hidden.first?.contains("cookies") == true)
+        let after = try await driver.elements().elements.map(\.name)
+        #expect(after.contains("Log In"))
+        #expect(after.contains("r/a"))
+        #expect(!after.contains("Accept All"))
+    }
+
     @Test func marksLandOnTheSnapshot() async throws {
         let marks = [RAVEPageElement(ref: 1, role: "button", name: "Go", tag: "button",
                                      x: 100, y: 100, w: 200, h: 50)]

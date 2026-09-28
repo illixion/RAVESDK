@@ -34,6 +34,13 @@ enum RAVEPageScripts {
             }
             return el;
         };
+        // Every element, including those inside open shadow roots.
+        const allElements = function* (root) {
+            for (const el of root.querySelectorAll('*')) {
+                yield el;
+                if (el.shadowRoot) yield* allElements(el.shadowRoot);
+            }
+        };
         const viewport = () => {
             const s = document.scrollingElement || document.documentElement;
             return { width: innerWidth, height: innerHeight, scrollX: s.scrollLeft, scrollY: s.scrollTop,
@@ -119,13 +126,19 @@ enum RAVEPageScripts {
             return cs.visibility !== 'hidden' && cs.display !== 'none' && parseFloat(cs.opacity) !== 0;
         };
         const inViewport = r => r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
-        // What is actually on top at the element's centre: an overlay hides
-        // what is under it, which is exactly what a model should be told.
+        // What is actually on top: an overlay hides what is under it, which
+        // is exactly what a model should be told. Five points, not just the
+        // centre, because feeds lay a transparent link over each card and
+        // the card's own content over parts of that link — hit-testing the
+        // centre alone loses the link, and with it the post.
         const unobscured = (el, r) => {
-            const x = Math.min(Math.max(r.left + r.width / 2, 0), vw - 1);
-            const y = Math.min(Math.max(r.top + r.height / 2, 0), vh - 1);
-            const hit = deepElementFromPoint(x, y);
-            return !!hit && (composedContains(el, hit) || composedContains(hit, el));
+            const left = Math.max(r.left, 0), right = Math.min(r.right, vw - 1);
+            const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, vh - 1);
+            const points = [[0.5, 0.5], [0.15, 0.15], [0.85, 0.15], [0.15, 0.85], [0.85, 0.85]];
+            return points.some(([fx, fy]) => {
+                const hit = deepElementFromPoint(left + (right - left) * fx, top + (bottom - top) * fy);
+                return !!hit && (composedContains(el, hit) || composedContains(hit, el));
+            });
         };
         const clickableRoles = new Set(['link', 'button']);
 
@@ -297,7 +310,9 @@ enum RAVEPageScripts {
             hidden.push(el.tagName.toLowerCase() + cls + ' "' + clean(el.innerText, 60) + '"');
         };
         for (const el of document.querySelectorAll('dialog[open], [aria-modal=true]')) hide(el);
-        for (const el of document.body.querySelectorAll('*')) {
+        // Site chrome is fixed too, and full of "Log in" and "Sign up".
+        const CHROME = 'header, nav, aside, [role=banner], [role=navigation], [role=complementary]';
+        for (const el of allElements(document.body)) {
             const cs = getComputedStyle(el);
             if (cs.position !== 'fixed' || cs.display === 'none') continue;
             const r = el.getBoundingClientRect();
@@ -306,10 +321,14 @@ enum RAVEPageScripts {
             const cover = (w * h) / area;
             // A fixed layer that holds the page's own content is the app
             // shell, not an overlay.
-            if (main && el.contains(main)) continue;
+            if (main && composedContains(el, main)) continue;
+            if (el.matches(CHROME) || el.querySelector(CHROME)) continue;
             const text = el.innerText || '';
             if (cover > 0.3 && text.length < 5000) hide(el);
-            else if (cover > 0.05 && NAG.test(text.slice(0, 2000))) hide(el);
+            // Banners and nags sit at the bottom or in the middle; a fixed
+            // strip along the top or a sidebar from under the header is
+            // navigation.
+            else if (cover > 0.05 && r.top > vh * 0.3 && NAG.test(text.slice(0, 2000))) hide(el);
         }
         let unlockedScroll = false;
         for (const el of [document.documentElement, document.body]) {
