@@ -95,7 +95,7 @@ is easy to skip.
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by Hypnos's Jellyfin Atmos Objects plugin; `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb. RAVEFilm re-exports it (tvOS film audio); built for a game mixer to feed too |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
-| `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays |
+| `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 
 ### RAVEBrowser — a model uses pages the way Chrome MCP does, with nothing per site
 
@@ -124,6 +124,25 @@ assistant). The rules that keep it site-agnostic and safe:
 
 `swift test` runs the scripts against a real `WKWebView` on macOS (local fixtures, no
 network). The driver needs WebKit, so tvOS gets the model types only.
+
+**`RAVEPageAgent` is the loop, and every consumer runs the same one.** A model reaches a
+goal one action at a time (click, type, scroll, find, read, back, navigate, done) through
+the driver; the instructions, the step's JSON schema and the turn format live here, and the
+consumer supplies only a `RAVEPageAgentModel` (Ollama, the on-device model, anything). Turns
+are **self-contained and bounded**: the current page (outline, optional marked snapshot),
+one line per earlier step, and the previous result. That is the fix for the first version,
+which re-sent the whole conversation each turn and grew a 12B model's step time from 6 s to
+50 s within one task. Also load-bearing: `read` continues where the last read stopped
+("part 2 of 9"), because re-reading from the top never reaches what is further down and a
+small model will keep trying; an action that changed nothing is said so; the same step with
+the same result three times ends the run; and a ref whose element a feed re-rendered is found
+again by role and link (`R.meta`) instead of failing.
+
+**`RAVEBrowserLab` measures that loop on the Mac**, no headset: `swift run RAVEBrowserLab
+--model gemma3:12b [--task id] [--text-only] --verbose`. The page runs in a real, visible
+window — WebKit treats a page in no window, or an unshown one, as hidden and stops rendering
+it, the same fact the pause relies on — and success is judged from the URL a task ends on,
+not from what the model says. Fixed tasks on Wikipedia and Reddit; `--list` names them.
 
 **What else belongs in this target** (decided 2026-09-28, not built yet). Three apps want
 a web view, and each wants a different shell around it:

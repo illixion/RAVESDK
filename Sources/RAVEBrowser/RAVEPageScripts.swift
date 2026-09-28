@@ -46,10 +46,33 @@ enum RAVEPageScripts {
             return { width: innerWidth, height: innerHeight, scrollX: s.scrollLeft, scrollY: s.scrollTop,
                      scrollWidth: s.scrollWidth, scrollHeight: s.scrollHeight };
         };
+        const SELECTOR = [
+            'a[href]', 'button', 'input:not([type=hidden])', 'textarea', 'select', 'summary',
+            '[role=button]', '[role=link]', '[role=tab]', '[role=menuitem]', '[role=checkbox]',
+            '[role=radio]', '[role=switch]', '[role=option]', '[role=combobox]', '[role=textbox]',
+            '[contenteditable=""]', '[contenteditable=true]', '[onclick]', '[tabindex]:not([tabindex="-1"])'
+        ].join(',');
+        const candidates = () => {
+            const found = [], seen = new Set();
+            (function walk(root) {
+                for (const el of root.querySelectorAll(SELECTOR)) if (!seen.has(el)) { seen.add(el); found.push(el); }
+                for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+            })(document);
+            return found;
+        };
+        // A ref whose element has gone is looked for again by what it was:
+        // feeds and other client-rendered pages replace their nodes between
+        // one listing and the next action, with the same link and label.
         const refElement = ref => {
             const el = R.refs[ref];
-            if (!el || !el.isConnected) throw new Error('stale ref ' + ref + ': list the elements again');
-            return el;
+            if (el && el.isConnected) return el;
+            const was = R.meta && R.meta[ref];
+            if (was) {
+                const again = candidates().find(c => was.href ? c.href === was.href && roleOf(c) === was.role
+                                                             : roleOf(c) === was.role && nameOf(c) === was.name);
+                if (again) { R.refs[ref] = again; return again; }
+            }
+            throw new Error('ref ' + ref + ' is gone from the page: use a number from the current list');
         };
         const roleOf = el => {
             const explicit = el.getAttribute('role');
@@ -105,20 +128,8 @@ enum RAVEPageScripts {
 
     /// Arguments: `scope` ("viewport" | "page"), `limit`.
     static let elements = prelude + #"""
-        const SELECTOR = [
-            'a[href]', 'button', 'input:not([type=hidden])', 'textarea', 'select', 'summary',
-            '[role=button]', '[role=link]', '[role=tab]', '[role=menuitem]', '[role=checkbox]',
-            '[role=radio]', '[role=switch]', '[role=option]', '[role=combobox]', '[role=textbox]',
-            '[contenteditable=""]', '[contenteditable=true]', '[onclick]', '[tabindex]:not([tabindex="-1"])'
-        ].join(',');
         const vw = innerWidth, vh = innerHeight;
         const onlyViewport = scope !== 'page';
-        const candidates = [];
-        const seen = new Set();
-        (function walk(root) {
-            for (const el of root.querySelectorAll(SELECTOR)) if (!seen.has(el)) { seen.add(el); candidates.push(el); }
-            for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
-        })(document);
 
         const shown = (el, r) => {
             if (r.width < 2 || r.height < 2) return false;
@@ -144,7 +155,7 @@ enum RAVEPageScripts {
 
         const kept = [];
         const keptSet = new Set();
-        for (const el of candidates) {
+        for (const el of candidates()) {
             if (el.closest && el.closest('[aria-hidden=true], [inert]')) continue;
             const r = el.getBoundingClientRect();
             if (!shown(el, r)) continue;
@@ -161,6 +172,7 @@ enum RAVEPageScripts {
         kept.sort((a, b) => (Math.round(a.r.top) - Math.round(b.r.top)) || (a.r.left - b.r.left));
 
         R.refs = [];
+        R.meta = [];
         const elements = [];
         for (const { el, r } of kept.slice(0, limit)) {
             const ref = elements.length + 1;
@@ -174,6 +186,7 @@ enum RAVEPageScripts {
             if (el.type === 'checkbox' || el.type === 'radio') item.checked = el.checked;
             else if (el.getAttribute('aria-checked')) item.checked = el.getAttribute('aria-checked') === 'true';
             if (el.disabled || el.getAttribute('aria-disabled') === 'true') item.disabled = true;
+            R.meta[ref] = { role: item.role, name: item.name, href: item.href || null };
             elements.push(item);
         }
         return JSON.stringify({ viewport: viewport(), elements, total: kept.length, truncated: kept.length > elements.length });

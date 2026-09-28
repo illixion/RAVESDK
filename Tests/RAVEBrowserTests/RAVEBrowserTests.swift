@@ -135,6 +135,23 @@ import WebKit
         #expect(try await driver.info().title == "shadow")
     }
 
+    /// Client-rendered pages replace nodes between a listing and a click;
+    /// the ref follows the element with the same link.
+    @Test func refsFollowAReRenderedElement() async throws {
+        let driver = driver
+        try await driver.load(html: """
+            <!doctype html><html><head><title>Feed</title></head><body>
+            <div id="feed"><a href="#post-1" onclick="document.title='opened'">First post</a></div>
+            </body></html>
+            """)
+        let link = try #require(try await driver.elements().elements.first { $0.name == "First post" })
+        // Re-render the feed, as a framework would.
+        try await driver.webView?.evaluateJavaScript(
+            "document.getElementById('feed').innerHTML = '<a href=\"#post-1\" onclick=\"document.title=\\'opened\\'\">First post</a>'")
+        try await driver.click(ref: link.ref)
+        #expect(try await driver.info().title == "opened")
+    }
+
     @Test func refsGoStaleWithTheDocument() async throws {
         let driver = driver
         try await driver.load(html: Self.page)

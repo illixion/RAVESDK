@@ -102,6 +102,10 @@ let package = Package(
             resources: [.copy("Resources/Readability.js"), .copy("Resources/Readability-LICENSE.md")]
         ),
         .testTarget(name: "RAVEBrowserTests", dependencies: ["RAVEBrowser"]),
+        // Mac bench for RAVEBrowser's agent loop against a model on Ollama
+        // (`swift run RAVEBrowserLab --model …`). Not a product, like
+        // RAVEFilmLab: no app builds it.
+        .executableTarget(name: "RAVEBrowserLab", dependencies: ["RAVEBrowser"]),
         // Mac bench for RAVEFilm (scripts/run-film-lab.sh). Not a product, so
         // no app builds it. Reads the server and token from the environment so
         // none are committed. An unbundled executable has no Info.plist, so
