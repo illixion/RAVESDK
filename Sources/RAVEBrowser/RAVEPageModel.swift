@@ -152,6 +152,8 @@ public struct RAVEPageOverlays: Codable, Sendable, Equatable {
     public var hidden: [String]
     /// Whether `overflow: hidden` or a fixed-position body lock was undone.
     public var unlockedScroll: Bool
+    /// The button pressed to decline a consent layer, if one offered it.
+    public var declined: String?
 }
 
 public extension Encodable {

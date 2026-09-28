@@ -317,7 +317,20 @@ enum RAVEPageScripts {
         const NAG = /cookie|consent|privacy|gdpr|subscribe|newsletter|sign ?up|log ?in|sign ?in|accept|continue|\b(open in|get|use) the app\b/i;
         const main = document.querySelector('main, article, [role=main]');
         const hidden = [];
+        // A consent layer offering to decline is answered, not just hidden:
+        // the choice then sticks in a persistent profile and the banner
+        // stays away. Declining is the only answer given on anyone's behalf.
+        const DECLINE = /^(reject( all| optional( cookies)?)?|decline( all)?|(use )?(only )?(strictly )?(necessary|essential)( cookies)?( only)?|refuse( all)?)$/i;
+        let declined = null;
+        const decline = el => {
+            if (!/cookie|consent|privacy|gdpr/i.test((el.innerText || '').slice(0, 3000))) return;
+            const buttons = Array.from(el.querySelectorAll('button, [role=button], a'));
+            if (el.shadowRoot) buttons.push(...el.shadowRoot.querySelectorAll('button, [role=button], a'));
+            const button = buttons.find(b => DECLINE.test(clean(b.innerText || b.textContent || '', 60)));
+            if (button) { button.click(); declined = clean(button.innerText || button.textContent, 60); }
+        };
         const hide = el => {
+            if (!declined) decline(el);
             el.style.setProperty('display', 'none', 'important');
             const cls = typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/)[0] : '';
             hidden.push(el.tagName.toLowerCase() + cls + ' "' + clean(el.innerText, 60) + '"');
@@ -358,7 +371,7 @@ enum RAVEPageScripts {
                 unlockedScroll = true;
             }
         }
-        return JSON.stringify({ hidden, unlockedScroll });
+        return JSON.stringify({ hidden, unlockedScroll, declined });
         """#
 
     /// No arguments.

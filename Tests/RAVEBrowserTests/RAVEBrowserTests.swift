@@ -228,7 +228,8 @@ import WebKit
             customElements.define('cookie-banner', class extends HTMLElement {
               connectedCallback() { this.attachShadow({mode:'open'}).innerHTML =
                 '<div style="position:fixed;right:0;bottom:0;width:400px;height:250px;background:#333;color:#fff">'
-                + 'We use cookies. <button>Accept All</button></div>'; }
+                + 'We use cookies. <button onclick="document.title=\\'declined\\'">Reject Optional Cookies</button>'
+                + '<button>Accept All</button></div>'; }
             });
             </script></body></html>
             """)
@@ -238,6 +239,8 @@ import WebKit
         let overlays = try await driver.dismissOverlays()
         #expect(overlays.hidden.count == 1)
         #expect(overlays.hidden.first?.contains("cookies") == true)
+        #expect(overlays.declined == "Reject Optional Cookies")
+        #expect(try await driver.info().title == "declined")
         let after = try await driver.elements().elements.map(\.name)
         #expect(after.contains("Log In"))
         #expect(after.contains("r/a"))
