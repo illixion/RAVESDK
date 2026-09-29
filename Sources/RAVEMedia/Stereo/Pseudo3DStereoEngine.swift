@@ -113,6 +113,20 @@ public final class Pseudo3DStereoEngine {
     private var endObserver: NSObjectProtocol?
     private var failureObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
+    private var timeControlObservation: NSKeyValueObservation?
+    /// Set by `play()`, cleared by `pause()`. visionOS pauses a player out
+    /// from under its owner about a second after a window opens or a
+    /// `pushWindow` transition settles, with no scenePhase or room change to
+    /// react to, so the video sits on its first frame until the viewer
+    /// presses pause and play. A pause while this is set and the room is
+    /// active is that involuntary one, and is undone. Same fix as Hypnos's
+    /// flat `NativeMetalVideoPlayerView`, which already had it; this engine
+    /// didn't, so turning on auto-3D brought the frozen first frame back.
+    private var intendsToPlay = false
+    /// Caps the involuntary resume so a system that insists on pausing can't
+    /// drive a play/pause loop. Reset whenever playback actually runs.
+    private var involuntaryResumeCount = 0
+    private static let maxInvoluntaryResumes = 5
     private var isRoomActive = true
     /// Playback state captured at room exit; room re-entry restores it so a
     /// manual pause survives focus/room flaps.
@@ -541,6 +555,20 @@ public final class Pseudo3DStereoEngine {
         ) { [weak self] time in
             MainActor.assumeIsolated { self?.handleTimeUpdate(time.seconds) }
         }
+        // The periodic observer only fires while time advances, so it can't
+        // report a pause; this also catches the involuntary one.
+        timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] observed, _ in
+            let status = observed.timeControlStatus
+            Task { @MainActor [weak self] in
+                guard let self, self.player === observed else { return }
+                self.reportPlaybackState()
+                if status == .playing {
+                    self.involuntaryResumeCount = 0
+                } else if status == .paused, self.intendsToPlay, self.isRoomActive {
+                    self.resumeAfterInvoluntaryPause()
+                }
+            }
+        }
 
         // Start the renderer timeline once; frames are tagged relative to this.
         if !didStartSynchronizer {
@@ -663,8 +691,31 @@ public final class Pseudo3DStereoEngine {
         return true
     }
 
-    public func play() { isRoomActive = true; player?.play() }
-    public func pause() { player?.pause() }
+    public func play() {
+        isRoomActive = true
+        intendsToPlay = true
+        player?.play()
+    }
+
+    public func pause() {
+        intendsToPlay = false
+        player?.pause()
+    }
+
+    /// See `intendsToPlay`. Leaves a finished, non-looping item parked on its
+    /// last frame.
+    private func resumeAfterInvoluntaryPause() {
+        guard let player, let item = player.currentItem else { return }
+        let duration = item.duration.seconds
+        if duration.isFinite, duration > 0, player.currentTime().seconds >= duration - 0.25 { return }
+        guard involuntaryResumeCount < Self.maxInvoluntaryResumes else {
+            RAVEMediaLog.pipeline.error("Pseudo-3D player kept pausing after \(Self.maxInvoluntaryResumes, privacy: .public) resumes; giving up")
+            return
+        }
+        involuntaryResumeCount += 1
+        RAVEMediaLog.pipeline.info("Pseudo-3D involuntary pause; resuming (attempt \(self.involuntaryResumeCount, privacy: .public))")
+        player.play()
+    }
 
     public func seek(to seconds: Double) {
         player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
@@ -755,6 +806,10 @@ public final class Pseudo3DStereoEngine {
         if let failureObserver { NotificationCenter.default.removeObserver(failureObserver) }
         statusObservation?.invalidate()
         statusObservation = nil
+        timeControlObservation?.invalidate()
+        timeControlObservation = nil
+        intendsToPlay = false
+        involuntaryResumeCount = 0
         player?.pause()
         if let videoOutput { playerItem?.remove(videoOutput) }
         timeObserver = nil
