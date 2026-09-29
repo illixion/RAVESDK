@@ -311,6 +311,12 @@ Two details are easy to lose in a rewrite and will silently break the console:
 - **Polling is reference-counted.** `addViewer()`/`removeViewer()` gate the `OSLogStore`
   poll, so a console tab merely *visible* in an ornament costs nothing. The buffer is
   released when the last viewer leaves.
+- **A read is a whole-archive scan in `logd`, so polling is paced by its cost.**
+  `position(date:)` is ignored and every `getEntries` makes `logd` scan the full system log
+  archive: ~1.9 s flat on macOS 27, none of it charged to the app. The old 1 s poll kept
+  `logd` busy nonstop and slowed visionOS apps to a crawl while a console was open. Reads
+  now run at background QoS, and the gap after each is at least `busyRatio` (4×) its
+  duration. Don't shorten it back to a fixed clock; `refresh()` exists for "now".
 - **`.debug` never reaches `OSLogStore`.** The unified log keeps it in a memory ring buffer
   only. A console set to "Debug" therefore shows nothing unless call sites log via
   `RAVELogStore.effectiveDebugLevel`, which promotes to `.info` while a viewer is open.

@@ -150,6 +150,25 @@ struct RAVELogStoreLifecycleTests {
         #expect(!store.isPolling)
     }
 
+    @Test("The gap between reads stretches with what a read cost")
+    func pollPacing() {
+        // A read makes `logd` scan the whole archive (~1.9 s measured), so a
+        // fixed one-second clock kept it busy nonstop. The gap is at least
+        // `busyRatio` times the read, bounding the duty cycle.
+        let minimum = Duration.seconds(2)
+        #expect(RAVELogStore.nextPollDelay(afterFetchTaking: .milliseconds(50), minimum: minimum) == minimum)
+        #expect(RAVELogStore.nextPollDelay(afterFetchTaking: .seconds(2), minimum: minimum)
+                == .seconds(2 * RAVELogStore.busyRatio))
+    }
+
+    @Test("A refresh while not polling is harmless")
+    func refreshWhileIdle() {
+        let store = RAVELogStore(subsystem: "pro.rave.tests.refresh")
+        store.refresh()
+        #expect(!store.isPolling)
+        #expect(!store.isFetching)
+    }
+
     @Test("The nonisolated viewing flag drives the debug-level promotion")
     func debugPromotion() {
         // The unified log keeps .debug in a ring buffer only, so OSLogStore

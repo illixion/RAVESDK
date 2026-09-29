@@ -15,6 +15,17 @@
  runs only while at least one viewer is registered, and the buffer is released
  when the last one leaves.
 
+ **Polling is paced by what a read costs, not a fixed clock.** A read is not
+ incremental: `position(date:)` is ignored, and `getEntries` makes `logd` scan
+ the whole system log archive whatever the predicate says. Measured on macOS
+ 27, that is ~1.9 s per read, flat, with no CPU charged to this process — the
+ work happens in `logd`, outside the app's own priority. Reading once a second
+ kept `logd` scanning nonstop, which is what slowed visionOS apps to a crawl
+ while the console was open. So each read runs at background QoS (XPC carries
+ it to `logd`), and the gap before the next one is at least `busyRatio` times
+ as long as the read took, which bounds `logd`'s duty cycle at ~20%.
+ `refresh()` reads immediately for a viewer who doesn't want to wait.
+
  **`.debug` entries are not in the store.** The unified log keeps `.debug` in a
  memory ring buffer only — `OSLogStore` never returns them, so a console set to
  "Debug" would silently show nothing. The workaround is to *promote* debug calls
@@ -101,16 +112,28 @@ public final class RAVELogStore {
     /// from `entries` on every render.
     public private(set) var categories: [String] = []
     public private(set) var isPolling = false
+    /// True while a read is in flight, for a refresh spinner.
+    public private(set) var isFetching = false
 
     public let subsystem: String
     /// How many entries to retain. Older ones are dropped.
     public let maxEntries: Int
     /// How far back the first poll reaches.
     public let initialHistory: TimeInterval
-    public let pollInterval: Duration
+    /// The shortest gap between reads. The actual gap stretches with what the
+    /// last read cost — see `nextPollDelay(afterFetchTaking:minimum:)`.
+    public let minimumPollInterval: Duration
+
+    /// How many times longer than a read the idle gap after it must be.
+    public nonisolated static let busyRatio = 4
 
     private var lastPollDate: Date?
     private var pollTask: Task<Void, Never>?
+    /// The sleep between reads, held so `refresh()` can cut it short.
+    private var waitTask: Task<Void, Error>?
+    /// Bumped on every start, so a read that outlives the viewers who asked
+    /// for it — and a restart after them — is discarded instead of applied.
+    private var generation = 0
     private var categoriesSet: Set<String> = []
     private var viewerCount = 0
 
@@ -118,12 +141,12 @@ public final class RAVELogStore {
         subsystem: String = Bundle.main.bundleIdentifier ?? "pro.rave.app",
         maxEntries: Int = 2000,
         initialHistory: TimeInterval = 60,
-        pollInterval: Duration = .seconds(1)
+        minimumPollInterval: Duration = .seconds(2)
     ) {
         self.subsystem = subsystem
         self.maxEntries = maxEntries
         self.initialHistory = initialHistory
-        self.pollInterval = pollInterval
+        self.minimumPollInterval = minimumPollInterval
     }
 
     // MARK: Viewer registration
@@ -177,40 +200,70 @@ public final class RAVELogStore {
 
     // MARK: Polling
 
+    /// Read now instead of waiting out the current gap. Does nothing while
+    /// not polling, and never starts a second read alongside one in flight.
+    public func refresh() {
+        waitTask?.cancel()
+    }
+
+    /// The gap before the next read: at least `minimum`, and at least
+    /// `busyRatio` times what the last read took.
+    public nonisolated static func nextPollDelay(
+        afterFetchTaking elapsed: Duration,
+        minimum: Duration
+    ) -> Duration {
+        max(minimum, elapsed * busyRatio)
+    }
+
     private func startPolling() {
         guard !isPolling else { return }
         isPolling = true
+        generation += 1
         pollTask = Task { [weak self] in
-            // The first poll produces the initial history. Running it through
+            // The first read produces the initial history. Running it through
             // the same detached path keeps the main thread free during the
             // cold open.
-            await self?.performFetch()
             while !Task.isCancelled {
-                guard let interval = self?.pollInterval else { return }
-                try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { break }
-                await self?.performFetch()
+                guard let elapsed = await self?.performFetch() else { return }
+                guard !Task.isCancelled, let self else { return }
+                let delay = Self.nextPollDelay(afterFetchTaking: elapsed, minimum: minimumPollInterval)
+                let wait = Task { try await Task.sleep(for: delay) }
+                waitTask = wait
+                // Cancelled either by `refresh()`, which reads again at once,
+                // or by `stopPolling()`, which the loop condition catches.
+                _ = try? await wait.value
             }
         }
     }
 
     private func stopPolling() {
         isPolling = false
+        isFetching = false
         pollTask?.cancel()
         pollTask = nil
+        waitTask?.cancel()
+        waitTask = nil
     }
 
-    /// One fetch cycle. The `OSLogStore` read is the expensive part and runs
-    /// on a detached utility task so it doesn't block the main actor while the
-    /// console is rendering.
-    private func performFetch() async {
+    /// One fetch cycle, returning how long the read took. The `OSLogStore`
+    /// read runs on a detached background task: the main actor stays free,
+    /// and the low QoS follows the request into `logd`, which does the work.
+    private func performFetch() async -> Duration {
+        let generation = self.generation
         let since = lastPollDate
         let subsystem = self.subsystem
         let history = initialHistory
-        let result = await Task.detached(priority: .utility) {
+        isFetching = true
+        let clock = ContinuousClock()
+        let start = clock.now
+        let result = await Task.detached(priority: .background) {
             Self.readEntries(since: since, subsystem: subsystem, initialHistory: history)
         }.value
+        let elapsed = clock.now - start
+        guard generation == self.generation else { return elapsed }
+        isFetching = false
         apply(result)
+        return elapsed
     }
 
     nonisolated private static func readEntries(
@@ -220,6 +273,9 @@ public final class RAVELogStore {
     ) -> (newEntries: [RAVELogEntry], latestDate: Date?) {
         do {
             let store = try OSLogStore(scope: .currentProcessIdentifier)
+            // Ignored in practice — every read returns the whole process
+            // history — but passed anyway in case an OS release honours it.
+            // The `<= date` check below is what actually skips old entries.
             let position = store.position(date: date ?? Date().addingTimeInterval(-initialHistory))
             let predicate = NSPredicate(format: "subsystem == %@", subsystem)
             let logEntries = try store.getEntries(at: position, matching: predicate)

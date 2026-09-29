@@ -36,10 +36,14 @@ public struct RAVEConsoleView: View {
     }
 
     public var body: some View {
+        // Filtered once per render and handed down: the count, the copy
+        // button, the list and the empty state all read it, and each used to
+        // re-filter the whole buffer on its own.
+        let entries = store.filtered(filter)
         VStack(spacing: 0) {
-            filterBar
+            filterBar(entries)
             Divider()
-            logList
+            logList(entries)
         }
         // Registration, not `isPolling`, is what starts and stops the poll —
         // several consoles can be open at once and the last one out turns off
@@ -50,7 +54,7 @@ public struct RAVEConsoleView: View {
 
     // MARK: Filter bar
 
-    private var filterBar: some View {
+    private func filterBar(_ entries: [RAVELogEntry]) -> some View {
         HStack(spacing: 12) {
             Picker("Level", selection: $filter.minimumLevel) {
                 ForEach(RAVELogLevel.allCases) { level in
@@ -88,13 +92,22 @@ public struct RAVEConsoleView: View {
             // tvOS has no pasteboard.
             #if !os(tvOS)
             Button {
-                copyToClipboard()
+                copyToClipboard(entries)
             } label: {
                 Image(systemName: "doc.on.clipboard")
             }
             .help("Copy filtered entries to clipboard")
             .disabled(entries.isEmpty)
             #endif
+
+            // Reads are seconds apart (see `RAVELogStore`), so offer one now.
+            Button {
+                store.refresh()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("Read new entries now")
+            .disabled(store.isFetching)
 
             Text("\(entries.count)")
                 .foregroundStyle(.secondary)
@@ -121,9 +134,7 @@ public struct RAVEConsoleView: View {
 
     // MARK: List
 
-    private var entries: [RAVELogEntry] { store.filtered(filter) }
-
-    private var logList: some View {
+    private func logList(_ entries: [RAVELogEntry]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
@@ -149,7 +160,9 @@ public struct RAVEConsoleView: View {
                     }
                 }
             }
-            .onChange(of: store.entries.count) { _, _ in
+            // Keyed on the newest entry, not the count: once the buffer is at
+            // `maxEntries` the count stops changing while entries still arrive.
+            .onChange(of: store.entries.last?.id) { _, _ in
                 guard autoScroll, let last = entries.last?.id else { return }
                 proxy.scrollTo(last, anchor: .bottom)
             }
@@ -157,7 +170,7 @@ public struct RAVEConsoleView: View {
     }
 
     #if !os(tvOS)
-    private func copyToClipboard() {
+    private func copyToClipboard(_ entries: [RAVELogEntry]) {
         let text = entries.exportText()
         #if canImport(UIKit)
         UIPasteboard.general.string = text
