@@ -26,10 +26,13 @@ public enum RAVENetLogLevel: Int, Sendable, Comparable, CaseIterable {
 /// Sink for transport diagnostics. Implement this to forward into the host
 /// app's structured logger (`AppLogger.remoteViewer`, `AppLogger.connection`, …).
 ///
-/// Messages never contain frame payloads — only lifecycle, timings and error
-/// detail — so they are safe to log at `.public` privacy.
+/// Messages carry per-value privacy: timings, counts, states and error codes
+/// are public; server endpoints, error descriptions and close reasons are
+/// not. A URL is logged without its query or credentials, because a token
+/// often rides in the query (RoboFrame's and Home Assistant's did). Forward
+/// the message as it is — don't flatten it to a String.
 public protocol RAVENetLogger: Sendable {
-    func log(_ level: RAVENetLogLevel, _ message: String)
+    func log(_ level: RAVENetLogLevel, _ message: DebugLogMessage)
 }
 
 /// Default sink writing to `DebugLogger` (the in-app console and the
@@ -41,12 +44,12 @@ public struct RAVENetOSLogger: RAVENetLogger {
         self.logger = DebugLogger(subsystem: subsystem, category: category)
     }
 
-    public func log(_ level: RAVENetLogLevel, _ message: String) {
+    public func log(_ level: RAVENetLogLevel, _ message: DebugLogMessage) {
         switch level {
-        case .debug: logger.debug("\(message, privacy: .public)")
-        case .info: logger.info("\(message, privacy: .public)")
-        case .warning: logger.warning("\(message, privacy: .public)")
-        case .error: logger.error("\(message, privacy: .public)")
+        case .debug: logger.debug(message)
+        case .info: logger.info(message)
+        case .warning: logger.warning(message)
+        case .error: logger.error(message)
         }
     }
 }
@@ -54,5 +57,5 @@ public struct RAVENetOSLogger: RAVENetLogger {
 /// Discards everything. Useful in tests.
 public struct RAVENetSilentLogger: RAVENetLogger {
     public init() {}
-    public func log(_ level: RAVENetLogLevel, _ message: String) {}
+    public func log(_ level: RAVENetLogLevel, _ message: DebugLogMessage) {}
 }

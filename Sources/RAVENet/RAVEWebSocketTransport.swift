@@ -174,7 +174,7 @@ public actor RAVEWebSocketTransport {
         guard let task = webSocketTask else { return }
         task.send(.string(text)) { [logger] error in
             if let error {
-                logger.log(.warning, "send error: \(error.localizedDescription)")
+                logger.log(.warning, "send error: \(error)")
             }
         }
     }
@@ -316,7 +316,7 @@ public actor RAVEWebSocketTransport {
         lastReceiveAt = Date()
         transition(to: .connecting)
 
-        logger.log(.info, "connecting to \(configuration.url.absoluteString)")
+        logger.log(.info, "connecting to \(configuration.url.scheme ?? "?", privacy: .public)://\(Self.loggableEndpoint(configuration.url), privacy: .private(mask: .hash))")
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop(task: task)
@@ -371,7 +371,7 @@ public actor RAVEWebSocketTransport {
 
     private func handleReceiveFailure(_ error: any Error, task: URLSessionWebSocketTask) {
         let failure = Self.describeFailure(error, task: task)
-        logger.log(.warning, "receive error: \(failure.diagnostic)")
+        logger.log(.warning, "receive error: \(failure.errorDomain, privacy: .public) \(failure.errorCode) closeCode=\(failure.closeCode.rawValue) — \(failure.diagnostic)")
 
         keepaliveTask?.cancel()
         keepaliveTask = nil
@@ -399,8 +399,10 @@ public actor RAVEWebSocketTransport {
             if let peerTrust = urlError.userInfo[NSURLErrorFailingURLPeerTrustErrorKey] {
                 detail += " peerTrust=\(peerTrust)"
             }
+            // Endpoint only: the query can hold a token, and this string
+            // ends up in logs and in the connection state.
             if let failing = urlError.failingURL {
-                detail += " url=\(failing.absoluteString)"
+                detail += " url=\(loggableEndpoint(failing))"
             }
         }
         if task.closeCode != .invalid {
@@ -420,6 +422,15 @@ public actor RAVEWebSocketTransport {
             closeReason: reasonText,
             diagnostic: detail
         )
+    }
+
+    /// Host, port and path only. The query and any credentials are dropped
+    /// before the URL reaches a log at all, so a token in the query can't
+    /// show up even on the device's own console.
+    static func loggableEndpoint(_ url: URL) -> String {
+        var endpoint = url.host ?? "?"
+        if let port = url.port { endpoint += ":\(port)" }
+        return endpoint + url.path
     }
 
     // MARK: - Keepalive
@@ -494,7 +505,7 @@ public actor RAVEWebSocketTransport {
     }
 
     private func logReconnect(delay: TimeInterval, attempt: Int) {
-        logger.log(.info, "reconnecting in \(delay)s (attempt=\(attempt))")
+        logger.log(.info, "reconnecting in \(delay, privacy: .public)s (attempt=\(attempt))")
     }
 
     private func performScheduledReconnect() {

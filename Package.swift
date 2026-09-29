@@ -38,7 +38,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
-        .testTarget(name: "RAVENetTests", dependencies: ["RAVENet"]),
+        .testTarget(name: "RAVENetTests", dependencies: ["RAVENet", .product(name: "DebugTrace", package: "DebugTrace")]),
         .target(name: "RAVEUI"),
         // Unit tests, despite the name: SwiftPM has no UI-testing product type
         // and XCUITest needs a host app, so driving these views for real
