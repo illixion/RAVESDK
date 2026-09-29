@@ -21,6 +21,7 @@
  Moved from the app's Atmos spike (AtmosSpikeStageView).
  */
 
+import DebugTrace
 import AudioToolbox
 import os
 import RealityKit
@@ -45,7 +46,7 @@ public struct FilmStageView: View {
     @State private var listener = PerspectiveCamera()
     #endif
 
-    private let logger = Logger(subsystem: "com.illixion.hypnos", category: "FilmStage")
+    private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "FilmStage")
 
     public init(player: FilmPlayer, listenerDistance: Float = 1.5,
                 listenerOrientation: @escaping @MainActor () -> simd_quatf = { simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) }) {

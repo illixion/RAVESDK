@@ -19,6 +19,7 @@
  Items without Atmos objects (the plugin answers 422) play picture only.
  */
 
+import DebugTrace
 import CoreMedia
 import Foundation
 import Observation
@@ -68,7 +69,7 @@ public final class FilmPlayer {
     public private(set) var measuredRate: Double = 0
     public private(set) var clockReport = "—"
 
-    private let logger = Logger(subsystem: "com.illixion.hypnos", category: "FilmPlayer")
+    private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "FilmPlayer")
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var lastState: [Int: (pos: SIMD3<Float>, gainDB: Float)] = [:]

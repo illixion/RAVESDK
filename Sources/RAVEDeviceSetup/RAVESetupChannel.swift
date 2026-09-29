@@ -6,6 +6,7 @@
  (nonce ‖ ciphertext ‖ tag) of a JSON `Reply`.
  */
 
+import DebugTrace
 import CryptoKit
 import Foundation
 import Network
@@ -16,7 +17,7 @@ enum RAVESetupChannel {
     /// Largest frame either side accepts; setup payloads are small.
     static let maxFrame = 256 * 1024
     static let replyContext = Data("reply".utf8)
-    static let logger = Logger(subsystem: "com.illixion.rave", category: "DeviceSetup")
+    static let logger = DebugLogger(subsystem: "com.illixion.rave", category: "DeviceSetup")
 
     struct Envelope: Codable {
         var v: Int

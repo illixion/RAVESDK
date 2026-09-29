@@ -28,15 +28,16 @@ let package = Package(
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
     ],
-    // The one external dependency: the console hosts DebugTrace's capture
-    // button, so every app with a console can hand over a signed trace.
+    // The one external dependency. Targets that log do it through
+    // DebugTrace's `DebugLogger`, so their lines reach the in-app console and
+    // debug traces; the console also hosts its capture button.
     // DebugTrace depends on neither RAVE package, so this adds no cycle and
     // no RAVESDK <-> RAVEEngine edge. See ~/Projects/CLAUDE.md.
     dependencies: [
         .package(path: "../DebugTrace"),
     ],
     targets: [
-        .target(name: "RAVENet"),
+        .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
         .testTarget(name: "RAVENetTests", dependencies: ["RAVENet"]),
         .target(name: "RAVEUI"),
         // Unit tests, despite the name: SwiftPM has no UI-testing product type
@@ -49,6 +50,7 @@ let package = Package(
         // Separate from RAVEUI on purpose: two of the five apps want an
         // on-device log viewer and have no tab bar at all to hang it off.
         .target(name: "RAVEConsole", dependencies: [
+            .product(name: "DebugTrace", package: "DebugTrace"),
             .product(name: "DebugTraceUI", package: "DebugTrace"),
         ]),
         .testTarget(name: "RAVEConsoleTests", dependencies: ["RAVEConsole"]),
@@ -58,7 +60,7 @@ let package = Package(
         // source: Xcode compiles it into the target's own `default.metallib`,
         // which is why nothing here reads the app's default library. (The
         // SwiftPM CLI ignores `.metal` altogether — see RAVEMediaMetal.)
-        .target(name: "RAVEMedia"),
+        .target(name: "RAVEMedia", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
         .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"]),
         // The Persona camera as AVCapture delivers it, plus the realtime H.264
         // encoder and AVCC helpers every consumer of those frames needs. Its
@@ -68,7 +70,7 @@ let package = Package(
         // to encode a screen. Builds on macOS so `swift test` reaches the
         // container arithmetic; the interruption notifications are iOS-family
         // only and guarded.
-        .target(name: "RAVECamera"),
+        .target(name: "RAVECamera", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
         .testTarget(name: "RAVECameraTests", dependencies: ["RAVECamera"]),
         // Source-agnostic slideshow lifecycle, local sync payloads, display
         // settings, and render hooks. Apps provide their own data adapters and
@@ -85,10 +87,10 @@ let package = Package(
         // head-locked beds, head-tracked listener, live room reverb. First
         // consumer is RAVEFilm on tvOS; built generic so a game's mixer
         // (LambdaVision's parked PHASE backend) can feed it too.
-        .target(name: "RAVESpatialAudio"),
+        .target(name: "RAVESpatialAudio", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
         .target(
             name: "RAVEFilm",
-            dependencies: ["RAVESpatialAudio"],
+            dependencies: ["RAVESpatialAudio", .product(name: "DebugTrace", package: "DebugTrace")],
             // UIWindow.avDisplayManager is an AVKit category; Swift's autolink
             // drops the framework when nothing else from it is used.
             linkerSettings: [.linkedFramework("AVKit", .when(platforms: [.tvOS, .visionOS]))]
@@ -98,7 +100,7 @@ let package = Package(
         // another device: the receiver shows a QR code carrying a fresh
         // public key, the sender seals the payload to it with HPKE and sends
         // it over Bonjour. First consumer is Hypnos provisioning an Apple TV.
-        .target(name: "RAVEDeviceSetup"),
+        .target(name: "RAVEDeviceSetup", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
         .testTarget(name: "RAVEDeviceSetupTests", dependencies: ["RAVEDeviceSetup"]),
         // A tool surface over a WKWebView the app already shows — navigate,
         // read (Mozilla's Readability, bundled), numbered elements, marked

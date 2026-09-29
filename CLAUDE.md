@@ -88,7 +88,7 @@ is easy to skip.
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
 | `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager |
-| `RAVEConsole` | On-device log viewer over `OSLogStore`, plus a GPU/process/thermal memory monitor |
+| `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 | `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
@@ -306,31 +306,29 @@ Two of the five consuming apps want a log viewer and have **no tab bar at all** 
 off (Spatialcraft; Lambda renders through CompositorServices). Hence a
 separate target rather than a corner of `RAVEUI`.
 
-Two details are easy to lose in a rewrite and will silently break the console:
+**The console tails DebugTrace's `DebugLogBuffer`, not `OSLogStore`.** Every RAVE target
+that logs, and every app, logs through `DebugLogger`, a drop-in for `os.Logger` with the same
+methods and `privacy:` spelling. It keeps each line in an in-memory ring and forwards it to
+the unified log. Don't go back to `OSLogStore` for the live view, for two reasons measured
+on 2026-09-29:
+- Every read makes `logd` scan the whole system archive (~1.9 s flat on macOS 27, charged to
+  `logd`). A 1 s poll slowed visionOS apps to a crawl.
+- The OS keeps no `.debug` lines and drops `.info` ones within minutes, so a console opened
+  late showed almost nothing.
 
-- **Polling is reference-counted.** `addViewer()`/`removeViewer()` gate the `OSLogStore`
-  poll, so a console tab merely *visible* in an ornament costs nothing. The buffer is
-  released when the last viewer leaves.
-- **A read is a whole-archive scan in `logd`, so polling is paced by its cost.**
-  `position(date:)` is ignored and every `getEntries` makes `logd` scan the full system log
-  archive: ~1.9 s flat on macOS 27, none of it charged to the app. The old 1 s poll kept
-  `logd` busy nonstop and slowed visionOS apps to a crawl while a console was open. Reads
-  now run at background QoS, and the gap after each is at least `busyRatio` (4×) its
-  duration. Don't shorten it back to a fixed clock; `refresh()` exists for "now".
-- **`.debug` never reaches `OSLogStore`.** The unified log keeps it in a memory ring buffer
-  only. A console set to "Debug" therefore shows nothing unless call sites log via
-  `RAVELogStore.effectiveDebugLevel`, which promotes to `.info` while a viewer is open.
-  Apps expose this as an `AppLog.detail(_:)`-style helper.
+Lines from code still on plain `os.Logger` (Apple frameworks, anything unmigrated) don't
+appear in the console. Debug traces carry them in `system-log.txt`, in development builds.
 
-The console's toolbar carries DebugTrace's `DebugTraceButton`, which makes `RAVEConsole` the
-one target with an external dependency (`../DebugTrace`, product `DebugTraceUI`). DebugTrace
-links neither RAVE package, so this adds no cycle. The trace reads the unified log on its
-own and does not depend on what the console has buffered or filtered.
+- **Polling is reference-counted.** `addViewer()`/`removeViewer()` gate the twice-a-second
+  pull from the buffer. The store's copy is released when the last viewer leaves; the shared
+  buffer is not, because traces read it.
+- **The screen and the clipboard differ.** Rows show `message` (private values in full in
+  development mode). Copy exports `exportMessage` (private values withheld, redactor
+  applied), because a clipboard usually ends up in an LLM chat.
 
-`OSLogMessage` is a compiler-special type that **cannot** pass through a wrapper function,
-which is why app-side logging facades take an already-interpolated `String` and mark it
-`.public` — without the privacy annotation os_log redacts interpolated values and every
-line reads `<private>`.
+The toolbar carries DebugTrace's `DebugTraceButton`. The logging targets (`RAVENet`,
+`RAVEMedia`, `RAVECamera`, `RAVESpatialAudio`, `RAVEFilm`, `RAVEDeviceSetup`, `RAVEConsole`)
+depend on `../DebugTrace`. DebugTrace links neither RAVE package, so this adds no cycle.
 
 **`RAVESystemMonitor`/`RAVESystemMonitorView` are Spatial Stash's GPU memory monitor,
 generalised.** That app built it to compare lossy against lossless texture storage — a

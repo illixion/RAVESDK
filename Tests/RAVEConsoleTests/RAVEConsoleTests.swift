@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import Testing
 @testable import RAVEConsole
@@ -39,10 +40,10 @@ struct RAVELogLevelTests {
     func faultMapsToError() {
         // Nothing in the console UI distinguishes them, and a fault silently
         // becoming "info" would be the worst possible rounding.
-        #expect(RAVELogLevel(osLogLevel: .fault) == .error)
-        #expect(RAVELogLevel(osLogLevel: .error) == .error)
-        #expect(RAVELogLevel(osLogLevel: .debug) == .debug)
-        #expect(RAVELogLevel(osLogLevel: .undefined) == .info)
+        #expect(RAVELogLevel(DebugLogLevel.fault) == .error)
+        #expect(RAVELogLevel(DebugLogLevel.error) == .error)
+        #expect(RAVELogLevel(DebugLogLevel.debug) == .debug)
+        #expect(RAVELogLevel(DebugLogLevel.notice) == .notice)
     }
 }
 
@@ -125,7 +126,7 @@ struct RAVELogStoreLifecycleTests {
 
     @Test("Polling is reference-counted so an unopened console costs nothing")
     func viewerCounting() {
-        let store = RAVELogStore(subsystem: "pro.rave.tests.lifecycle")
+        let store = RAVELogStore(buffer: DebugLogBuffer(mode: .development))
         #expect(!store.isPolling)
 
         store.addViewer()
@@ -142,44 +143,61 @@ struct RAVELogStoreLifecycleTests {
 
     @Test("Unbalanced removal does not drive the count negative")
     func removalIsSafe() {
-        let store = RAVELogStore(subsystem: "pro.rave.tests.unbalanced")
+        let store = RAVELogStore(buffer: DebugLogBuffer(mode: .development))
         store.removeViewer()
         store.addViewer()
         #expect(store.isPolling)
         store.removeViewer()
         #expect(!store.isPolling)
     }
+}
 
-    @Test("The gap between reads stretches with what a read cost")
-    func pollPacing() {
-        // A read makes `logd` scan the whole archive (~1.9 s measured), so a
-        // fixed one-second clock kept it busy nonstop. The gap is at least
-        // `busyRatio` times the read, bounding the duty cycle.
-        let minimum = Duration.seconds(2)
-        #expect(RAVELogStore.nextPollDelay(afterFetchTaking: .milliseconds(50), minimum: minimum) == minimum)
-        #expect(RAVELogStore.nextPollDelay(afterFetchTaking: .seconds(2), minimum: minimum)
-                == .seconds(2 * RAVELogStore.busyRatio))
+@MainActor
+@Suite("Tailing the log buffer")
+struct RAVELogStoreBufferTests {
+
+    @Test("A console opened late still shows the whole run, debug lines included")
+    func lateOpenSeesHistory() {
+        let buffer = DebugLogBuffer(mode: .development)
+        let log = DebugLogger(subsystem: "pro.rave.tests.console", category: "Net", buffer: buffer)
+        log.debug("probe \(1)")
+        log.info("connected")
+        let store = RAVELogStore(buffer: buffer)
+        store.pull()
+        #expect(store.entries.map(\.message) == ["probe 1", "connected"])
+        #expect(store.entries.map(\.level) == [.debug, .info])
+        #expect(store.categories == ["Net"])
+
+        log.error("dropped")
+        store.pull()
+        #expect(store.entries.map(\.message) == ["probe 1", "connected", "dropped"])
     }
 
-    @Test("A refresh while not polling is harmless")
-    func refreshWhileIdle() {
-        let store = RAVELogStore(subsystem: "pro.rave.tests.refresh")
-        store.refresh()
-        #expect(!store.isPolling)
-        #expect(!store.isFetching)
+    @Test("The screen may show a private value; the clipboard never does")
+    func exportWithholdsPrivateValues() {
+        let buffer = DebugLogBuffer(mode: .development)
+        let log = DebugLogger(subsystem: "pro.rave.tests.console", category: "Auth", buffer: buffer)
+        log.info("signed in as \("ixion@example.com")")
+        let store = RAVELogStore(buffer: buffer)
+        store.pull()
+        let entry = try! #require(store.entries.first)
+        #expect(entry.message == "signed in as ixion@example.com")
+        #expect(entry.exportMessage == "signed in as <private>")
+        #expect(!store.entries.exportText().contains("ixion@"))
     }
 
-    @Test("The nonisolated viewing flag drives the debug-level promotion")
-    func debugPromotion() {
-        // The unified log keeps .debug in a ring buffer only, so OSLogStore
-        // never returns it — call sites must promote to .info while a console
-        // is open or the console shows nothing at Debug.
-        let store = RAVELogStore(subsystem: "pro.rave.tests.promotion")
-        store.addViewer()
-        #expect(RAVELogStore.isViewing)
-        #expect(RAVELogStore.effectiveDebugLevel == .info)
-        store.removeViewer()
-        #expect(!RAVELogStore.isViewing)
-        #expect(RAVELogStore.effectiveDebugLevel == .debug)
+    @Test("Clearing hides lines from the view but leaves the buffer for traces")
+    func clearKeepsBuffer() {
+        let buffer = DebugLogBuffer(mode: .development)
+        let log = DebugLogger(subsystem: "pro.rave.tests.console", category: "C", buffer: buffer)
+        log.info("before")
+        let store = RAVELogStore(buffer: buffer)
+        store.pull()
+        store.clear()
+        #expect(store.entries.isEmpty)
+        log.info("after")
+        store.pull()
+        #expect(store.entries.map(\.message) == ["after"])
+        #expect(buffer.records().count == 2)
     }
 }

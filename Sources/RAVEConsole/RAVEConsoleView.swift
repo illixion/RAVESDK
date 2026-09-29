@@ -101,15 +101,6 @@ public struct RAVEConsoleView: View {
             .disabled(entries.isEmpty)
             #endif
 
-            // Reads are seconds apart (see `RAVELogStore`), so offer one now.
-            Button {
-                store.refresh()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .help("Read new entries now")
-            .disabled(store.isFetching)
-
             // Logs plus every traced debug endpoint, as a zip to share or
             // upload. It reads the unified log itself, so it doesn't depend
             // on what this console has buffered or filtered.
@@ -158,12 +149,11 @@ public struct RAVEConsoleView: View {
                     ContentUnavailableView {
                         Label("No log entries", systemImage: "text.alignleft")
                     } description: {
-                        // The failure mode worth naming: the unified log drops
-                        // `.debug` from the persistent store, so a call site
-                        // that logs at `.debug` without promoting is invisible
-                        // here no matter how the filter is set.
+                        // The failure mode worth naming: only `DebugLogger`
+                        // lines reach the buffer, so an app still declaring
+                        // `os.Logger` shows nothing here however it logs.
                         Text(store.isPolling
-                             ? "Nothing matches the current filter yet."
+                             ? "Nothing matches the current filter yet. Only lines logged through DebugLogger appear here."
                              : "Not polling — the console is not registered as a viewer.")
                     }
                 }

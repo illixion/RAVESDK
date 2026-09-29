@@ -4,9 +4,10 @@
  The package must not reach into an app's logger, but both source
  implementations logged heavily and that logging is load-bearing when
  diagnosing sleep/wake socket failures. So: a narrow protocol the app adapts to
- its own `AppLogger`, with an `os.Logger` default for standalone use.
+ its own `AppLogger`, with a `DebugLogger` default for standalone use.
  */
 
+import DebugTrace
 import Foundation
 import os
 
@@ -31,12 +32,13 @@ public protocol RAVENetLogger: Sendable {
     func log(_ level: RAVENetLogLevel, _ message: String)
 }
 
-/// Default sink writing to `os.Logger`. Used when an app supplies none.
+/// Default sink writing to `DebugLogger` (the in-app console and the
+/// unified log). Used when an app supplies none.
 public struct RAVENetOSLogger: RAVENetLogger {
-    private let logger: Logger
+    private let logger: DebugLogger
 
     public init(subsystem: String = "pro.rave.net", category: String = "websocket") {
-        self.logger = Logger(subsystem: subsystem, category: category)
+        self.logger = DebugLogger(subsystem: subsystem, category: category)
     }
 
     public func log(_ level: RAVENetLogLevel, _ message: String) {

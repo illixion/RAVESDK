@@ -30,6 +30,7 @@
  Coordinates are the listener's: −z forward, +x right, +y up, metres.
  */
 
+import DebugTrace
 import AVFAudio
 import Foundation
 import os
@@ -109,7 +110,7 @@ public final class RAVEPhaseStage {
     private var sources: [Int: Source] = [:]
     private var recenterTask: Task<Void, Never>?
     private(set) public var isRunning = false
-    private let logger = Logger(subsystem: "com.illixion.ravesdk", category: "PhaseStage")
+    private let logger = DebugLogger(subsystem: "com.illixion.ravesdk", category: "PhaseStage")
 
     /// Linear reverb send, 0…1, applied to every positioned source.
     public private(set) var reverbSend: Double

@@ -19,6 +19,7 @@
  decoder has caught up to the target by the time it is due.
  */
 
+import DebugTrace
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -54,7 +55,7 @@ public final class FilmVideoPlayer {
     /// How far ahead of now a resume is scheduled, so the decoder can reach the target first.
     public var startDelay: Double = 0.2
 
-    private let logger = Logger(subsystem: "com.illixion.hypnos", category: "FilmVideo")
+    private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "FilmVideo")
     private var client: FilmServerClient?
     private var feedTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?

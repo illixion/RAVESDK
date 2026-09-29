@@ -14,6 +14,7 @@
  session with `.mixWithOthers` can't become the Now Playing app.
  */
 
+import DebugTrace
 import Foundation
 import MediaPlayer
 import os
@@ -26,7 +27,7 @@ public final class FilmNowPlaying {
     private var title: String
     private var registered: [(MPRemoteCommand, Any)] = []
     private var publishTask: Task<Void, Never>?
-    private let logger = Logger(subsystem: "com.illixion.hypnos", category: "FilmNowPlaying")
+    private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "FilmNowPlaying")
     /// Called with each remote command's name as it arrives, for a host's
     /// own diagnostics.
     public var onCommand: ((String) -> Void)?

@@ -35,6 +35,7 @@
  The view draws nothing.
  */
 
+import DebugTrace
 import AVFAudio
 import os
 import RAVESpatialAudio
@@ -52,7 +53,7 @@ public struct FilmPhaseStageView: View {
     @State private var builtFor: ObjectIdentifier?
     @State private var tickTask: Task<Void, Never>?
 
-    private let logger = Logger(subsystem: "com.illixion.hypnos", category: "FilmPhaseStage")
+    private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "FilmPhaseStage")
 
     public init(player: FilmPlayer, headTracking: Bool = true, recenterRequest: Int = 0) {
         self.player = player

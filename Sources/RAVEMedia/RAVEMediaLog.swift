@@ -7,17 +7,15 @@
  takes its own: `cache` for the on-disk conversion cache, `pipeline` for model
  loading and per-video engage decisions.
 
- **The subsystem stays `Bundle.main.bundleIdentifier`, deliberately.**
- `RAVEConsole` polls `OSLogStore` filtered by the host app's subsystem, so a
- package-owned subsystem would make every line from here invisible in the
- in-app console — the one place these are read on device.
+ **The subsystem stays `Bundle.main.bundleIdentifier`**, so these lines sort
+ with the host app's in Console.app and in traces.
 
- `OSLogMessage` is a compiler-special type that cannot pass through a wrapper
- function, which is why call sites interpolate directly and annotate `.public`
- themselves; without the annotation os_log redacts the value and the line reads
- `<private>`.
+ The loggers are DebugTrace's `DebugLogger`, so every line reaches the in-app
+ console and debug traces. Call sites annotate `.public` themselves; anything
+ left unannotated is treated as private, as os_log does.
  */
 
+import DebugTrace
 import Foundation
 import os
 
@@ -25,10 +23,10 @@ public enum RAVEMediaLog {
     private static let subsystem = Bundle.main.bundleIdentifier ?? "com.illixion.ravemedia"
 
     /// Depth cache: conversions, eviction, entry lifecycle.
-    public static let cache = Logger(subsystem: subsystem, category: "DepthCache")
+    public static let cache = DebugLogger(subsystem: subsystem, category: "DepthCache")
 
     /// The live pipeline: model load, engage decisions, playback fit.
-    public static let pipeline = Logger(subsystem: subsystem, category: "Pseudo3D")
+    public static let pipeline = DebugLogger(subsystem: subsystem, category: "Pseudo3D")
 
     /// Per-stage intervals for the fake-3D pipeline (inference, stabilize, warp,
     /// transfer) — view in Instruments' os_signpost track to see where a pump

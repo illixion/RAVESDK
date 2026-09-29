@@ -34,6 +34,7 @@
  its own copy until the film player replaces it.
  */
 
+import DebugTrace
 import AVFoundation
 import Foundation
 import os
@@ -379,7 +380,7 @@ public final class AtmosSegmentStreamer: Sendable {
     /// before playback (and so the playhead) gets there.
     let focusFrame = Atomic<Int>(0)
     private let tracks = Mutex<[Int: [Int: AtmosElementTrack]]>([:])
-    private let logger = Logger(subsystem: "com.illixion.hypnos", category: "AtmosAudio")
+    private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "AtmosAudio")
 
     public init(audio: AtmosObjectAudio, client: FilmServerClient, scene: AtmosScene) {
         self.audio = audio
