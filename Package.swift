@@ -28,6 +28,13 @@ let package = Package(
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
     ],
+    // The one external dependency: the console hosts DebugTrace's capture
+    // button, so every app with a console can hand over a signed trace.
+    // DebugTrace depends on neither RAVE package, so this adds no cycle and
+    // no RAVESDK <-> RAVEEngine edge. See ~/Projects/CLAUDE.md.
+    dependencies: [
+        .package(path: "../DebugTrace"),
+    ],
     targets: [
         .target(name: "RAVENet"),
         .testTarget(name: "RAVENetTests", dependencies: ["RAVENet"]),
@@ -41,7 +48,9 @@ let package = Package(
         .testTarget(name: "RAVEUITests", dependencies: ["RAVEUI"]),
         // Separate from RAVEUI on purpose: two of the five apps want an
         // on-device log viewer and have no tab bar at all to hang it off.
-        .target(name: "RAVEConsole"),
+        .target(name: "RAVEConsole", dependencies: [
+            .product(name: "DebugTraceUI", package: "DebugTrace"),
+        ]),
         .testTarget(name: "RAVEConsoleTests", dependencies: ["RAVEConsole"]),
         // Core ML depth + the windowed-stereo warp. visionOS is the product;
         // the depth half also builds on macOS so `swift test` can reach the

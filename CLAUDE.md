@@ -322,6 +322,11 @@ Two details are easy to lose in a rewrite and will silently break the console:
   `RAVELogStore.effectiveDebugLevel`, which promotes to `.info` while a viewer is open.
   Apps expose this as an `AppLog.detail(_:)`-style helper.
 
+The console's toolbar carries DebugTrace's `DebugTraceButton`, which makes `RAVEConsole` the
+one target with an external dependency (`../DebugTrace`, product `DebugTraceUI`). DebugTrace
+links neither RAVE package, so this adds no cycle. The trace reads the unified log on its
+own and does not depend on what the console has buffered or filtered.
+
 `OSLogMessage` is a compiler-special type that **cannot** pass through a wrapper function,
 which is why app-side logging facades take an already-interpolated `String` and mark it
 `.public` — without the privacy annotation os_log redacts interpolated values and every

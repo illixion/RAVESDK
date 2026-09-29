@@ -15,6 +15,7 @@
 #if canImport(SwiftUI)
 
 import SwiftUI
+import DebugTraceUI
 
 #if canImport(UIKit)
 import UIKit
@@ -108,6 +109,13 @@ public struct RAVEConsoleView: View {
             }
             .help("Read new entries now")
             .disabled(store.isFetching)
+
+            // Logs plus every traced debug endpoint, as a zip to share or
+            // upload. It reads the unified log itself, so it doesn't depend
+            // on what this console has buffered or filtered.
+            DebugTraceButton()
+                .labelStyle(.iconOnly)
+                .help("Capture a debug trace")
 
             Text("\(entries.count)")
                 .foregroundStyle(.secondary)
