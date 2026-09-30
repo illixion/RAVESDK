@@ -300,6 +300,14 @@ mechanical: Longwave's registry does double duty, since `sessions` is also read 
 audio window is alive). That consumer needs a home before the local copy can go, and the
 Mac target compiles the same sources.
 
+**Player controls are shared; playback clocks are not.** `RAVEPlayerControls`
+accepts `RAVEPlayerControlState`, commands and a feature accessory row. Hypnos's
+FilmPlayer, its general video transport and Raven's browser-driven stereo bar
+use it. Native SwiftUI scrubbing seeks only on release. Scrub and accessory
+scroll lifecycles must hold the host's auto-hide timer; labels need the explicit
+`ravePlayerControlLabel()` hit area. RealityKit pictures put these controls in
+an ornament, not a 2D overlay inside the picture's depth region.
+
 ### RAVEConsole — separate from RAVEUI on purpose
 
 Two of the five consuming apps want a log viewer and have **no tab bar at all** to hang one
@@ -438,6 +446,21 @@ interpolating rather than the nearest-rank one `RAVEDiagnostics` uses — invali
 every conversion on every device. `Pseudo3DSettings.init(from:)` has the same
 constraint for persisted JSON, including its normalisation of the retired `0.45`
 convergence default.
+
+**Clocked compressed-picture taps.** `SampleBufferFrameSource` takes samples
+from RAVEFilm's `FilmVideoPlayer.onSampleBuffer` hook and its timebase. It
+prefetches compressed samples, decodes in DTS order on the pump queue with
+100ms lookahead for B frames, and presents the latest decoded PTS due on the
+host clock. It never seeks or owns audio. `onFlush` resets its generation so
+old-seek callbacks cannot paint new playback. `PumpFrameSource`'s BGRA contract
+is enforced by VideoToolbox output attributes. macOS tests use a synthetic
+H.264 B-frame fixture to verify timing, reset and duplicate suppression.
+
+`RAVEExternalStereoVideoView` mounts a host-owned frame source in visionOS
+using the measured 90pt video recess. The host must reserve ornament space and
+keep its transport attached to its own clock. A compressed tap currently adds
+a second decode session while the original HDR layer remains mounted; changing
+this or claiming HDR fidelity/performance requires device measurements.
 
 ### RAVESpatialAudio — PHASE, because of what the system gives it
 

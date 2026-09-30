@@ -61,7 +61,7 @@ let package = Package(
         // which is why nothing here reads the app's default library. (The
         // SwiftPM CLI ignores `.metal` altogether — see RAVEMediaMetal.)
         .target(name: "RAVEMedia", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
-        .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"]),
+        .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"], resources: [.copy("Fixtures")]),
         // The Persona camera as AVCapture delivers it, plus the realtime H.264
         // encoder and AVCC helpers every consumer of those frames needs. Its
         // own product, not a corner of RAVEMedia, because two of its consumers

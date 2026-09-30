@@ -61,6 +61,13 @@ public final class FilmVideoPlayer {
     private var startTask: Task<Void, Never>?
     private var segments: [Int: Task<FragmentedMP4Segment, Error>] = [:]
 
+    /// Optional compressed-picture tap for a host-owned stereo display. The
+    /// samples keep their original PTS/DTS and this timebase remains the clock.
+    /// Assign before seeking to prime the tap from a keyframe. Clear both hooks
+    /// when the external display leaves; audio and the normal picture continue.
+    @ObservationIgnored public var onSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)?
+    @ObservationIgnored public var onFlush: (@Sendable () -> Void)?
+
     private var renderer: AVSampleBufferVideoRenderer { displayLayer.sampleBufferRenderer }
 
     public init() {
@@ -175,6 +182,7 @@ public final class FilmVideoPlayer {
         feedTask?.cancel()
         startTask?.cancel()
         renderer.flush()
+        onFlush?()
         park(at: target)
         bufferedUntil = target
         isPrimed = false
@@ -193,6 +201,7 @@ public final class FilmVideoPlayer {
         segments.values.forEach { $0.cancel() }
         segments.removeAll()
         renderer.flush(removingDisplayedImage: true, completionHandler: nil)
+        onFlush?()
         halt()
         isPlaying = false
     }
@@ -241,6 +250,7 @@ public final class FilmVideoPlayer {
                 guard let buffer = Self.makeSampleBuffer(sample, in: segment.data, format: format, timescale: timescale,
                                                          doNotDisplay: hidden)
                 else { continue }
+                onSampleBuffer?(buffer)
                 renderer.enqueue(buffer)
                 bufferedUntil = max(bufferedUntil, Double(sample.presentationTime + sample.duration) / Double(timescale))
 
