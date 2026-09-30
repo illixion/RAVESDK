@@ -71,27 +71,38 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     public var body: some View {
         VStack(spacing: 8) {
             timeline
-            HStack(spacing: 12) {
-                Spacer(minLength: 0)
-                control("Back 10 seconds", "gobackward.10") { skip(-10) }
-                    .disabled(!state.isSeekable)
-                control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
-                control("Forward 10 seconds", "goforward.10") { skip(10) }
-                    .disabled(!state.isSeekable)
-                Spacer(minLength: 0)
-                control(state.isMuted ? "Unmute" : "Mute", state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", action: toggleMute)
+            ZStack {
+                HStack(spacing: 12) {
+                    control("Back 10 seconds", "gobackward.10") { skip(-10) }
+                        .disabled(!state.isSeekable)
+                    control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
+                    control("Forward 10 seconds", "goforward.10") { skip(10) }
+                        .disabled(!state.isSeekable)
+                }
+                HStack {
+                    Spacer(minLength: 0)
+                    control(state.isMuted ? "Unmute" : "Mute", state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", action: toggleMute)
+                }
             }
             if Accessories.self != EmptyView.self {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 12) { accessories }
-                        .ravePlayerButtonStyle()
+                GeometryReader { geometry in
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 12) { accessories }
+                            .ravePlayerButtonStyle()
+                            .frame(minWidth: geometry.size.width)
+                    }
+                    .scrollIndicators(.hidden)
+                    .modifier(PlayerAccessoryScrollInteraction { active in
+                        isAccessoryScrolling = active
+                        onInteraction()
+                        onScrubbingChanged(isScrubbing || active)
+                    })
                 }
-                .scrollIndicators(.hidden)
-                .modifier(PlayerAccessoryScrollInteraction { active in
-                    isAccessoryScrolling = active
-                    onInteraction()
-                    onScrubbingChanged(isScrubbing || active)
-                })
+                #if os(visionOS) || os(tvOS)
+                .frame(height: 60)
+                #else
+                .frame(height: 44)
+                #endif
                 // No drag gesture here: it would claim touches before the
                 // accessory scroller and make its off-screen buttons unreachable.
             }
@@ -138,6 +149,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 #endif
                 Text(RAVEPlayerControlState.timecode(state.duration))
             }
+            .padding(.horizontal, 12)
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
         } else {
@@ -174,6 +186,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             action()
         } label: {
             Label(title, systemImage: symbol).labelStyle(.iconOnly).ravePlayerControlLabel()
+                .font(.title2)
         }
         .ravePlayerButtonStyle()
         .help(title)
