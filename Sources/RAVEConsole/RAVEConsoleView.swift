@@ -104,8 +104,8 @@ public struct RAVEConsoleView: View {
             #endif
 
             // Logs plus every traced debug endpoint, as a zip to share or
-            // upload. It reads the unified log itself, so it doesn't depend
-            // on what this console has buffered or filtered.
+            // upload. It reads DebugTrace's own log buffer, so it doesn't
+            // depend on what this console has filtered.
             DebugTraceButton()
                 .labelStyle(.iconOnly)
                 .help("Capture a debug trace")
