@@ -307,6 +307,10 @@ use it. Native SwiftUI scrubbing seeks only on release. Scrub and accessory
 scroll lifecycles must hold the host's auto-hide timer; labels need the explicit
 `ravePlayerControlLabel()` hit area. RealityKit pictures put these controls in
 an ornament, not a 2D overlay inside the picture's depth region.
+The control sizes itself, so hosts need no width: an ornament proposes none and
+takes the ideal, which once collapsed the bar to ~237pt (`PlayerControlsWidth`
+answers natural width on visionOS, a compact one elsewhere so measure-then-fit
+hosts such as Hypnos's iOS ornament shim lay it at full width).
 
 ### RAVEConsole — separate from RAVEUI on purpose
 

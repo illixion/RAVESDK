@@ -42,6 +42,12 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
 /// and the scrub lifecycle reach the host so auto-hide cannot remove a control
 /// from under a hand. App features belong on the accessory row, which scrolls
 /// independently on compact windows instead of squeezing out the timeline.
+///
+/// The control sizes itself; hosts need no width. A visionOS ornament proposes
+/// no size and takes the content's ideal, which a bare `Slider` and scroller
+/// put at a couple of hundred points: the whole bar collapsed, mute landed on
+/// the skip button and every accessory scrolled out of sight. See
+/// `PlayerControlsWidth` for how the ideal is resolved per platform.
 public struct RAVEPlayerControls<Accessories: View>: View {
     private let state: RAVEPlayerControlState
     private let togglePlayback: () -> Void
@@ -69,46 +75,50 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     }
 
     public var body: some View {
-        VStack(spacing: 8) {
-            timeline
-            ZStack {
+        PlayerControlsWidth {
+            VStack(spacing: 8) {
+                timeline
+                // Mute has a slot of its own, balanced by an empty one, so the
+                // transport stays centred and the two can never overlap however
+                // narrow the bar gets.
                 HStack(spacing: 12) {
-                    control("Back 10 seconds", "gobackward.10") { skip(-10) }
-                        .disabled(!state.isSeekable)
-                    control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
-                    control("Forward 10 seconds", "goforward.10") { skip(10) }
-                        .disabled(!state.isSeekable)
-                }
-                HStack {
+                    Color.clear.frame(width: Self.controlSide, height: 1)
+                    Spacer(minLength: 0)
+                    HStack(spacing: 12) {
+                        control("Back 10 seconds", "gobackward.10") { skip(-10) }
+                            .disabled(!state.isSeekable)
+                        control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
+                        control("Forward 10 seconds", "goforward.10") { skip(10) }
+                            .disabled(!state.isSeekable)
+                    }
                     Spacer(minLength: 0)
                     control(state.isMuted ? "Unmute" : "Mute", state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", action: toggleMute)
                 }
-            }
-            if Accessories.self != EmptyView.self {
-                GeometryReader { geometry in
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 12) { accessories }
-                            .ravePlayerButtonStyle()
-                            .frame(minWidth: geometry.size.width)
+                if Accessories.self != EmptyView.self {
+                    // The row at its natural width when it fits, which is also what
+                    // gives the bar a measurable ideal width; a scroller only when
+                    // it does not, so a long row never squeezes out the timeline.
+                    ViewThatFits(in: .horizontal) {
+                        accessoryRow
+                        ScrollView(.horizontal) { accessoryRow }
+                            .scrollIndicators(.hidden)
+                            .modifier(PlayerAccessoryScrollInteraction { active in
+                                isAccessoryScrolling = active
+                                onInteraction()
+                                onScrubbingChanged(isScrubbing || active)
+                            })
                     }
-                    .scrollIndicators(.hidden)
-                    .modifier(PlayerAccessoryScrollInteraction { active in
-                        isAccessoryScrolling = active
-                        onInteraction()
-                        onScrubbingChanged(isScrubbing || active)
-                    })
+                    #if os(visionOS) || os(tvOS)
+                    .frame(height: 60)
+                    #else
+                    .frame(height: 44)
+                    #endif
+                    // No drag gesture here: it would claim touches before the
+                    // accessory scroller and make its off-screen buttons unreachable.
                 }
-                #if os(visionOS) || os(tvOS)
-                .frame(height: 60)
-                #else
-                .frame(height: 44)
-                #endif
-                // No drag gesture here: it would claim touches before the
-                // accessory scroller and make its off-screen buttons unreachable.
             }
+            .padding(12)
         }
-        .padding(12)
-        .frame(maxWidth: 820)
         .background {
             #if os(visionOS)
             RoundedRectangle(cornerRadius: 24).fill(.clear).glassBackgroundEffect()
@@ -123,6 +133,18 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             scrubSeconds = nil
         }
     }
+
+    private var accessoryRow: some View {
+        HStack(spacing: 12) { accessories }
+            .ravePlayerButtonStyle()
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    #if os(visionOS) || os(tvOS)
+    private static var controlSide: CGFloat { 60 }
+    #else
+    private static var controlSide: CGFloat { 44 }
+    #endif
 
     @ViewBuilder private var timeline: some View {
         if state.isSeekable {
@@ -215,6 +237,50 @@ public extension View {
         self.frame(minWidth: 60, minHeight: 60).contentShape(.rect)
         #else
         self.frame(minWidth: 44, minHeight: 44).contentShape(.rect)
+        #endif
+    }
+}
+
+/// Resolves the bar's width, capped at 820 points.
+///
+/// A real width proposal is honoured as is. A missing one is the host asking
+/// for the ideal size, and the right answer differs by platform:
+/// - visionOS: an ornament takes the ideal as its final size, so answer with
+///   the content's natural width (every accessory on one row), but no
+///   narrower than a comfortable scrubbing length.
+/// - Elsewhere the bar sits in a real window. Hosts that ask for the ideal there
+///   are measuring whether it fits before handing it the space they have
+///   (`ViewThatFits`, Hypnos's iOS ornament shim). A natural width wider than a
+///   phone would make them scroll the whole bar sideways, timeline included,
+///   when the accessory row already scrolls itself. So answer compactly and
+///   let the real proposal decide.
+struct PlayerControlsWidth: Layout {
+    static let maxWidth: CGFloat = 820
+    #if os(visionOS)
+    static let preferredWidth: CGFloat = 600
+    #else
+    static let compactWidth: CGFloat = 320
+    #endif
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let width = resolvedWidth(proposal.width, content: content)
+        let height = content.sizeThatFits(ProposedViewSize(width: width, height: proposal.height)).height
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+    }
+
+    private func resolvedWidth(_ proposed: CGFloat?, content: LayoutSubview) -> CGFloat {
+        if let proposed, proposed.isFinite { return min(proposed, Self.maxWidth) }
+        #if os(visionOS)
+        let natural = content.sizeThatFits(.unspecified).width
+        return min(max(natural, Self.preferredWidth), Self.maxWidth)
+        #else
+        return Self.compactWidth
         #endif
     }
 }
