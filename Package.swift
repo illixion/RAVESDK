@@ -87,7 +87,11 @@ let package = Package(
         // head-locked beds, head-tracked listener, live room reverb. First
         // consumer is RAVEFilm on tvOS; built generic so a game's mixer
         // (LambdaVision's parked PHASE backend) can feed it too.
+        // Also: `RAVEChannelFeed` (live multichannel PCM → host-aligned
+        // per-channel pull streams, Longwave's Moonlight surround) and the
+        // host-clock alignment RAVEFilm's Atmos objects use.
         .target(name: "RAVESpatialAudio", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
+        .testTarget(name: "RAVESpatialAudioTests", dependencies: ["RAVESpatialAudio"]),
         .target(
             name: "RAVEFilm",
             dependencies: ["RAVESpatialAudio", .product(name: "DebugTrace", package: "DebugTrace")],

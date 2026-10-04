@@ -7,23 +7,16 @@
  events file (positions and gains) that opens with a snapshot of every
  element, so a segment stands alone. See JellyfinPlugin/README.md.
 
- Each element plays through its own RealityKit `AudioGeneratorController`,
- whose render callback reads here. They must stay sample-locked to each
- other: objects are clusters of one mix, and a few ms of skew between them
- comb-filters. Measured on visionOS 27, each generator runs on its **own**
- sample timeline (origins spread 50 ms across 14 generators), so sample
- times can't be compared between channels. The host clock is the shared
- reference: on its first render each channel converts its host time to a
- scene frame against one shared anchor, stores the offset to its own sample
- time, and from then on reads at `sampleTime + offset`, sample-continuous.
-
- Unless the renderer stalls: a stream whose sample time stops while host
- time runs on falls behind by the stall and, sample-continuous, stays
- there. PHASE on tvOS did this right after start (about 1.7 s, measured
- 2026-09-27, Apple TV over AirPlay), which left the sound that far behind
- the picture. So a channel whose played frame strays more than
- `reanchorFrames` from the host clock's frame re-anchors to it: it skips
- the gap, and every channel lands on the same host-derived frame.
+ Each element plays through its own RealityKit `AudioGeneratorController`
+ (or PHASE pull stream), whose render callback reads here. They must stay
+ sample-locked to each other: objects are clusters of one mix, and a few ms
+ of skew between them comb-filters. Each renderer runs on its own sample
+ timeline, so every channel plays the scene frame the host clock says is
+ due, through RAVESpatialAudio's `RAVEHostClockAligner` (which holds the
+ measurements, and the re-anchor that recovers from a renderer stall —
+ PHASE on tvOS stalled ~1.7 s right after start, which left the sound that
+ far behind the picture). It lived here until Longwave's Moonlight
+ surround needed the same alignment.
 
  The anchor is chosen by the transport (`start(at:anchorHostTime:)`): "scene
  frame F plays at host time H". Choosing it up front, rather than taking
@@ -38,6 +31,7 @@ import DebugTrace
 import AVFoundation
 import Foundation
 import os
+import RAVESpatialAudio
 import RealityKit
 import Synchronization
 
@@ -154,27 +148,14 @@ public final class AtmosObjectAudio: @unchecked Sendable {
     /// Frames rendered by channel 0 since load, for measuring the real render rate.
     public let renderedFrames = Atomic<Int>(0)
     public let fallbackRenders = Atomic<Int>(0)
-    /// Host ticks → scene frames.
-    private let framesPerTick: Double
+    /// Per-channel host-clock alignment (offsets, drift, re-anchors).
+    public let alignment: RAVEHostClockAligner
 
     /// Linear gain targets, written by the main actor.
     let targetGain: UnsafeMutablePointer<Float>
     private let currentGain: UnsafeMutablePointer<Float>
     /// Peak |sample| per channel since the UI last read it.
     let peak: UnsafeMutablePointer<Float>
-    /// First valid sample time each channel saw after (re)start, and its host time.
-    let firstSampleTime: UnsafeMutablePointer<Int64>
-    let firstHostTime: UnsafeMutablePointer<UInt64>
-    private let fallbackCursor: UnsafeMutablePointer<Int>
-    /// Scene frame minus own sample time, fixed at a channel's first render; `.min` = unset.
-    private let channelOffset: UnsafeMutablePointer<Int64>
-    /// Largest |host-derived frame − played frame| seen per channel, i.e. drift.
-    let maxDrift: UnsafeMutablePointer<Int64>
-    /// Channel re-anchors since load (a stall or a jump in host time).
-    public let reanchors = Atomic<Int>(0)
-    /// Drift that forces a re-anchor: 50 ms, well past buffer-to-buffer
-    /// jitter, well inside what reads as out of sync.
-    private var reanchorFrames: Int64 { Int64(sampleRate * 0.05) }
 
     public init(scene: AtmosScene, slotCount: Int = 6) {
         channelCount = scene.elements.count
@@ -189,31 +170,15 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         currentGain.initialize(repeating: 1, count: channelCount)
         peak = .allocate(capacity: channelCount)
         peak.initialize(repeating: 0, count: channelCount)
-        firstSampleTime = .allocate(capacity: channelCount)
-        firstSampleTime.initialize(repeating: .min, count: channelCount)
-        firstHostTime = .allocate(capacity: channelCount)
-        firstHostTime.initialize(repeating: 0, count: channelCount)
-        fallbackCursor = .allocate(capacity: channelCount)
-        fallbackCursor.initialize(repeating: 0, count: channelCount)
-        channelOffset = .allocate(capacity: channelCount)
-        channelOffset.initialize(repeating: .min, count: channelCount)
-        maxDrift = .allocate(capacity: channelCount)
-        maxDrift.initialize(repeating: 0, count: channelCount)
-
-        var info = mach_timebase_info_data_t()
-        mach_timebase_info(&info)
-        framesPerTick = Double(info.numer) / Double(info.denom) / 1e9 * sampleRate
+        // Drift that forces a re-anchor: 50 ms, well past buffer-to-buffer
+        // jitter, well inside what reads as out of sync.
+        alignment = RAVEHostClockAligner(channelCount: channelCount, sampleRate: sampleRate, reanchorSeconds: 0.05)
     }
 
     deinit {
         targetGain.deallocate()
         currentGain.deallocate()
         peak.deallocate()
-        firstSampleTime.deallocate()
-        firstHostTime.deallocate()
-        fallbackCursor.deallocate()
-        channelOffset.deallocate()
-        maxDrift.deallocate()
     }
 
     /// Plays scene frame `frame` at host time `anchorHostTime` (mach ticks);
@@ -223,13 +188,7 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         let clamped = max(0, min(frame, frameCount - 1))
         startFrame.store(clamped, ordering: .sequentiallyConsistent)
         anchorHostTime.store(anchor, ordering: .sequentiallyConsistent)
-        for ch in 0 ..< channelCount {
-            firstSampleTime[ch] = .min
-            firstHostTime[ch] = 0
-            fallbackCursor[ch] = clamped
-            channelOffset[ch] = .min
-            maxDrift[ch] = 0
-        }
+        alignment.reset(fallbackFrame: Int64(clamped))
         playhead.store(clamped, ordering: .relaxed)
         playing.store(true, ordering: .sequentiallyConsistent)
     }
@@ -287,25 +246,10 @@ public final class AtmosObjectAudio: @unchecked Sendable {
                 )
                 anchor = exchanged ? hostTime : original
             }
-            // Signed: a render can be stamped before the anchor.
-            let hostFrame = Int64(start) + Int64((Double(hostTime) - Double(anchor)) * framesPerTick)
-            if channelOffset[ch] == .min {
-                channelOffset[ch] = hostFrame - sampleTime
-                firstSampleTime[ch] = sampleTime
-                firstHostTime[ch] = hostTime
-            }
-            var played = sampleTime + channelOffset[ch]
-            let drift = abs(hostFrame - played)
-            maxDrift[ch] = max(maxDrift[ch], drift)
-            if drift > reanchorFrames {
-                channelOffset[ch] = hostFrame - sampleTime
-                played = hostFrame
-                reanchors.add(1, ordering: .relaxed)
-            }
-            frame = Int(played)
+            let due = alignment.timelineFrame(hostTime: hostTime, anchorFrame: Int64(start), anchorHostTime: anchor)
+            frame = Int(alignment.frame(channel: ch, sampleTime: sampleTime, timelineFrame: due))
         } else {
-            frame = fallbackCursor[ch]
-            fallbackCursor[ch] += n
+            frame = Int(alignment.fallbackFrame(channel: ch, count: n))
             fallbackRenders.add(1, ordering: .relaxed)
         }
 

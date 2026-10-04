@@ -93,7 +93,7 @@ is easy to skip.
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 | `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by Hypnos's Jellyfin Atmos Objects plugin; `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
-| `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb. RAVEFilm re-exports it (tvOS film audio); built for a game mixer to feed too |
+| `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
 | `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 
@@ -484,16 +484,31 @@ encode:
   on an AirPlay HomePod pair.
 - **Each pull stream has its own sample timeline and can stall at start.**
   Timestamps carry a valid sample and host time. A caller keeping streams
-  sample-locked aligns by host time and must survive a stall; RAVEFilm's
-  `AtmosObjectAudio` re-anchors past 50 ms of drift.
+  sample-locked aligns by host time and must survive a stall:
+  `RAVEHostClockAligner` does both (re-anchors past 50 ms of drift). It was
+  RAVEFilm's `AtmosObjectAudio`'s own code until Longwave became the second
+  consumer (2026-10-04); both use it now.
 - **Calibration is `.relativeSpl` at 0 dB, distance rolloff 0.** The caller
   owns levels. LambdaVision's PHASE attempt on visionOS was deafening, but
   that was the visionOS system spatializer, which is why visionOS doesn't
   use this stage.
 
 A game can feed it the same way: one pull-stream source per mixer channel.
+**`RAVEChannelFeed` is that path for a live source** (Longwave's Moonlight
+surround, decoded Opus pushed from moonlight-common-c's thread): the producer
+pushes interleaved frames, each channel pulls through its own handler, and a
+`RAVEStreamTimeline` primes a jitter cushion, re-primes when it runs dry and
+skips forward past a ceiling. It adds the cushion and no other buffering;
+the render quantum must fit inside the cushion. `addSpeakers(_:feed:)` lays
+a `RAVESpeakerLayout` out as sources in WAVE channel order (fronts ±30°, 5.1
+surrounds ±110°, 7.1 sides ±90° and backs ±135°, LFE as a dry bed).
 LambdaVision's parked `PhaseAudioEngine` is sample-asset based and would
 need its channels turned into streams first.
+
+**visionOS** gets `systemRendering: true` (`PHASEEngine.RenderingMode.client`,
+visionOS 26+: rendered in the system audio server, with its head tracking and
+personalized profile). Longwave is the first visionOS consumer and uses it;
+unheard on a headset as of 2026-10-04, so whatever it measures belongs here.
 
 ### RAVEDeviceSetup — the QR code is the only channel the key travels on
 
@@ -572,7 +587,7 @@ the link list.
 | App (directory) | Links |
 |---|---|
 | `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
-| `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
+| `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |
 | `VisionProHomeAssistant` (SpatialHome) | `RAVENet`, `RAVEUI`, `RAVEConsole` |

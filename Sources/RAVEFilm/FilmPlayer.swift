@@ -263,11 +263,10 @@ public final class FilmPlayer {
         } else if isPlaying {
             rateSample = (rendered, now)
         }
-        var drift: Int64 = 0
-        for ch in 0 ..< audio.channelCount { drift = max(drift, audio.maxDrift[ch]) }
+        let drift = audio.alignment.maxDrift
         let resident = audio.slots.map { $0.segment.load(ordering: .relaxed) }.filter { $0 >= 0 }.sorted()
         clockReport = String(format: "%.0f Hz, max drift %d frames, %d re-anchors, segments %@, %d underrun buffers",
-                             measuredRate, drift, audio.reanchors.load(ordering: .relaxed),
+                             measuredRate, drift, audio.alignment.reanchors,
                              resident.map(String.init).joined(separator: ","),
                              audio.underruns.load(ordering: .relaxed))
     }

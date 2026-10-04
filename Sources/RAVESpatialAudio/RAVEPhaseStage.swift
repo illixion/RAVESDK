@@ -24,8 +24,12 @@
  sample-locked must align them by host time.
 
  visionOS: PHASE renders through the system spatializer, which pins app
- audio to the window and was deafening in LambdaVision (visionOS 26); not
- used there until that changes.
+ audio to the window and was deafening in LambdaVision (visionOS 26).
+ visionOS 26 added a rendering mode: `systemRendering: true` builds the
+ engine with `.client`, which renders in the system's audio server, where
+ Apple says it can apply low-latency head tracking and the personalized
+ profile. Longwave's Moonlight surround is the first visionOS consumer and
+ uses it (2026-10-04); not yet heard on a headset, so start quiet.
 
  Coordinates are the listener's: −z forward, +x right, +y up, metres.
  */
@@ -120,9 +124,19 @@ public final class RAVEPhaseStage {
     ///   - sampleRate: every stream's rate; each stream is mono.
     ///   - binaural: always render for headphones. Off lets PHASE choose by
     ///     route, which on AirPlay speakers means plain panning.
+    ///   - systemRendering: visionOS only, ignored elsewhere: render in the
+    ///     system's audio server (`PHASEEngine.RenderingMode.client`) rather
+    ///     than in-process. Off keeps the engine's default mode.
     public init(sampleRate: Double, binaural: Bool = true, headTracking: Bool = true,
-                reverbPreset: RAVEReverbPreset = .mediumRoom, reverbSend: Double = 0.25) {
+                reverbPreset: RAVEReverbPreset = .mediumRoom, reverbSend: Double = 0.25,
+                systemRendering: Bool = false) {
+        #if os(visionOS)
+        engine = systemRendering
+            ? PHASEEngine(updateMode: .automatic, renderingMode: .client)
+            : PHASEEngine(updateMode: .automatic)
+        #else
         engine = PHASEEngine(updateMode: .automatic)
+        #endif
         if binaural { engine.outputSpatializationMode = .alwaysUseBinaural }
         engine.defaultReverbPreset = reverbPreset.phase
         self.reverbPreset = reverbPreset
@@ -228,6 +242,23 @@ public final class RAVEPhaseStage {
         }
         sources.removeAll()
         isRunning = false
+    }
+
+    /// Adds one source per speaker of `layout`, each fed by `feed`'s
+    /// channel of the same index: the LFE as a head-locked bed, the rest
+    /// positioned `distance` metres away. Returns the speakers added.
+    @discardableResult
+    public func addSpeakers(_ layout: RAVESpeakerLayout, feed: RAVEChannelFeed, distance: Float = 2) throws -> [RAVESpeaker] {
+        precondition(feed.channelCount >= layout.channelCount, "feed has fewer channels than the layout")
+        for speaker in layout.speakers {
+            // The feed builds the handler in a nonisolated context; see `addSource`.
+            try addSource(id: speaker.channel, kind: speaker.isLFE ? .bed : .positioned,
+                          render: feed.renderHandler(channel: speaker.channel))
+            if let position = speaker.position(distance: distance) {
+                setPosition(of: speaker.channel, to: position)
+            }
+        }
+        return layout.speakers
     }
 
     /// Moves a positioned source (listener coordinates, metres).
