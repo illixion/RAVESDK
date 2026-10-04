@@ -29,7 +29,11 @@
  engine with `.client`, which renders in the system's audio server, where
  Apple says it can apply low-latency head tracking and the personalized
  profile. Longwave's Moonlight surround is the first visionOS consumer and
- uses it (2026-10-04); not yet heard on a headset, so start quiet.
+ uses it. Heard on a headset 2026-10-04 (visionOS 27): sources come from
+ their positions, anchored to the app's window on the built-in speakers, so
+ `recenter()` has no audible effect there. Adding the listener logs
+ "Cannot add PHASESharedListener as child" in this mode (the server owns
+ the listener); rendering is unaffected.
 
  Coordinates are the listener's: −z forward, +x right, +y up, metres.
  */
