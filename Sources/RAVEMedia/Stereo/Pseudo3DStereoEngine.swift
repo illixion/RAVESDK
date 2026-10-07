@@ -312,13 +312,16 @@ public final class Pseudo3DStereoEngine {
         guard let entity = videoEntity, !tapTargetInstalled else { return }
         let local = entity.visualBounds(relativeTo: entity)
         guard local.extents.x > 0.001, local.extents.y > 0.001 else { return }
+        // Flat, on the plane. It was 5 cm deep, reaching 2.5 cm in front of
+        // the picture, and took the gaze hover from menus open over it (taps
+        // still landed, device 2026-10-07). It stays live while a menu is
+        // open: a tap on the picture is how a viewer gets out of a menu
+        // state that was never reported closed.
         let box = ShapeResource.generateBox(
-            width: local.extents.x, height: local.extents.y, depth: max(local.extents.z, 0.05)
+            width: local.extents.x, height: local.extents.y, depth: 0.001
         ).offsetBy(translation: local.center)
         entity.components.set(CollisionComponent(shapes: [box], isStatic: true))
-        var target = InputTargetComponent()
-        target.isEnabled = !chromeOpen
-        entity.components.set(target)
+        entity.components.set(InputTargetComponent())
         tapTargetInstalled = true
     }
 
@@ -444,10 +447,8 @@ public final class Pseudo3DStereoEngine {
 
     /// Fade/restore the video when a menu/popover opens/closes, so the presented
     /// chrome shows through the (front-plane) video instead of being occluded.
-    /// The picture also goes flat and stops taking gaze while it's open: its
-    /// pop-out still read in front of the menus, and the tap target in front of
-    /// the plane took the gaze hover from them (taps still landed), device
-    /// 2026-10-07.
+    /// The picture also goes flat while it's open: its pop-out still read in
+    /// front of the menus (device, 2026-10-07).
     public func setChromeOpen(_ open: Bool) {
         guard open != chromeOpen else { return }
         chromeOpen = open
@@ -456,8 +457,6 @@ public final class Pseudo3DStereoEngine {
             ? min(chromeFadeDuration * 2, Self.chromeFadeMaxDuration)
             : Self.chromeFadeBaseDuration
         lastChromeTransition = now
-        // Gaze goes back to the menus at once; only the picture eases.
-        applyChromeOpacity()
         startChromeFade()
     }
 
@@ -498,7 +497,6 @@ public final class Pseudo3DStereoEngine {
     private func applyChromeOpacity() {
         let opacity = contentOpacity * (1 - chromeBlend * (1 - chromeDimOpacity))
         videoEntity?.components.set(OpacityComponent(opacity: opacity))
-        videoEntity?.components[InputTargetComponent.self]?.isEnabled = !chromeOpen
     }
 
     /// Plane width (meters) above which `depthStrength` is attenuated. The warp
