@@ -134,6 +134,9 @@ public final class FilmPlayer {
 
     public func seek(to seconds: Double) {
         let target = min(max(0, seconds), max(0, duration - 0.5))
+        // Every position change goes through here, so a playhead that jumps
+        // somewhere unexpected leaves a line naming where it came from.
+        logger.info("Seek \(self.currentTime, format: .fixed(precision: 2))s → \(target, format: .fixed(precision: 2))s")
         schedule(at: target, seekVideo: true)
     }
 

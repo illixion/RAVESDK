@@ -87,7 +87,7 @@ is easy to skip.
 | Target | Purpose |
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
-| `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager |
+| `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager, shared player controls, subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
