@@ -300,8 +300,9 @@ final class StereoSubtitleCompositor: @unchecked Sendable {
         let target = packed
             ? (measuredShift ?? Self.packedDepthMargin)
             : max(0, maxContentShift) + Self.fakeDepthMargin * depthStrength
-        if isNewCue || overlay.items.isEmpty {
-            // Nothing on screen to keep steady.
+        if isNewCue || overlay.items.isEmpty || !packed {
+            // Nothing on screen to keep steady; or fake-3D, whose target
+            // follows the settings (a fade to flat), not the content.
             shift = target
         } else if target > shift {
             shift += (target - shift) * Self.approachRate

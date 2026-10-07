@@ -162,6 +162,20 @@ public final class Pseudo3DStereoEngine {
     @ObservationIgnored private var chromeOpen = false
     /// Video opacity while a menu/popover is open (low = chrome clearly visible).
     @ObservationIgnored private let chromeDimOpacity: Float = 0.12
+    /// How far the picture has gone into its menu state: 0 = normal, 1 =
+    /// dimmed and flat. Eased rather than switched — a bright picture cutting
+    /// to near-transparent and back is a flash, and a viewer opening and
+    /// closing menus could make it strobe.
+    @ObservationIgnored private var chromeBlend: Float = 0
+    @ObservationIgnored private var chromeFadeTask: Task<Void, Never>?
+    @ObservationIgnored private var lastChromeTransition: CFTimeInterval = 0
+    @ObservationIgnored private var chromeFadeDuration = Pseudo3DStereoEngine.chromeFadeBaseDuration
+    /// A full fade. Transitions under `chromeFadeRepeatWindow` apart double it,
+    /// up to `chromeFadeMaxDuration`, so repeated toggling slows to well under
+    /// three flashes a second (WCAG 2.3.1) however fast it comes.
+    static let chromeFadeBaseDuration = 0.3
+    static let chromeFadeMaxDuration = 2.0
+    static let chromeFadeRepeatWindow = 1.0
     /// Caller-driven opacity (slideshow crossfades), multiplied with the chrome
     /// dim. SwiftUI's `.opacity` doesn't reach RealityKit content on visionOS.
     @ObservationIgnored private var contentOpacity: Float = 1
@@ -437,8 +451,35 @@ public final class Pseudo3DStereoEngine {
     public func setChromeOpen(_ open: Bool) {
         guard open != chromeOpen else { return }
         chromeOpen = open
+        let now = CACurrentMediaTime()
+        chromeFadeDuration = now - lastChromeTransition < Self.chromeFadeRepeatWindow
+            ? min(chromeFadeDuration * 2, Self.chromeFadeMaxDuration)
+            : Self.chromeFadeBaseDuration
+        lastChromeTransition = now
+        // Gaze goes back to the menus at once; only the picture eases.
         applyChromeOpacity()
-        pump?.updateConfig(makePumpConfig())
+        startChromeFade()
+    }
+
+    /// Eases `chromeBlend` toward the chrome state from wherever it is, so a
+    /// reversal mid-fade turns around rather than jumping.
+    private func startChromeFade() {
+        chromeFadeTask?.cancel()
+        let start = chromeBlend
+        let target: Float = chromeOpen ? 1 : 0
+        let duration = chromeFadeDuration * Double(abs(target - start))
+        chromeFadeTask = Task { @MainActor [weak self] in
+            let began = CACurrentMediaTime()
+            while !Task.isCancelled, let self {
+                let progress = duration > 0 ? Float(min(1, (CACurrentMediaTime() - began) / duration)) : 1
+                let eased = progress * progress * (3 - 2 * progress)
+                self.chromeBlend = start + (target - start) * eased
+                self.applyChromeOpacity()
+                self.pump?.updateConfig(self.makePumpConfig())
+                if progress >= 1 { return }
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+        }
     }
 
     /// Caller-driven plane opacity (slideshow crossfade). Composes with the
@@ -455,7 +496,7 @@ public final class Pseudo3DStereoEngine {
     /// created after the first setChromeOpen (which otherwise left it desynced —
     /// the first menu wouldn't fade, later ones would).
     private func applyChromeOpacity() {
-        let opacity = contentOpacity * (chromeOpen ? chromeDimOpacity : 1.0)
+        let opacity = contentOpacity * (1 - chromeBlend * (1 - chromeDimOpacity))
         videoEntity?.components.set(OpacityComponent(opacity: opacity))
         videoEntity?.components[InputTargetComponent.self]?.isEnabled = !chromeOpen
     }
@@ -487,7 +528,7 @@ public final class Pseudo3DStereoEngine {
             depthStrength: strength,
             convergence: Float(settings.convergence),
             mirror: isFlipped,
-            flat: chromeOpen
+            depthScale: 1 - chromeBlend
         )
     }
 
@@ -894,6 +935,8 @@ public final class Pseudo3DStereoEngine {
         sizeSubscription = nil
         refitBurstTask?.cancel()
         refitBurstTask = nil
+        chromeFadeTask?.cancel()
+        chromeFadeTask = nil
         videoEntity = nil
         lastViewBounds = nil
         tapTargetInstalled = false

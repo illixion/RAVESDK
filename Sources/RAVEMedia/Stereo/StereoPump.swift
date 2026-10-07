@@ -83,9 +83,12 @@ public final class StereoPump: @unchecked Sendable {
         /// config path is ever missed: at 1.0 nothing crosses the window frame.
         public var convergence: Float = 1.0
         public var mirror: Bool = false
-        /// Both eyes the same picture (a menu is open over it; see
-        /// `Pseudo3DStereoEngine.setChromeOpen`).
-        public var flat: Bool = false
+        /// Scales the picture's depth toward flat (a menu is opening over it;
+        /// see `Pseudo3DStereoEngine.setChromeOpen`). A packed pair can't be
+        /// part-flat, so it shows one eye twice below a half.
+        public var depthScale: Float = 1
+
+        var isFlat: Bool { depthScale < 0.5 }
 
         public init(
             brightness: Float = 0,
@@ -94,7 +97,7 @@ public final class StereoPump: @unchecked Sendable {
             depthStrength: Float = 0.008,
             convergence: Float = 1.0,
             mirror: Bool = false,
-            flat: Bool = false
+            depthScale: Float = 1
         ) {
             self.brightness = brightness
             self.contrast = contrast
@@ -102,7 +105,7 @@ public final class StereoPump: @unchecked Sendable {
             self.depthStrength = depthStrength
             self.convergence = convergence
             self.mirror = mirror
-            self.flat = flat
+            self.depthScale = depthScale
         }
     }
 
@@ -414,7 +417,7 @@ public final class StereoPump: @unchecked Sendable {
         let depthDone = CACurrentMediaTime()
 
         var cfg = currentConfig()
-        if cfg.flat { cfg.depthStrength = 0 }
+        cfg.depthStrength *= max(0, min(1, cfg.depthScale))
         let fullDepthStrength = cfg.depthStrength
         if depthSource?.flattensWhenUnavailable == true {
             // Cached mode: a seek/startup gap renders FLAT (never the heuristic
@@ -432,7 +435,7 @@ public final class StereoPump: @unchecked Sendable {
         let warpState = signposter.beginInterval("pump-warp")
         if let layout {
             encodePackedEye(.left, layout: layout, into: leftTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
-            encodePackedEye(cfg.flat ? .left : .right, layout: layout, into: rightTex, source: srcTexture,
+            encodePackedEye(cfg.isFlat ? .left : .right, layout: layout, into: rightTex, source: srcTexture,
                             config: cfg, commandBuffer: cmdBuf)
         } else {
             encodeEye(into: leftTex, source: srcTexture, depth: frameDepth, eyeSign: 1.0, config: cfg, commandBuffer: cmdBuf)
@@ -442,7 +445,7 @@ public final class StereoPump: @unchecked Sendable {
         // (1 - convergence) × strength; the margin in front of that keeps the
         // strength the ramp is heading for, so text doesn't sink mid-ramp.
         subtitles?.encode(
-            left: leftTex, right: rightTex, packed: layout != nil && !cfg.flat,
+            left: leftTex, right: rightTex, packed: layout != nil && !cfg.isFlat,
             maxContentShift: (1 - cfg.convergence) * cfg.depthStrength,
             depthStrength: fullDepthStrength,
             transfer: StereoSubtitleCompositor.transferMode(of: src), commandBuffer: cmdBuf
