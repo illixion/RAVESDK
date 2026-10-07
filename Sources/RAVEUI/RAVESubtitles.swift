@@ -233,17 +233,48 @@ enum RAVESubtitleParser {
 #if canImport(SwiftUI)
 import SwiftUI
 
-/// Draws a subtitle track over a picture, following the host's clock.
+/// The cues of `track` showing on the host's clock, handed to `content`.
 ///
 /// `time` is sampled about 20 times a second and should return the film time
-/// of the frame being shown. `pictureAspect` (width / height) places the text
-/// inside an aspect-fitted picture rather than in a letterbox bar; leave it
-/// nil when the view is the picture's own size. Never takes hits.
+/// of the frame being shown; `content` re-renders only when the set changes.
+public struct RAVESubtitleCues<Content: View>: View {
+    private let track: RAVESubtitleTrack?
+    private let time: @MainActor () -> Double
+    private let content: ([RAVESubtitleCue]) -> Content
+    @State private var showing: [RAVESubtitleCue] = []
+
+    public init(track: RAVESubtitleTrack?, time: @escaping @MainActor () -> Double,
+                @ViewBuilder content: @escaping ([RAVESubtitleCue]) -> Content) {
+        self.track = track
+        self.time = time
+        self.content = content
+    }
+
+    public var body: some View {
+        content(showing)
+            .task(id: track?.id) {
+                guard let track else {
+                    showing = []
+                    return
+                }
+                while !Task.isCancelled {
+                    let current = track.cues(at: time())
+                    if current != showing { showing = current }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            }
+    }
+}
+
+/// Draws a subtitle track over a picture, following the host's clock.
+///
+/// `pictureAspect` (width / height) places the text inside an aspect-fitted
+/// picture rather than in a letterbox bar; leave it nil when the view is the
+/// picture's own size. Never takes hits.
 public struct RAVESubtitleOverlay: View {
     private let track: RAVESubtitleTrack?
     private let pictureAspect: CGFloat?
     private let time: @MainActor () -> Double
-    @State private var showing: [RAVESubtitleCue] = []
 
     public init(track: RAVESubtitleTrack?, pictureAspect: CGFloat? = nil, time: @escaping @MainActor () -> Double) {
         self.track = track
@@ -255,27 +286,18 @@ public struct RAVESubtitleOverlay: View {
         GeometryReader { geometry in
             let picture = Self.fittedRect(in: geometry.size, aspect: pictureAspect)
             let fontSize = Self.fontSize(forPictureHeight: picture.height)
-            VStack(spacing: 0) {
-                block(showing.filter { $0.placement == .top }, fontSize: fontSize)
-                Spacer(minLength: 0)
-                block(showing.filter { $0.placement == .bottom }, fontSize: fontSize)
+            RAVESubtitleCues(track: track, time: time) { showing in
+                VStack(spacing: 0) {
+                    block(showing.filter { $0.placement == .top }, fontSize: fontSize)
+                    Spacer(minLength: 0)
+                    block(showing.filter { $0.placement == .bottom }, fontSize: fontSize)
+                }
+                .padding(.vertical, picture.height * 0.05)
+                .frame(width: picture.width, height: picture.height)
+                .position(x: picture.midX, y: picture.midY)
             }
-            .padding(.vertical, picture.height * 0.05)
-            .frame(width: picture.width, height: picture.height)
-            .position(x: picture.midX, y: picture.midY)
         }
         .allowsHitTesting(false)
-        .task(id: track?.id) {
-            guard let track else {
-                showing = []
-                return
-            }
-            while !Task.isCancelled {
-                let current = track.cues(at: time())
-                if current != showing { showing = current }
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-        }
     }
 
     @ViewBuilder
@@ -299,6 +321,38 @@ public struct RAVESubtitleOverlay: View {
         }
         let height = size.width / aspect
         return CGRect(x: 0, y: (size.height - height) / 2, width: size.width, height: height)
+    }
+}
+
+/// Subtitles on a panel of their own rather than over the picture: for a
+/// stereo picture, where text drawn over it would have to win a depth
+/// contest with the scene. Every cue is shown in start order whatever its
+/// placement, and the panel keeps room for `reservedLines` so it doesn't
+/// jump in size as cues come and go.
+public struct RAVESubtitlePanel: View {
+    private let track: RAVESubtitleTrack?
+    private let fontSize: CGFloat
+    private let reservedLines: Int
+    private let time: @MainActor () -> Double
+
+    public init(track: RAVESubtitleTrack?, fontSize: CGFloat = 30, reservedLines: Int = 2,
+                time: @escaping @MainActor () -> Double) {
+        self.track = track
+        self.fontSize = fontSize
+        self.reservedLines = reservedLines
+        self.time = time
+    }
+
+    public var body: some View {
+        RAVESubtitleCues(track: track, time: time) { showing in
+            ZStack(alignment: .top) {
+                if !showing.isEmpty {
+                    RAVESubtitleText(cues: showing, fontSize: fontSize)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: CGFloat(reservedLines) * fontSize * 1.45, alignment: .top)
+        }
+        .allowsHitTesting(false)
     }
 }
 
