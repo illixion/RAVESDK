@@ -161,10 +161,11 @@ public final class StereoPump: @unchecked Sendable {
     /// the flat→3D strength ramp in flatten mode (cached seek gaps, startup).
     private var depthResumeTime: CFTimeInterval?
     /// Pump-queue only: the last frame taken, re-shown after a renderer
-    /// flush, and when that flush last happened.
+    /// flush (a paused picture has no new frame coming).
     private var lastFrame: PumpFrame?
-    private var lastRendererFlush: CFTimeInterval = 0
-    private func hostTimeNow() -> CFTimeInterval { CACurrentMediaTime() }
+    /// Flushes the renderer when visionOS took its decoding away; see
+    /// `RAVEDecoderRecovery`. Made in `start()`, as it captures self.
+    private var decoderRecovery: RAVEDecoderRecovery?
 
     private let configLock = NSLock()
     private var config = Config()
@@ -246,6 +247,9 @@ public final class StereoPump: @unchecked Sendable {
 
     public func start() {
         observeAppLifecycle()
+        decoderRecovery = RAVEDecoderRecovery(renderer: videoRenderer) { [weak self] _ in
+            self?.queue.async { self?.flushAndReshow() }
+        }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: frameInterval, leeway: .milliseconds(2))
         timer.setEventHandler { [weak self] in self?.tick() }
@@ -254,6 +258,7 @@ public final class StereoPump: @unchecked Sendable {
     }
 
     public func stop() {
+        decoderRecovery?.cancel()
         for observer in lifecycleObservers { NotificationCenter.default.removeObserver(observer) }
         lifecycleObservers = []
         timer?.cancel()
@@ -297,6 +302,13 @@ public final class StereoPump: @unchecked Sendable {
 
     // MARK: Per-frame work (always on `queue`)
 
+    private func flushAndReshow() {
+        videoRenderer.flush()
+        guard let lastFrame, let textureCache else { return }
+        renderAndEnqueue(from: lastFrame.pixelBuffer, itemTime: lastFrame.itemTime, cache: textureCache,
+                         pts: CMTime(seconds: CACurrentMediaTime() - startHostTime, preferredTimescale: 90_000))
+    }
+
     private func tick() {
         lifecycleLock.lock()
         let backgrounded = isBackgrounded
@@ -307,28 +319,10 @@ public final class StereoPump: @unchecked Sendable {
         // current content rather than replaying a backlog.
         guard !backgrounded else { return }
 
-        // visionOS takes video decoding resources away from an app while
-        // another one has an immersive space open (and on other occasions):
-        // the renderer then fails, sets requiresFlushToResumeDecoding, and
-        // drops every sample until it is flushed. Unflushed, the picture
-        // froze on its last frame for good, with audio and transport still
-        // running (device, 2026-10-07). Flushing here, on the queue that
-        // enqueues, resumes it with the next frame.
-        // At most once a second: a flush issued while decoding is still
-        // taken away just fails again.
-        if videoRenderer.status == .failed || videoRenderer.requiresFlushToResumeDecoding {
-            guard hostTimeNow() - lastRendererFlush > 1 else { return }
-            lastRendererFlush = hostTimeNow()
-            let reason = videoRenderer.error.map { "\($0.localizedDescription) (\(($0 as NSError).code))" } ?? "decoding suspended"
-            RAVEMediaLog.pipeline.notice("stereo renderer needs a flush (\(reason, privacy: .public)); flushing")
-            videoRenderer.flush()
-            // A paused picture has no new frame coming; show the last one.
-            if let lastFrame, let textureCache {
-                renderAndEnqueue(from: lastFrame.pixelBuffer, itemTime: lastFrame.itemTime, cache: textureCache,
-                                 pts: CMTime(seconds: hostTimeNow() - startHostTime, preferredTimescale: 90_000))
-            }
-            return
-        }
+        // A renderer whose decoding visionOS took away (another app's
+        // immersive space) drops everything until flushed; the recovery
+        // flushes on this queue and re-shows the last frame.
+        if decoderRecovery?.checkRenderer() == true { return }
 
         guard videoRenderer.isReadyForMoreMediaData, let textureCache else { return }
 

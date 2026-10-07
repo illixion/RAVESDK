@@ -94,7 +94,7 @@ let package = Package(
         .testTarget(name: "RAVESpatialAudioTests", dependencies: ["RAVESpatialAudio"]),
         .target(
             name: "RAVEFilm",
-            dependencies: ["RAVESpatialAudio", .product(name: "DebugTrace", package: "DebugTrace")],
+            dependencies: ["RAVESpatialAudio", "RAVEMedia", .product(name: "DebugTrace", package: "DebugTrace")],
             // UIWindow.avDisplayManager is an AVKit category; Swift's autolink
             // drops the framework when nothing else from it is used.
             linkerSettings: [.linkedFramework("AVKit", .when(platforms: [.tvOS, .visionOS]))]

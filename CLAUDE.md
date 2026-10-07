@@ -408,15 +408,24 @@ app has an immersive space open (and on other occasions), visionOS withdraws vid
 decoding: `AVSampleBufferVideoRenderer` goes `.failed` with
 `requiresFlushToResumeDecoding`, and a `VTDecompressionSession` returns
 `kVTInvalidSessionErr`. Neither recovers on its own; unflushed, the picture froze on its
-last frame for good with audio and transport running (device, 2026-10-07). The recovery:
-`StereoPump` checks each tick and flushes (at most once a second, since a flush while
-still locked out just fails again), then re-shows the last frame; `FilmVideoPlayer`
-watches `requiresFlushToResumeDecodingDidChangeNotification` (its feed loop sleeps while
-buffered or paused) and flushes and re-seeks through `onDecodingInterrupted` so
-`FilmPlayer` re-anchors the Atmos clock, with a back-off; `SampleBufferFrameSource`
-drops its session and restarts at the next keyframe instead of reporting a fatal decode
-error. After any flush or new session, decoding needs a keyframe. Any new player here
-needs the same.
+last frame for good with audio and transport running (device, 2026-10-07).
+**`RAVEDecoderRecovery`** (RAVEMedia) is the shared answer, also used by Longwave's
+desktop stream. The client supplies only `recover` (flush or drop its session, then get a
+key frame: re-seek, re-show, or ask the sender). The helper owns everything else:
+- noticing the loss even with no frames flowing: the renderer's
+  `requiresFlushToResumeDecodingDidChangeNotification`, and app/scene return;
+- waiting while the app is backgrounded;
+- retrying about once a second, since a flush while still locked out fails again;
+- the key-frame gate (`admit`), which asks again if only delta frames arrive;
+- an attempt limit that only counts unexplained failures, because withdrawn resources
+  must never end playback.
+
+`recover` always runs asynchronously on the helper's queue: the renderer posts its
+notification from inside `flush`/`enqueue`, which clients run under their own locks.
+Users: `StereoPump` (flush and re-show the last frame), `FilmVideoPlayer` (flush and
+re-seek through `onDecodingInterrupted`, so `FilmPlayer` re-anchors the Atmos clock).
+`SampleBufferFrameSource` restarts its own session at the next keyframe. Any new player
+here needs the same; RAVEFilm depends on RAVEMedia for it.
 
 **Plane fit details.** The plane is positioned in scene space (`setPosition(_,
 relativeTo: nil)`), refits on any scale change above 0.001 (a 0.02 threshold left it ~4 %

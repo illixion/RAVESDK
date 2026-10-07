@@ -25,6 +25,7 @@ import CoreMedia
 import Foundation
 import Observation
 import os
+import RAVEMedia
 
 @MainActor
 @Observable
@@ -72,8 +73,12 @@ public final class FilmVideoPlayer {
     /// Atmos audio) is re-anchored too. Without an owner the player re-seeks
     /// itself.
     @ObservationIgnored public var onDecodingInterrupted: (@MainActor () -> Void)?
-    private var recoveryTask: Task<Void, Never>?
-    private var flushObserver: NSObjectProtocol?
+    /// Flushes and re-seeks when visionOS took the picture's decoding away
+    /// (another app's immersive space): the renderer then fails and drops
+    /// every sample until flushed, which froze the picture on its last frame
+    /// with the audio playing on (device, 2026-10-07). It watches the
+    /// renderer itself, as the feed loop sleeps while buffered or paused.
+    @ObservationIgnored private var decoderRecovery: RAVEDecoderRecovery?
 
     private var renderer: AVSampleBufferVideoRenderer { displayLayer.sampleBufferRenderer }
 
@@ -92,55 +97,26 @@ public final class FilmVideoPlayer {
         #if !os(visionOS)
         displayLayer.preventsDisplaySleepDuringVideoPlayback = true
         #endif
-        // The feed loop sleeps while the picture is buffered or paused, so it
-        // can't be what notices a suspended decoder; the renderer says so.
-        flushObserver = NotificationCenter.default.addObserver(
-            forName: AVSampleBufferVideoRenderer.requiresFlushToResumeDecodingDidChangeNotification,
-            object: displayLayer.sampleBufferRenderer, queue: .main
+        decoderRecovery = RAVEDecoderRecovery(
+            renderer: displayLayer.sampleBufferRenderer,
+            maximumAttempts: 40,
+            onGiveUp: { [weak self] _ in
+                Task { @MainActor in self?.status = "The picture's decoder could not be restarted." }
+            }
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.recoverDecodingIfNeeded() }
+            Task { @MainActor in self?.restartAfterDecoderLoss() }
         }
     }
 
-    /// The renderer cannot decode: visionOS takes video decoding away from an
-    /// app while another app has an immersive space open, and the renderer
-    /// then fails and drops every sample until it is flushed. Unrecovered,
-    /// the picture froze on its last frame with the audio playing on (device,
-    /// 2026-10-07).
-    private var decodingSuspended: Bool {
-        renderer.status == .failed || renderer.requiresFlushToResumeDecoding
-    }
-
-    /// Flushes and re-seeks once decoding is possible again. A flush issued
-    /// while decoding is still taken away fails again, so this retries with a
-    /// back-off until the renderer stays healthy.
-    private func recoverDecodingIfNeeded() {
-        guard decodingSuspended, recoveryTask == nil, index != nil else { return }
-        let reason = renderer.error.map { "\($0.localizedDescription) (\(($0 as NSError).code))" } ?? "decoding suspended"
-        logger.notice("Picture decoder lost (\(reason, privacy: .public)); recovering")
-        recoveryTask = Task { [weak self] in
-            var delay = Duration.milliseconds(250)
-            for attempt in 1...40 {
-                guard let self, !Task.isCancelled else { return }
-                self.renderer.flush()
-                if let interrupted = self.onDecodingInterrupted {
-                    interrupted()
-                } else {
-                    self.seek(to: self.currentTime)
-                }
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                if !self.decodingSuspended {
-                    self.logger.notice("Picture decoder recovered after \(attempt, privacy: .public) attempt(s)")
-                    self.recoveryTask = nil
-                    return
-                }
-                try? await Task.sleep(for: delay)
-                delay = min(delay * 2, .seconds(4))
-            }
-            self?.status = "The picture's decoder could not be restarted."
-            self?.logger.error("Picture decoder did not recover")
-            self?.recoveryTask = nil
+    /// The renderer is flushed and fed again from the playhead; the owner's
+    /// seek re-anchors its own clock with it.
+    private func restartAfterDecoderLoss() {
+        guard index != nil else { return }
+        renderer.flush()
+        if let onDecodingInterrupted {
+            onDecodingInterrupted()
+        } else {
+            seek(to: currentTime)
         }
     }
 
@@ -252,8 +228,6 @@ public final class FilmVideoPlayer {
     }
 
     public func stop() {
-        recoveryTask?.cancel()
-        recoveryTask = nil
         feedTask?.cancel()
         feedTask = nil
         startTask?.cancel()
@@ -298,14 +272,12 @@ public final class FilmVideoPlayer {
             for sample in segment.samples {
                 // A suspended renderer may never report ready, so check
                 // while waiting, not after.
-                while !renderer.isReadyForMoreMediaData, !decodingSuspended, !Task.isCancelled {
+                while !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(5))
                 }
                 guard !Task.isCancelled else { return }
-                if decodingSuspended {
-                    recoverDecodingIfNeeded()
-                    return
-                }
+                // Recovery re-seeks, which starts a new feed.
+                if decoderRecovery?.checkRenderer() == true { return }
                 let hidden = sample.presentationTime < hideBefore
                 guard let buffer = Self.makeSampleBuffer(sample, in: segment.data, format: format, timescale: timescale,
                                                          doNotDisplay: hidden)
