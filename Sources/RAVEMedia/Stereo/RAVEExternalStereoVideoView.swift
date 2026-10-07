@@ -17,13 +17,16 @@ public struct RAVEExternalStereoVideoView: View {
     private let onUnavailable: () -> Void
     private let onToggleChrome: () -> Void
     private let packedStereo: RAVEPackedStereoLayout?
+    private let squareCorners: Bool
     @State private var engine = Pseudo3DStereoEngine()
 
     public init(source: any PumpFrameSource, settings: Pseudo3DSettings = .default,
                 chromeOpen: Bool = false, packedStereo: RAVEPackedStereoLayout? = nil,
+                squareCorners: Bool = false,
                 onUnavailable: @escaping () -> Void,
                 onToggleChrome: @escaping () -> Void = {}) {
         self.packedStereo = packedStereo
+        self.squareCorners = squareCorners
         self.source = source
         self.settings = settings
         self.chromeOpen = chromeOpen
@@ -36,6 +39,7 @@ public struct RAVEExternalStereoVideoView: View {
             RealityView { content in
                 engine.configure(adjustments: .neutral, settings: settings, isFlipped: false)
                 engine.setChromeOpen(chromeOpen)
+                engine.setSquareCorners(squareCorners)
                 engine.onPlaybackError = onUnavailable
                 content.add(engine.makeVideoEntity())
                 engine.observeVideoSize(content: content)
@@ -54,6 +58,7 @@ public struct RAVEExternalStereoVideoView: View {
             engine.configure(adjustments: .neutral, settings: value, isFlipped: false)
         }
         .onChange(of: chromeOpen) { _, value in engine.setChromeOpen(value) }
+        .onChange(of: squareCorners) { _, value in engine.setSquareCorners(value) }
         .onDisappear { engine.cleanup() }
     }
 }

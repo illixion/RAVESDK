@@ -41,4 +41,22 @@ struct PackedStereoLayoutTests {
         #expect(RAVEPackedStereoLayout(arrangement: .sideBySide, isHalfResolution: false).eyeSize(packed: CGSize(width: 3841, height: 1080)).width
                 == 1920)
     }
+
+    @Test("The frame's shape overrules a wrong half/full tag")
+    func resolutionCorrection() {
+        let half = RAVEPackedStereoLayout(arrangement: .sideBySide, isHalfResolution: true)
+        // Jellyfin's "HalfSideBySide" on a 3840×1080 file: two full HD eyes.
+        #expect(half.correctingResolution(forPacked: CGSize(width: 3840, height: 1080)).isHalfResolution == false)
+        #expect(half.correctingResolution(forPacked: CGSize(width: 1920, height: 1080)).isHalfResolution == true)
+        let full = RAVEPackedStereoLayout(arrangement: .sideBySide, isHalfResolution: false)
+        #expect(full.correctingResolution(forPacked: CGSize(width: 1920, height: 1080)).isHalfResolution == true)
+        // A half-SBS scope film: the full reading's 1.2:1 eye is implausible.
+        #expect(full.correctingResolution(forPacked: CGSize(width: 1920, height: 800)).isHalfResolution == true)
+        // Full-SBS 4:3 vs half-SBS 2.67:1: both plausible, the tag stands.
+        #expect(full.correctingResolution(forPacked: CGSize(width: 2560, height: 960)).isHalfResolution == false)
+        #expect(half.correctingResolution(forPacked: CGSize(width: 2560, height: 960)).isHalfResolution == true)
+        let ou = RAVEPackedStereoLayout(arrangement: .overUnder, isHalfResolution: true)
+        #expect(ou.correctingResolution(forPacked: CGSize(width: 1920, height: 2160)).isHalfResolution == false)
+        #expect(ou.correctingResolution(forPacked: CGSize(width: 1920, height: 1080)).isHalfResolution == true)
+    }
 }

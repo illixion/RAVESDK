@@ -56,6 +56,34 @@ public struct RAVEPackedStereoLayout: Hashable, Sendable, Codable {
         }
     }
 
+    /// This layout with `isHalfResolution` corrected by the frame's shape.
+    ///
+    /// The tag that says "half" or "full" is often wrong: Jellyfin reads a
+    /// plain `.3D.SBS.` file name as half side by side, so a 3840×1080 film
+    /// (two 1920×1080 eyes) came out with each eye stretched to 3.56:1. One of
+    /// the two readings usually gives an eye no picture is shaped like, and
+    /// then the other one wins. When both are plausible (a full side-by-side
+    /// 4:3 film is also a plausible half side-by-side scope film) the tag
+    /// stands.
+    public func correctingResolution(forPacked packed: CGSize) -> RAVEPackedStereoLayout {
+        guard packed.width > 0, packed.height > 0 else { return self }
+        func aspect(half: Bool) -> CGFloat {
+            var layout = self
+            layout.isHalfResolution = half
+            let eye = layout.eyeSize(packed: packed)
+            return eye.width / max(eye.height, 1)
+        }
+        let halfFits = Self.plausibleEyeAspect.contains(aspect(half: true))
+        let fullFits = Self.plausibleEyeAspect.contains(aspect(half: false))
+        guard halfFits != fullFits else { return self }
+        var corrected = self
+        corrected.isHalfResolution = halfFits
+        return corrected
+    }
+
+    /// Eye shapes real pictures have: 4:3 up to Ultra Panavision's 2.76:1.
+    static let plausibleEyeAspect: ClosedRange<CGFloat> = 1.25...2.8
+
     /// The display size of one eye for a packed frame of `packed` pixels.
     public func eyeSize(packed: CGSize) -> CGSize {
         if isHalfResolution { return packed }

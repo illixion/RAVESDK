@@ -148,6 +148,16 @@ public final class Pseudo3DStereoEngine {
     /// content-aware fit (the component's screen mesh doesn't reflect them).
     @ObservationIgnored private var knownVideoSize: CGSize?
     @ObservationIgnored private var tapTargetInstalled = false
+    /// Square the picture's corners. The component's screen mesh has rounded
+    /// corners and no API to change them, but the window clips the plane
+    /// square at its edges; so the plane overscans its view a little, enough
+    /// for the edge to cut the rounding off (see `squareCornerOverscan`).
+    @ObservationIgnored private var squareCorners = false
+    /// Extra plane on each side, as a fraction of the plane's height, when
+    /// `squareCorners` is set. A corner of radius r reads square once the
+    /// clip lies 0.29 r inside each edge; the mesh's radius is ~2.7 % of its
+    /// height (device, 2026-10-07), so this crops ~1 % per edge.
+    static let squareCornerOverscan: Float = 0.012
     /// While true, fade the video so an open menu/popover shows through it.
     @ObservationIgnored private var chromeOpen = false
     /// Video opacity while a menu/popover is open (low = chrome clearly visible).
@@ -229,6 +239,13 @@ public final class Pseudo3DStereoEngine {
     }
 
     /// Store the latest RealityView bounds (scene space) and fit to them.
+    /// See `squareCorners`. Refits at once.
+    public func setSquareCorners(_ square: Bool) {
+        guard square != squareCorners else { return }
+        squareCorners = square
+        refitVideo()
+    }
+
     public func updateViewBounds(_ bounds: BoundingBox) {
         lastViewBounds = bounds
         refitVideo()
@@ -294,7 +311,13 @@ public final class Pseudo3DStereoEngine {
         // an open menu — the zero-depth slab clips any off-plane entity, and a
         // SwiftUI .offset(z:) perturbs this fit; menu occlusion is handled by
         // fading the entity via OpacityComponent instead — see setChromeOpen.)
-        entity.position = bounds.center
+        // `bounds` is in scene space; the entity's parent (the RealityView's
+        // content) already sits at the view's centre, so a scene-space centre
+        // set as the local position doubled any offset. With a subtitle band
+        // under the picture the view is 40 mm above the window's centre, and
+        // the plane landed 80 mm up: clipped flat at the top, a gap and its
+        // own rounded corners at the bottom (device, 2026-10-07).
+        entity.setPosition(bounds.center, relativeTo: nil)
 
         let extents = entity.visualBounds(relativeTo: nil).extents
         let scale = entity.scale.x
@@ -311,13 +334,14 @@ public final class Pseudo3DStereoEngine {
         // which formula met the square). Derive the screen dims from the
         // pump-reported video aspect instead — (a, 1) in mesh-local meters —
         // and only fall back to measured bounds before the size is known.
-        let target: Float
+        var target: Float
         if let size = knownVideoSize, size.width > 0, size.height > 0 {
             let videoAspect = Float(size.width / size.height)
             target = min(bounds.extents.x / videoAspect, bounds.extents.y)
         } else {
             target = min(bounds.extents.x / unscaledX, bounds.extents.y / unscaledY)
         }
+        if squareCorners { target *= 1 + 2 * Self.squareCornerOverscan }
         // Track the plane's physical width (the mesh is videoAspect × 1 m
         // pre-scale) and re-normalize disparity when it changes meaningfully.
         // Before the |target − scale| guard: the width must be known even when
@@ -330,9 +354,37 @@ public final class Pseudo3DStereoEngine {
                 pump?.updateConfig(makePumpConfig())
             }
         }
-        guard target.isFinite, target > 1e-4, abs(target - scale) > 0.02 else { return }
+        // A small threshold: this is an absolute scale, so skipping a 0.019
+        // change left a plane fitted to the previous window shape ~4 % too
+        // large, overhanging and clipped on every side (device, 2026-10-07).
+        guard target.isFinite, target > 1e-4, abs(target - scale) > 0.001 else {
+            logPlacementIfChanged(bounds: bounds, entity: entity)
+            return
+        }
         RAVEMediaLog.pipeline.info("fitVideo: bounds \(bounds.extents.x)x\(bounds.extents.y), mesh \(unscaledX)x\(unscaledY), videoAspect \(self.knownVideoSize.map { Float($0.width / $0.height) } ?? -1), scale \(scale) → \(target)")
         entity.scale = SIMD3<Float>(repeating: target)
+        logPlacementIfChanged(bounds: bounds, entity: entity)
+    }
+
+    @ObservationIgnored private var lastPlacementLog = ""
+
+    /// Where the plane sits against the view, once per change. A plane that
+    /// overhangs the view is clipped flat on that side, so this is the line
+    /// to read when a picture's edges or corners look wrong.
+    /// The plane's extent comes from its scale and the video's aspect, not
+    /// `visualBounds`: the component's screen mesh measures 1×1 long after
+    /// the video shows (see `fitVideo`).
+    private func logPlacementIfChanged(bounds: BoundingBox, entity: Entity) {
+        func mm(_ v: Float) -> Int { Int((v * 1000).rounded()) }
+        let center = entity.position(relativeTo: nil)
+        let height = entity.scale(relativeTo: nil).y
+        let aspect = knownVideoSize.map { Float($0.width / max($0.height, 1)) }
+        let width = aspect.map { $0 * height }
+        let planeX = width.map { "\(mm(center.x - $0 / 2))…\(mm(center.x + $0 / 2))" } ?? "?"
+        let line = "view y \(mm(bounds.min.y))…\(mm(bounds.max.y)) x \(mm(bounds.min.x))…\(mm(bounds.max.x)) mm, plane y \(mm(center.y - height / 2))…\(mm(center.y + height / 2)) x \(planeX) mm"
+        guard line != lastPlacementLog else { return }
+        lastPlacementLog = line
+        RAVEMediaLog.pipeline.info("plane placement: \(line, privacy: .public)")
     }
 
     // MARK: Config
