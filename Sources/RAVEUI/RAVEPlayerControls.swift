@@ -342,7 +342,32 @@ private struct PlayerAccessoryLabel: ViewModifier {
     }
 }
 
+/// Reports a menu's content appearing and disappearing, except inside the
+/// compact bar's "More" menu.
+///
+/// A menu nested in "More" materialises its content when "More" opens, and
+/// never reports it going when "More" closes: each nested menu left one
+/// "open" behind, so a host counting open menus saw three or four with none
+/// showing (Hypnos, device 2026-10-07). "More" reports for everything inside it.
+private struct PlayerMenuReporting: ViewModifier {
+    @Environment(\.ravePlayerControlsInMenu) private var inMenu
+    let onChange: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { if !inMenu { onChange(true) } }
+            .onDisappear { if !inMenu { onChange(false) } }
+    }
+}
+
 public extension View {
+    /// Apply to a menu's *content* to learn when an accessory menu opens and
+    /// closes, the way the bar's own "More" menu reports through
+    /// `onMenuChanged`. Silent when the menu sits inside "More".
+    func ravePlayerMenuReporting(_ onChange: @escaping (Bool) -> Void) -> some View {
+        modifier(PlayerMenuReporting(onChange: onChange))
+    }
+
     /// For an accessory `Label`: replaces `.labelStyle(.iconOnly)
     /// .ravePlayerControlLabel()` so the label reads in the "More" menu too.
     func ravePlayerAccessoryLabel() -> some View {
