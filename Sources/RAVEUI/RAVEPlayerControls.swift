@@ -56,7 +56,7 @@ public enum RAVEPlayerControlsLayout: Sendable {
     /// Timeline, transport and the accessory row stacked in three rows.
     case stacked
     /// One row: transport, timeline, mute, then the accessories inline, or
-    /// behind a "More" menu when they don't fit. For a bar hung under a
+    /// behind a "More" menu (a popover outside tvOS) when they don't fit. For a bar hung under a
     /// window, where every row of height is window the picture doesn't get.
     case compact
 }
@@ -74,6 +74,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     @State private var scrubSeconds: Double?
     @State private var isScrubbing = false
     @State private var isAccessoryScrolling = false
+    @State private var showsMore = false
 
     public init(state: RAVEPlayerControlState, togglePlayback: @escaping () -> Void,
                 seek: @escaping (Double) -> Void, toggleMute: @escaping () -> Void,
@@ -107,7 +108,10 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             RoundedRectangle(cornerRadius: 20).fill(.regularMaterial)
             #endif
         }
+        .onChange(of: showsMore) { _, shown in onMenuChanged(shown) }
         .onDisappear {
+            if showsMore { onMenuChanged(false) }
+            showsMore = false
             if isScrubbing || isAccessoryScrolling { onScrubbingChanged(false) }
             isScrubbing = false
             isAccessoryScrolling = false
@@ -142,17 +146,32 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             control(state.isMuted ? "Unmute" : "Mute", state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", action: toggleMute)
             if Accessories.self != EmptyView.self {
                 if overflow {
+                    #if os(tvOS)
                     Menu {
                         Group { accessories }
                             .environment(\.ravePlayerControlsInMenu, true)
                             .onAppear { onMenuChanged(true) }
                             .onDisappear { onMenuChanged(false) }
                     } label: {
-                        Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly).ravePlayerControlLabel()
-                            .font(.title2)
+                        moreLabel
                     }
                     .ravePlayerButtonStyle()
                     .help("More")
+                    #else
+                    // A popover, not a Menu: a Menu holding submenus keeps its
+                    // content alive after it closes, so its appear/disappear
+                    // reported the first opening and nothing after (device,
+                    // 2026-10-07). The popover's binding is exact.
+                    Button { showsMore.toggle() } label: { moreLabel }
+                        .ravePlayerButtonStyle()
+                        .help("More")
+                        .popover(isPresented: $showsMore, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 4) { accessories }
+                                .environment(\.ravePlayerControlsInMenu, true)
+                                .buttonStyle(.borderless)
+                                .padding(16)
+                        }
+                    #endif
                 } else {
                     Divider().frame(height: 28)
                     HStack(spacing: 6) { accessories }
@@ -163,8 +182,13 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         }
     }
 
+    private var moreLabel: some View {
+        Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly).ravePlayerControlLabel()
+            .font(.title2)
+    }
+
     #if os(visionOS) || os(tvOS)
-    private static var compactTimelineMinWidth: CGFloat { 280 }
+    private static var compactTimelineMinWidth: CGFloat { 480 }
     #else
     private static var compactTimelineMinWidth: CGFloat { 160 }
     #endif
@@ -323,13 +347,13 @@ public extension View {
 }
 
 extension EnvironmentValues {
-    /// True inside the compact bar's "More" menu, where an accessory's label
+    /// True inside the compact bar's "More", where an accessory's label
     /// needs its title as well as its icon.
     @Entry public var ravePlayerControlsInMenu = false
 }
 
 /// An accessory's label: icon only with the padded hit target on the bar,
-/// title and icon inside the compact bar's "More" menu.
+/// title and icon inside the compact bar's "More".
 private struct PlayerAccessoryLabel: ViewModifier {
     @Environment(\.ravePlayerControlsInMenu) private var inMenu
 
@@ -342,34 +366,40 @@ private struct PlayerAccessoryLabel: ViewModifier {
     }
 }
 
-/// Reports a menu's content appearing and disappearing, except inside the
-/// compact bar's "More" menu.
-///
-/// A menu nested in "More" materialises its content when "More" opens, and
-/// never reports it going when "More" closes: each nested menu left one
-/// "open" behind, so a host counting open menus saw three or four with none
-/// showing (Hypnos, device 2026-10-07). "More" reports for everything inside it.
+/// Reports a menu's content appearing and disappearing. Silent inside the
+/// compact bar's "More" only on tvOS, where "More" is still a Menu: one
+/// nested in it materialises its content when "More" opens and never reports
+/// it going, which left phantom open menus (Hypnos, device 2026-10-07).
+/// Elsewhere "More" is a popover and a menu in it opens like any other.
 private struct PlayerMenuReporting: ViewModifier {
     @Environment(\.ravePlayerControlsInMenu) private var inMenu
     let onChange: (Bool) -> Void
 
+    private var reports: Bool {
+        #if os(tvOS)
+        !inMenu
+        #else
+        true
+        #endif
+    }
+
     func body(content: Content) -> some View {
         content
-            .onAppear { if !inMenu { onChange(true) } }
-            .onDisappear { if !inMenu { onChange(false) } }
+            .onAppear { if reports { onChange(true) } }
+            .onDisappear { if reports { onChange(false) } }
     }
 }
 
 public extension View {
     /// Apply to a menu's *content* to learn when an accessory menu opens and
-    /// closes, the way the bar's own "More" menu reports through
-    /// `onMenuChanged`. Silent when the menu sits inside "More".
+    /// closes, the way the bar's own "More" reports through
+    /// `onMenuChanged`. Silent inside tvOS's "More" menu.
     func ravePlayerMenuReporting(_ onChange: @escaping (Bool) -> Void) -> some View {
         modifier(PlayerMenuReporting(onChange: onChange))
     }
 
     /// For an accessory `Label`: replaces `.labelStyle(.iconOnly)
-    /// .ravePlayerControlLabel()` so the label reads in the "More" menu too.
+    /// .ravePlayerControlLabel()` so the label reads inside "More" too.
     func ravePlayerAccessoryLabel() -> some View {
         modifier(PlayerAccessoryLabel())
     }

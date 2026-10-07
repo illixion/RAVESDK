@@ -176,6 +176,12 @@ public final class Pseudo3DStereoEngine {
     static let chromeFadeBaseDuration = 0.3
     static let chromeFadeMaxDuration = 2.0
     static let chromeFadeRepeatWindow = 1.0
+    /// How long a menu may hold the picture's input off before a tap on the
+    /// picture works again.
+    static var chromeInputGrace: Double { 15 }
+    /// Metres the plane sits behind the centre of its view's depth: at the
+    /// centre it read ~5 cm in front of the window (device, 2026-10-07).
+    static var planeDepthTrim: Float { 0.05 }
     /// Caller-driven opacity (slideshow crossfades), multiplied with the chrome
     /// dim. SwiftUI's `.opacity` doesn't reach RealityKit content on visionOS.
     @ObservationIgnored private var contentOpacity: Float = 1
@@ -312,16 +318,14 @@ public final class Pseudo3DStereoEngine {
         guard let entity = videoEntity, !tapTargetInstalled else { return }
         let local = entity.visualBounds(relativeTo: entity)
         guard local.extents.x > 0.001, local.extents.y > 0.001 else { return }
-        // Flat, on the plane. It was 5 cm deep, reaching 2.5 cm in front of
-        // the picture, and took the gaze hover from menus open over it (taps
-        // still landed, device 2026-10-07). It stays live while a menu is
-        // open: a tap on the picture is how a viewer gets out of a menu
-        // state that was never reported closed.
+        // Flat, on the plane: a 5 cm box reached 2.5 cm in front of it.
         let box = ShapeResource.generateBox(
             width: local.extents.x, height: local.extents.y, depth: 0.001
         ).offsetBy(translation: local.center)
         entity.components.set(CollisionComponent(shapes: [box], isStatic: true))
-        entity.components.set(InputTargetComponent())
+        var target = InputTargetComponent()
+        target.isEnabled = !chromeOpen
+        entity.components.set(target)
         tapTargetInstalled = true
     }
 
@@ -341,7 +345,9 @@ public final class Pseudo3DStereoEngine {
         // under the picture the view is 40 mm above the window's centre, and
         // the plane landed 80 mm up: clipped flat at the top, a gap and its
         // own rounded corners at the bottom (device, 2026-10-07).
-        entity.setPosition(bounds.center, relativeTo: nil)
+        var center = bounds.center
+        center.z -= Self.planeDepthTrim
+        entity.setPosition(center, relativeTo: nil)
 
         let extents = entity.visualBounds(relativeTo: nil).extents
         let scale = entity.scale.x
@@ -405,7 +411,7 @@ public final class Pseudo3DStereoEngine {
         let aspect = knownVideoSize.map { Float($0.width / max($0.height, 1)) }
         let width = aspect.map { $0 * height }
         let planeX = width.map { "\(mm(center.x - $0 / 2))…\(mm(center.x + $0 / 2))" } ?? "?"
-        let line = "view y \(mm(bounds.min.y))…\(mm(bounds.max.y)) x \(mm(bounds.min.x))…\(mm(bounds.max.x)) mm, plane y \(mm(center.y - height / 2))…\(mm(center.y + height / 2)) x \(planeX) mm"
+        let line = "view y \(mm(bounds.min.y))…\(mm(bounds.max.y)) x \(mm(bounds.min.x))…\(mm(bounds.max.x)) mm, plane y \(mm(center.y - height / 2))…\(mm(center.y + height / 2)) x \(planeX) z \(mm(center.z)) mm, view z \(mm(bounds.min.z))…\(mm(bounds.max.z)) mm"
         guard line != lastPlacementLog else { return }
         lastPlacementLog = line
         RAVEMediaLog.pipeline.info("plane placement: \(line, privacy: .public)")
@@ -452,6 +458,20 @@ public final class Pseudo3DStereoEngine {
     public func setChromeOpen(_ open: Bool) {
         guard open != chromeOpen else { return }
         chromeOpen = open
+        // A menu drawn over the picture gets the gaze only while the picture
+        // takes none: even a flat target on the plane won the hover (device,
+        // 2026-10-07). Some menus never report closing, and a tap on the
+        // picture is the way out of that, so the target comes back on its
+        // own once a menu has been "open" for `chromeInputGrace`.
+        videoEntity?.components[InputTargetComponent.self]?.isEnabled = !open
+        if open {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(Self.chromeInputGrace))
+                guard let self, self.chromeOpen,
+                      CACurrentMediaTime() - self.lastChromeTransition >= Self.chromeInputGrace - 0.05 else { return }
+                self.videoEntity?.components[InputTargetComponent.self]?.isEnabled = true
+            }
+        }
         let now = CACurrentMediaTime()
         chromeFadeDuration = now - lastChromeTransition < Self.chromeFadeRepeatWindow
             ? min(chromeFadeDuration * 2, Self.chromeFadeMaxDuration)
