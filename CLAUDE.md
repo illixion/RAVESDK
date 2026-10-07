@@ -403,6 +403,29 @@ a flip alone inverts the depth. The layout is read at load/attach, so changing i
 means loading again (for an external source, a new source; re-attaching invalidates
 the old one). This is the portfolio's live 3D path, Hypnos's video window first.
 
+**Decoding can be taken away; every renderer and decoder must recover.** While another
+app has an immersive space open (and on other occasions), visionOS withdraws video
+decoding: `AVSampleBufferVideoRenderer` goes `.failed` with
+`requiresFlushToResumeDecoding`, and a `VTDecompressionSession` returns
+`kVTInvalidSessionErr`. Neither recovers on its own; unflushed, the picture froze on its
+last frame for good with audio and transport running (device, 2026-10-07). The recovery:
+`StereoPump` checks each tick and flushes (at most once a second, since a flush while
+still locked out just fails again), then re-shows the last frame; `FilmVideoPlayer`
+watches `requiresFlushToResumeDecodingDidChangeNotification` (its feed loop sleeps while
+buffered or paused) and flushes and re-seeks through `onDecodingInterrupted` so
+`FilmPlayer` re-anchors the Atmos clock, with a back-off; `SampleBufferFrameSource`
+drops its session and restarts at the next keyframe instead of reporting a fatal decode
+error. After any flush or new session, decoding needs a keyframe. Any new player here
+needs the same.
+
+**Plane fit details.** The plane is positioned in scene space (`setPosition(_,
+relativeTo: nil)`), refits on any scale change above 0.001 (a 0.02 threshold left it ~4 %
+oversized after a window resize), and with `setSquareCorners(true)` overscans by
+`squareCornerOverscan` so the window edge squares the screen mesh's rounded corners; that
+needs the window to be the picture alone. `RAVEPackedStereoLayout.correctingResolution`
+overrules a wrong half/full tag from the frame's shape (Jellyfin calls a plain `.3D.SBS.`
+file half side by side).
+
 **The pump stops ticking while the app is backgrounded.** visionOS refuses GPU
 submission from a background app, so every command buffer a tick builds is aborted with
 `kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`. An `AVPlayer`-driven

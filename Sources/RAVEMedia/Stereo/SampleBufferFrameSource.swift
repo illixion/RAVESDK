@@ -24,6 +24,10 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
     private var session: VTDecompressionSession?
     private var decoderGeneration = -1
     private var lastDelivered = CMTime.invalid
+    /// The session was taken away (another app's immersive space, the app
+    /// backgrounded): a new one starts at the next keyframe, since the frames
+    /// in between reference pictures the old one held. Pump queue only.
+    private var awaitingKeyframe = false
 
     public init(timebase: CMTimebase) { self.timebase = timebase }
 
@@ -69,9 +73,14 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
             session = nil
             decoderGeneration = currentGeneration
             lastDelivered = .invalid
+            awaitingKeyframe = false
         }
         for sample in due {
             guard let format = CMSampleBufferGetFormatDescription(sample) else { continue }
+            if awaitingKeyframe {
+                guard Self.isKeyframe(sample) else { continue }
+                awaitingKeyframe = false
+            }
             if session == nil {
                 let attributes: [String: Any] = [
                     kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -84,6 +93,8 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
                     imageBufferAttributes: attributes as CFDictionary, outputCallback: nil,
                     decompressionSessionOut: &created)
                 guard status == noErr, let created else {
+                    // Decoding taken away right now: try again at a keyframe.
+                    if status == kVTInvalidSessionErr { awaitingKeyframe = true; continue }
                     recordFailure(status, generation: currentGeneration)
                     return nil
                 }
@@ -95,10 +106,19 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
                     guard let self else { return }
                     self.lock.lock(); defer { self.lock.unlock() }
                     guard !self.invalidated, self.generation == currentGeneration else { return }
+                    // A session lost mid-frame is recovered on the pump side.
+                    if status == kVTInvalidSessionErr { return }
                     if status != noErr { self.failure = status; return }
                     if let buffer { self.frames.append(PumpFrame(pixelBuffer: buffer, itemTime: pts)) }
                 }
-            if status != noErr { recordFailure(status, generation: currentGeneration) }
+            if status == kVTInvalidSessionErr {
+                VTDecompressionSessionInvalidate(session)
+                self.session = nil
+                awaitingKeyframe = true
+                RAVEMediaLog.pipeline.notice("stereo tap decoder lost; restarting at the next keyframe")
+            } else if status != noErr {
+                recordFailure(status, generation: currentGeneration)
+            }
         }
         lock.lock(); defer { lock.unlock() }
         guard generation == currentGeneration, !invalidated else { return nil }
@@ -108,6 +128,12 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
         guard let eligible, eligible.itemTime != lastDelivered else { return nil }
         lastDelivered = eligible.itemTime
         return eligible
+    }
+
+    private static func isKeyframe(_ sample: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false)
+                as? [[CFString: Any]], let first = attachments.first else { return true }
+        return !(first[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
     }
 
     private func recordFailure(_ status: OSStatus, generation: Int) {

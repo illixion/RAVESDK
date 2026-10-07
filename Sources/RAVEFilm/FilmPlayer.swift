@@ -78,7 +78,14 @@ public final class FilmPlayer {
     @ObservationIgnored private var rateSample: (frames: Int, time: ContinuousClock.Instant)?
     @ObservationIgnored private var lastTelemetry = ContinuousClock.now
 
-    public init() {}
+    public init() {
+        // A lost picture decoder restarts at the playhead with the audio
+        // re-anchored, the same as any seek (see FilmVideoPlayer).
+        video.onDecodingInterrupted = { [weak self] in
+            guard let self else { return }
+            self.seek(to: self.currentTime)
+        }
+    }
 
     public var elements: [AtmosScene.Element] { scene?.elements ?? [] }
     /// Film time of the picture.

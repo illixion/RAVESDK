@@ -151,12 +151,20 @@ public final class StereoPump: @unchecked Sendable {
     private let depthSource: PumpDepthSource?
     /// Set for a video that already carries both eyes: crop instead of warp.
     private let packedLayout: RAVEPackedStereoLayout?
+    /// Pump-queue only: the packed frame size last checked against the tag.
+    private var checkedPackedSize: CGSize?
+    private var correctedLayout: RAVEPackedStereoLayout?
     private var lastReportedSize: CGSize?
     /// Pump-queue only. One line per pump, not one per frame at 60Hz.
     private var didWarnAboutPixelFormat = false
     /// When the depth source last transitioned unavailable → available; drives
     /// the flat→3D strength ramp in flatten mode (cached seek gaps, startup).
     private var depthResumeTime: CFTimeInterval?
+    /// Pump-queue only: the last frame taken, re-shown after a renderer
+    /// flush, and when that flush last happened.
+    private var lastFrame: PumpFrame?
+    private var lastRendererFlush: CFTimeInterval = 0
+    private func hostTimeNow() -> CFTimeInterval { CACurrentMediaTime() }
 
     private let configLock = NSLock()
     private var config = Config()
@@ -256,6 +264,7 @@ public final class StereoPump: @unchecked Sendable {
             depthSource?.invalidate()
             frameSource.invalidate()
             if let textureCache { CVMetalTextureCacheFlush(textureCache, 0) }
+            self.lastFrame = nil
             self.bgraPool = nil
             self.outPool = nil
             self.eyeDepthTextures = [nil, nil]
@@ -298,10 +307,34 @@ public final class StereoPump: @unchecked Sendable {
         // current content rather than replaying a backlog.
         guard !backgrounded else { return }
 
+        // visionOS takes video decoding resources away from an app while
+        // another one has an immersive space open (and on other occasions):
+        // the renderer then fails, sets requiresFlushToResumeDecoding, and
+        // drops every sample until it is flushed. Unflushed, the picture
+        // froze on its last frame for good, with audio and transport still
+        // running (device, 2026-10-07). Flushing here, on the queue that
+        // enqueues, resumes it with the next frame.
+        // At most once a second: a flush issued while decoding is still
+        // taken away just fails again.
+        if videoRenderer.status == .failed || videoRenderer.requiresFlushToResumeDecoding {
+            guard hostTimeNow() - lastRendererFlush > 1 else { return }
+            lastRendererFlush = hostTimeNow()
+            let reason = videoRenderer.error.map { "\($0.localizedDescription) (\(($0 as NSError).code))" } ?? "decoding suspended"
+            RAVEMediaLog.pipeline.notice("stereo renderer needs a flush (\(reason, privacy: .public)); flushing")
+            videoRenderer.flush()
+            // A paused picture has no new frame coming; show the last one.
+            if let lastFrame, let textureCache {
+                renderAndEnqueue(from: lastFrame.pixelBuffer, itemTime: lastFrame.itemTime, cache: textureCache,
+                                 pts: CMTime(seconds: hostTimeNow() - startHostTime, preferredTimescale: 90_000))
+            }
+            return
+        }
+
         guard videoRenderer.isReadyForMoreMediaData, let textureCache else { return }
 
         let hostTime = CACurrentMediaTime()
         guard let frame = frameSource.nextFrame(hostTime: hostTime) else { return }
+        lastFrame = frame
         reportSizeIfNeeded(frame.pixelBuffer)
 
         // Tag relative to the synchronizer's zero-based, host-driven timeline so
@@ -325,7 +358,8 @@ public final class StereoPump: @unchecked Sendable {
         let height = CVPixelBufferGetHeight(src)
         // Eye buffers are one eye's display size: the frame itself when warping
         // a mono picture, a half (stretched back out if squeezed) when cropping.
-        let eyeSize = packedLayout?.eyeSize(packed: CGSize(width: width, height: height))
+        let layout = packedLayout(forFrame: CGSize(width: width, height: height))
+        let eyeSize = layout?.eyeSize(packed: CGSize(width: width, height: height))
             ?? CGSize(width: width, height: height)
         let eyeWidth = Int(eyeSize.width)
         let eyeHeight = Int(eyeSize.height)
@@ -369,9 +403,9 @@ public final class StereoPump: @unchecked Sendable {
         }
 
         let warpState = signposter.beginInterval("pump-warp")
-        if let packedLayout {
-            encodePackedEye(.left, layout: packedLayout, into: leftTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
-            encodePackedEye(.right, layout: packedLayout, into: rightTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
+        if let layout {
+            encodePackedEye(.left, layout: layout, into: leftTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
+            encodePackedEye(.right, layout: layout, into: rightTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
         } else {
             encodeEye(into: leftTex, source: srcTexture, depth: frameDepth, eyeSign: 1.0, config: cfg, commandBuffer: cmdBuf)
             encodeEye(into: rightTex, source: srcTexture, depth: frameDepth, eyeSign: -1.0, config: cfg, commandBuffer: cmdBuf)
@@ -547,6 +581,26 @@ public final class StereoPump: @unchecked Sendable {
         encoder.endEncoding()
     }
 
+    /// The packed layout with its half/full tag checked against the frame's
+    /// shape (see `correctingResolution`); re-checked only when the size
+    /// changes.
+    private func packedLayout(forFrame size: CGSize) -> RAVEPackedStereoLayout? {
+        guard let packedLayout else { return nil }
+        if checkedPackedSize != size {
+            checkedPackedSize = size
+            let corrected = packedLayout.correctingResolution(forPacked: size)
+            correctedLayout = corrected
+            if corrected != packedLayout {
+                let tagged = packedLayout.isHalfResolution ? "half" : "full"
+                let used = corrected.isHalfResolution ? "half" : "full"
+                RAVEMediaLog.pipeline.notice(
+                    "packed \(Int(size.width), privacy: .public)×\(Int(size.height), privacy: .public) frame tagged \(tagged, privacy: .public) resolution reads as \(used, privacy: .public); using \(used, privacy: .public)"
+                )
+            }
+        }
+        return correctedLayout
+    }
+
     /// One eye of a packed stereo frame: a crop of the source, stretched to
     /// the eye buffer.
     private func encodePackedEye(
@@ -684,7 +738,7 @@ public final class StereoPump: @unchecked Sendable {
 
     private func reportSizeIfNeeded(_ pixelBuffer: CVPixelBuffer) {
         let frame = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
-        let size = packedLayout?.eyeSize(packed: frame) ?? frame
+        let size = packedLayout(forFrame: frame)?.eyeSize(packed: frame) ?? frame
         guard size.width > 0, size.height > 0, lastReportedSize != size else { return }
         lastReportedSize = size
         onVideoSizeKnown(size)
