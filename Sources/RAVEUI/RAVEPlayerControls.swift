@@ -21,6 +21,9 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
     }
 
     public var isSeekable: Bool { duration.isFinite && duration > 0 }
+    /// An endless stream. A finite duration of 0 is a length not known yet,
+    /// which every player reports for a moment while it loads.
+    public var isLive: Bool { duration.isInfinite }
 
     public func clampedTime(_ time: Double) -> Double {
         guard time.isFinite else { return 0 }
@@ -48,8 +51,20 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
 /// put at a couple of hundred points: the whole bar collapsed, mute landed on
 /// the skip button and every accessory scrolled out of sight. See
 /// `PlayerControlsWidth` for how the ideal is resolved per platform.
+/// How the bar is laid out.
+public enum RAVEPlayerControlsLayout: Sendable {
+    /// Timeline, transport and the accessory row stacked in three rows.
+    case stacked
+    /// One row: transport, timeline, mute, then the accessories inline, or
+    /// behind a "More" menu when they don't fit. For a bar hung under a
+    /// window, where every row of height is window the picture doesn't get.
+    case compact
+}
+
 public struct RAVEPlayerControls<Accessories: View>: View {
     private let state: RAVEPlayerControlState
+    private let layout: RAVEPlayerControlsLayout
+    private let onMenuChanged: (Bool) -> Void
     private let togglePlayback: () -> Void
     private let seek: (Double) -> Void
     private let toggleMute: () -> Void
@@ -64,8 +79,12 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 seek: @escaping (Double) -> Void, toggleMute: @escaping () -> Void,
                 onInteraction: @escaping () -> Void = {},
                 onScrubbingChanged: @escaping (Bool) -> Void = { _ in },
+                layout: RAVEPlayerControlsLayout = .stacked,
+                onMenuChanged: @escaping (Bool) -> Void = { _ in },
                 @ViewBuilder accessories: () -> Accessories) {
         self.state = state
+        self.layout = layout
+        self.onMenuChanged = onMenuChanged
         self.togglePlayback = togglePlayback
         self.seek = seek
         self.toggleMute = toggleMute
@@ -75,6 +94,84 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     }
 
     public var body: some View {
+        Group {
+            switch layout {
+            case .stacked: stackedBar
+            case .compact: compactBar
+            }
+        }
+        .background {
+            #if os(visionOS)
+            RoundedRectangle(cornerRadius: layout == .compact ? 40 : 24).fill(.clear).glassBackgroundEffect()
+            #else
+            RoundedRectangle(cornerRadius: 20).fill(.regularMaterial)
+            #endif
+        }
+        .onDisappear {
+            if isScrubbing || isAccessoryScrolling { onScrubbingChanged(false) }
+            isScrubbing = false
+            isAccessoryScrolling = false
+            scrubSeconds = nil
+        }
+    }
+
+    // MARK: Compact
+
+    private var compactBar: some View {
+        PlayerControlsWidth(maxWidth: PlayerControlsWidth.compactMaxWidth) {
+            // The first row whose ideal width fits: everything inline, else
+            // the accessories behind one menu.
+            ViewThatFits(in: .horizontal) {
+                compactRow(overflow: false)
+                compactRow(overflow: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func compactRow(overflow: Bool) -> some View {
+        HStack(spacing: 6) {
+            control("Back 10 seconds", "gobackward.10") { skip(-10) }
+                .disabled(!state.isSeekable)
+            control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
+            control("Forward 10 seconds", "goforward.10") { skip(10) }
+                .disabled(!state.isSeekable)
+            timelineRow
+                .frame(minWidth: Self.compactTimelineMinWidth, maxWidth: .infinity)
+            control(state.isMuted ? "Unmute" : "Mute", state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", action: toggleMute)
+            if Accessories.self != EmptyView.self {
+                if overflow {
+                    Menu {
+                        Group { accessories }
+                            .environment(\.ravePlayerControlsInMenu, true)
+                            .onAppear { onMenuChanged(true) }
+                            .onDisappear { onMenuChanged(false) }
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly).ravePlayerControlLabel()
+                            .font(.title2)
+                    }
+                    .ravePlayerButtonStyle()
+                    .help("More")
+                } else {
+                    Divider().frame(height: 28)
+                    HStack(spacing: 6) { accessories }
+                        .ravePlayerButtonStyle()
+                        .fixedSize()
+                }
+            }
+        }
+    }
+
+    #if os(visionOS) || os(tvOS)
+    private static var compactTimelineMinWidth: CGFloat { 280 }
+    #else
+    private static var compactTimelineMinWidth: CGFloat { 160 }
+    #endif
+
+    // MARK: Stacked
+
+    private var stackedBar: some View {
         PlayerControlsWidth {
             VStack(spacing: 8) {
                 timeline
@@ -119,19 +216,6 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             }
             .padding(12)
         }
-        .background {
-            #if os(visionOS)
-            RoundedRectangle(cornerRadius: 24).fill(.clear).glassBackgroundEffect()
-            #else
-            RoundedRectangle(cornerRadius: 20).fill(.regularMaterial)
-            #endif
-        }
-        .onDisappear {
-            if isScrubbing || isAccessoryScrolling { onScrubbingChanged(false) }
-            isScrubbing = false
-            isAccessoryScrolling = false
-            scrubSeconds = nil
-        }
     }
 
     private var accessoryRow: some View {
@@ -146,15 +230,27 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     private static var controlSide: CGFloat { 44 }
     #endif
 
-    @ViewBuilder private var timeline: some View {
-        if state.isSeekable {
+    private var timeline: some View {
+        timelineRow.padding(.horizontal, 12)
+    }
+
+    /// Position, scrubber, duration. Live only for an endless stream: while a
+    /// player is still loading its duration reads 0, and that is shown as an
+    /// inert scrubber rather than flashing "Live" until the length arrives.
+    @ViewBuilder private var timelineRow: some View {
+        if state.isLive {
+            Label("Live", systemImage: "dot.radiowaves.left.and.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+        } else {
             HStack(spacing: 10) {
-                Text(RAVEPlayerControlState.timecode(scrubSeconds ?? state.currentTime))
+                Text(state.isSeekable ? RAVEPlayerControlState.timecode(scrubSeconds ?? state.currentTime) : "–:––")
                 #if !os(tvOS)
                 Slider(value: Binding(
                     get: { state.clampedTime(scrubSeconds ?? state.currentTime) },
                     set: { scrubSeconds = $0; onInteraction() }
-                ), in: 0...state.duration, onEditingChanged: { editing in
+                ), in: 0...(state.isSeekable ? state.duration : 1), onEditingChanged: { editing in
                     isScrubbing = editing
                     onInteraction()
                     onScrubbingChanged(editing || isAccessoryScrolling)
@@ -163,21 +259,17 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                         scrubSeconds = nil
                     }
                 })
+                .disabled(!state.isSeekable)
                 .accessibilityLabel("Playback position")
-                .background { timelineMarks }
+                .background { if state.isSeekable { timelineMarks } }
                 #else
-                ProgressView(value: state.clampedTime(state.currentTime), total: state.duration)
+                ProgressView(value: state.clampedTime(state.currentTime), total: state.isSeekable ? state.duration : 1)
                     .accessibilityLabel("Playback position")
                 #endif
-                Text(RAVEPlayerControlState.timecode(state.duration))
+                Text(state.isSeekable ? RAVEPlayerControlState.timecode(state.duration) : "–:––")
             }
-            .padding(.horizontal, 12)
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
-        } else {
-            Label("Live", systemImage: "dot.radiowaves.left.and.right")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -230,7 +322,33 @@ public extension View {
     }
 }
 
+extension EnvironmentValues {
+    /// True inside the compact bar's "More" menu, where an accessory's label
+    /// needs its title as well as its icon.
+    @Entry public var ravePlayerControlsInMenu = false
+}
+
+/// An accessory's label: icon only with the padded hit target on the bar,
+/// title and icon inside the compact bar's "More" menu.
+private struct PlayerAccessoryLabel: ViewModifier {
+    @Environment(\.ravePlayerControlsInMenu) private var inMenu
+
+    func body(content: Content) -> some View {
+        if inMenu {
+            content.labelStyle(.titleAndIcon)
+        } else {
+            content.labelStyle(.iconOnly).ravePlayerControlLabel()
+        }
+    }
+}
+
 public extension View {
+    /// For an accessory `Label`: replaces `.labelStyle(.iconOnly)
+    /// .ravePlayerControlLabel()` so the label reads in the "More" menu too.
+    func ravePlayerAccessoryLabel() -> some View {
+        modifier(PlayerAccessoryLabel())
+    }
+
     /// Apply to a Button's label so the entire padded area is hit-testable.
     func ravePlayerControlLabel() -> some View {
         #if os(visionOS) || os(tvOS)
@@ -241,7 +359,7 @@ public extension View {
     }
 }
 
-/// Resolves the bar's width, capped at 820 points.
+/// Resolves the bar's width, capped at `maxWidth` (820 points; 1180 for the compact bar).
 ///
 /// A real width proposal is honoured as is. A missing one is the host asking
 /// for the ideal size, and the right answer differs by platform:
@@ -256,6 +374,9 @@ public extension View {
 ///   let the real proposal decide.
 struct PlayerControlsWidth: Layout {
     static let maxWidth: CGFloat = 820
+    /// The one-row bar holds what three rows did, so it may run wider.
+    static let compactMaxWidth: CGFloat = 1180
+    var maxWidth: CGFloat = Self.maxWidth
     #if os(visionOS)
     static let preferredWidth: CGFloat = 600
     #else
@@ -275,10 +396,10 @@ struct PlayerControlsWidth: Layout {
     }
 
     private func resolvedWidth(_ proposed: CGFloat?, content: LayoutSubview) -> CGFloat {
-        if let proposed, proposed.isFinite { return min(proposed, Self.maxWidth) }
+        if let proposed, proposed.isFinite { return min(proposed, maxWidth) }
         #if os(visionOS)
         let natural = content.sizeThatFits(.unspecified).width
-        return min(max(natural, Self.preferredWidth), Self.maxWidth)
+        return min(max(natural, Self.preferredWidth), maxWidth)
         #else
         return Self.compactWidth
         #endif
