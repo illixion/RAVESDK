@@ -72,7 +72,7 @@ struct VideoStereoUniforms {
 /// objects it holds are documented thread-safe, config is lock-guarded, and all
 /// mutable state is touched only on `queue`.
 public final class StereoPump: @unchecked Sendable {
-    public struct Config {
+    public struct Config: Equatable {
         public var brightness: Float = 0
         public var contrast: Float = 1
         public var saturation: Float = 1
@@ -83,6 +83,9 @@ public final class StereoPump: @unchecked Sendable {
         /// config path is ever missed: at 1.0 nothing crosses the window frame.
         public var convergence: Float = 1.0
         public var mirror: Bool = false
+        /// Both eyes the same picture (a menu is open over it; see
+        /// `Pseudo3DStereoEngine.setChromeOpen`).
+        public var flat: Bool = false
 
         public init(
             brightness: Float = 0,
@@ -90,7 +93,8 @@ public final class StereoPump: @unchecked Sendable {
             saturation: Float = 1,
             depthStrength: Float = 0.008,
             convergence: Float = 1.0,
-            mirror: Bool = false
+            mirror: Bool = false,
+            flat: Bool = false
         ) {
             self.brightness = brightness
             self.contrast = contrast
@@ -98,6 +102,7 @@ public final class StereoPump: @unchecked Sendable {
             self.depthStrength = depthStrength
             self.convergence = convergence
             self.mirror = mirror
+            self.flat = flat
         }
     }
 
@@ -247,10 +252,13 @@ public final class StereoPump: @unchecked Sendable {
         queue.async { [weak self] in self?.reshowLastFrame() }
     }
 
+    /// A change redraws the last frame, so it shows on a paused picture too.
     public func updateConfig(_ newConfig: Config) {
         configLock.lock()
+        let changed = config != newConfig
         config = newConfig
         configLock.unlock()
+        if changed { queue.async { [weak self] in self?.reshowLastFrame() } }
     }
 
     private func currentConfig() -> Config {
@@ -406,6 +414,7 @@ public final class StereoPump: @unchecked Sendable {
         let depthDone = CACurrentMediaTime()
 
         var cfg = currentConfig()
+        if cfg.flat { cfg.depthStrength = 0 }
         let fullDepthStrength = cfg.depthStrength
         if depthSource?.flattensWhenUnavailable == true {
             // Cached mode: a seek/startup gap renders FLAT (never the heuristic
@@ -423,7 +432,8 @@ public final class StereoPump: @unchecked Sendable {
         let warpState = signposter.beginInterval("pump-warp")
         if let layout {
             encodePackedEye(.left, layout: layout, into: leftTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
-            encodePackedEye(.right, layout: layout, into: rightTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
+            encodePackedEye(cfg.flat ? .left : .right, layout: layout, into: rightTex, source: srcTexture,
+                            config: cfg, commandBuffer: cmdBuf)
         } else {
             encodeEye(into: leftTex, source: srcTexture, depth: frameDepth, eyeSign: 1.0, config: cfg, commandBuffer: cmdBuf)
             encodeEye(into: rightTex, source: srcTexture, depth: frameDepth, eyeSign: -1.0, config: cfg, commandBuffer: cmdBuf)
@@ -432,7 +442,7 @@ public final class StereoPump: @unchecked Sendable {
         // (1 - convergence) × strength; the margin in front of that keeps the
         // strength the ramp is heading for, so text doesn't sink mid-ramp.
         subtitles?.encode(
-            left: leftTex, right: rightTex, packed: layout != nil,
+            left: leftTex, right: rightTex, packed: layout != nil && !cfg.flat,
             maxContentShift: (1 - cfg.convergence) * cfg.depthStrength,
             depthStrength: fullDepthStrength,
             transfer: StereoSubtitleCompositor.transferMode(of: src), commandBuffer: cmdBuf

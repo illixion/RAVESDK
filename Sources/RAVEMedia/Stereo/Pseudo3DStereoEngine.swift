@@ -302,7 +302,9 @@ public final class Pseudo3DStereoEngine {
             width: local.extents.x, height: local.extents.y, depth: max(local.extents.z, 0.05)
         ).offsetBy(translation: local.center)
         entity.components.set(CollisionComponent(shapes: [box], isStatic: true))
-        entity.components.set(InputTargetComponent())
+        var target = InputTargetComponent()
+        target.isEnabled = !chromeOpen
+        entity.components.set(target)
         tapTargetInstalled = true
     }
 
@@ -428,9 +430,15 @@ public final class Pseudo3DStereoEngine {
 
     /// Fade/restore the video when a menu/popover opens/closes, so the presented
     /// chrome shows through the (front-plane) video instead of being occluded.
+    /// The picture also goes flat and stops taking gaze while it's open: its
+    /// pop-out still read in front of the menus, and the tap target in front of
+    /// the plane took the gaze hover from them (taps still landed), device
+    /// 2026-10-07.
     public func setChromeOpen(_ open: Bool) {
+        guard open != chromeOpen else { return }
         chromeOpen = open
         applyChromeOpacity()
+        pump?.updateConfig(makePumpConfig())
     }
 
     /// Caller-driven plane opacity (slideshow crossfade). Composes with the
@@ -449,6 +457,7 @@ public final class Pseudo3DStereoEngine {
     private func applyChromeOpacity() {
         let opacity = contentOpacity * (chromeOpen ? chromeDimOpacity : 1.0)
         videoEntity?.components.set(OpacityComponent(opacity: opacity))
+        videoEntity?.components[InputTargetComponent.self]?.isEnabled = !chromeOpen
     }
 
     /// Plane width (meters) above which `depthStrength` is attenuated. The warp
@@ -477,7 +486,8 @@ public final class Pseudo3DStereoEngine {
             saturation: Float(adjustments.saturation),
             depthStrength: strength,
             convergence: Float(settings.convergence),
-            mirror: isFlipped
+            mirror: isFlipped,
+            flat: chromeOpen
         )
     }
 
