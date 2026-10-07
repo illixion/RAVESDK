@@ -155,6 +155,51 @@ fragment float4 videoPseudo3DEyeFragmentShader(
     return color;
 }
 
+// MARK: - Packed Stereo Eye
+//
+// Real stereo, no synthesis: a side-by-side or over/under video already holds
+// both eyes, so each eye is a crop of the decoded frame, stretched to the eye
+// buffer (which also undoes a half-resolution squeeze). `region` places the
+// eye in the frame, origin top left: sample = uv * scale + offset. Mirroring
+// flips within the eye; the CPU side swaps which eye is sampled, since a
+// mirrored pair is only a pair with the eyes exchanged. Tonal adjustments
+// match the fake-3D warp so the two modes look the same.
+
+struct PackedEyeUniforms {
+    float brightness;
+    float contrast;
+    float saturation;
+    float mirror;
+    float2 regionScale;
+    float2 regionOffset;
+};
+
+fragment float4 videoPackedEyeFragmentShader(
+    VertexOut in [[stage_in]],
+    texture2d<float> tex [[texture(0)]],
+    constant PackedEyeUniforms &u [[buffer(0)]]
+) {
+    constexpr sampler texSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
+
+    float2 uv = in.texCoord;
+    if (u.mirror > 0.5) { uv.x = 1.0 - uv.x; }
+    // Keep the bilinear footprint inside this eye's half, or the seam column
+    // blends in the other eye's edge pixels.
+    float2 halfTexel = 0.5 / float2(tex.get_width(0), tex.get_height(0));
+    float2 lo = u.regionOffset + halfTexel;
+    float2 hi = u.regionOffset + u.regionScale - halfTexel;
+    float2 sampleUV = clamp(uv * u.regionScale + u.regionOffset, lo, hi);
+
+    float4 color = tex.sample(texSampler, sampleUV);
+    color.rgb += u.brightness;
+    color.rgb = (color.rgb - 0.5) * u.contrast + 0.5;
+    float luminance = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+    color.rgb = mix(float3(luminance), color.rgb, u.saturation);
+    color.rgb = clamp(color.rgb, 0.0, 1.0);
+    color.a = 1.0;
+    return color;
+}
+
 // MARK: - Pseudo-3D Mesh Warp (depth-displaced grid, occlusion-correct)
 //
 // When a real depth map is available, render the frame as a displaced grid

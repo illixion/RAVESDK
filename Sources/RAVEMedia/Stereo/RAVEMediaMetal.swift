@@ -93,6 +93,8 @@ public final class RAVEStereoWarpResources: Sendable {
     /// Per-pixel backward warp (heuristic fallback; the real-depth path always
     /// takes the mesh pipeline).
     public let eyePipelineState: MTLRenderPipelineState
+    /// Crops one eye out of a packed (side-by-side / over-under) stereo frame.
+    public let packedEyePipelineState: MTLRenderPipelineState
     /// Depth-displaced mesh pipeline (occlusion-correct, used whenever a real
     /// depth map is available). Renders into bgra8 with a depth attachment,
     /// multisampled at `msaaSampleCount` and resolved into the eye buffer.
@@ -141,6 +143,7 @@ public final class RAVEStereoWarpResources: Sendable {
 
         guard let vertexFunction = library.makeFunction(name: "stereoQuadVertex"),
               let stereoEyeFn = library.makeFunction(name: "videoPseudo3DEyeFragmentShader"),
+              let packedEyeFn = library.makeFunction(name: "videoPackedEyeFragmentShader"),
               let meshVertexFn = library.makeFunction(name: "videoStereoMeshVertex"),
               let meshFragmentFn = library.makeFunction(name: "videoStereoMeshFragment"),
               let meshDepthState = device.makeDepthStencilState(descriptor: {
@@ -182,6 +185,8 @@ public final class RAVEStereoWarpResources: Sendable {
             stereoDesc.colorAttachments[0].isBlendingEnabled = false
             stereoDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
             self.eyePipelineState = try device.makeRenderPipelineState(descriptor: stereoDesc)
+            stereoDesc.fragmentFunction = packedEyeFn
+            self.packedEyePipelineState = try device.makeRenderPipelineState(descriptor: stereoDesc)
 
             // Depth-displaced mesh pipeline: opaque bgra8 color + depth
             // attachment, multisampled (resolved into the eye buffer by the

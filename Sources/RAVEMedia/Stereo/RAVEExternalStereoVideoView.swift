@@ -5,17 +5,25 @@ import SwiftUI
 /// Windowed stereo for a host-owned decoder/clock (browser or Atmos film).
 /// Transport always stays with that host. Keep its controls in a bottom-front
 /// ornament and reserve space below the picture so it cannot occlude them.
+///
+/// `packedStereo` plays a source that already holds both eyes as real 3D (no
+/// depth model); nil is the fake-3D warp of a mono source. It is read when a
+/// source attaches, so changing it needs a new source: re-attaching invalidates
+/// the old one (a `SampleBufferFrameSource` drops its decoder).
 public struct RAVEExternalStereoVideoView: View {
     private let source: any PumpFrameSource
     private let settings: Pseudo3DSettings
     private let chromeOpen: Bool
     private let onUnavailable: () -> Void
     private let onToggleChrome: () -> Void
+    private let packedStereo: RAVEPackedStereoLayout?
     @State private var engine = Pseudo3DStereoEngine()
 
     public init(source: any PumpFrameSource, settings: Pseudo3DSettings = .default,
-                chromeOpen: Bool = false, onUnavailable: @escaping () -> Void,
+                chromeOpen: Bool = false, packedStereo: RAVEPackedStereoLayout? = nil,
+                onUnavailable: @escaping () -> Void,
                 onToggleChrome: @escaping () -> Void = {}) {
+        self.packedStereo = packedStereo
         self.source = source
         self.settings = settings
         self.chromeOpen = chromeOpen
@@ -31,7 +39,7 @@ public struct RAVEExternalStereoVideoView: View {
                 engine.onPlaybackError = onUnavailable
                 content.add(engine.makeVideoEntity())
                 engine.observeVideoSize(content: content)
-                engine.attach(frameSource: source)
+                engine.attach(frameSource: source, packedStereo: packedStereo)
             } update: { content in
                 engine.updateViewBounds(content.convert(geometry.frame(in: .local), from: .local, to: .scene))
             }
@@ -41,7 +49,7 @@ public struct RAVEExternalStereoVideoView: View {
         // Device-measured in Hypnos and Raven: the front slab is ~9 cm proud
         // of the ornament plane. Preserve this until a replacement is measured.
         .offset(z: -90)
-        .onChange(of: ObjectIdentifier(source)) { _, _ in engine.attach(frameSource: source) }
+        .onChange(of: ObjectIdentifier(source)) { _, _ in engine.attach(frameSource: source, packedStereo: packedStereo) }
         .onChange(of: settings) { _, value in
             engine.configure(adjustments: .neutral, settings: value, isFlipped: false)
         }

@@ -12,6 +12,13 @@
  AVPlayer prepare callbacks (mediaplaybackd async-prepare watchdog), taking
  down the whole compositor.
 
+ A packed stereo video (side by side, over/under) takes the same road with the
+ warp swapped for a crop: each eye is cut out of the decoded frame
+ (`RAVEPackedStereoLayout`), so real 3D plays straight from the decoder with
+ no depth model and no MV-HEVC conversion. Everything after the eye targets is
+ shared, which is the point: the format, tags and pacing the compositor accepts
+ were found on device once, for both.
+
  Frames arrive through `PumpFrameSource`, not from an AVPlayer directly. That
  seam is the point of this file living in a package: `AVPlayerFrameSource`
  (below) pulls from an `AVPlayerItemVideoOutput` exactly as Spatial Stash
@@ -33,6 +40,16 @@ import VideoToolbox
 
 /// CPU mirror of the Metal `VideoStereoUniforms` struct (8 floats, 2 float2s at
 /// offsets 32/40 matching Metal's float2 alignment, then 2 more floats).
+/// CPU mirror of the Metal `PackedEyeUniforms` struct.
+struct PackedEyeUniforms {
+    var brightness: Float
+    var contrast: Float
+    var saturation: Float
+    var mirror: Float
+    var regionScale: SIMD2<Float>
+    var regionOffset: SIMD2<Float>
+}
+
 struct VideoStereoUniforms {
     var brightness: Float
     var contrast: Float
@@ -132,6 +149,8 @@ public final class StereoPump: @unchecked Sendable {
     /// Per-frame depth: realtime inference or PTS-matched cached depth (nil →
     /// heuristic warp only, e.g. a restored window whose model vanished).
     private let depthSource: PumpDepthSource?
+    /// Set for a video that already carries both eyes: crop instead of warp.
+    private let packedLayout: RAVEPackedStereoLayout?
     private var lastReportedSize: CGSize?
     /// Pump-queue only. One line per pump, not one per frame at 60Hz.
     private var didWarnAboutPixelFormat = false
@@ -176,6 +195,9 @@ public final class StereoPump: @unchecked Sendable {
     /// - Returns: nil when Metal can't give the pump its own command queue or
     ///   the pixel-transfer session can't be created — both mean "no fake-3D",
     ///   which callers already handle by falling back to flat playback.
+    /// - Parameter packedLayout: the frame already holds both eyes; each is
+    ///   cropped out and `depthSource` is ignored. The reported video size is
+    ///   then one eye's display size, which is what the plane is fitted to.
     public init?(
         videoRenderer: AVSampleBufferVideoRenderer,
         frameSource: PumpFrameSource,
@@ -183,6 +205,7 @@ public final class StereoPump: @unchecked Sendable {
         startHostTime: CFTimeInterval,
         depthSource: PumpDepthSource?,
         frameInterval: Double,
+        packedLayout: RAVEPackedStereoLayout? = nil,
         onVideoSizeKnown: @escaping @Sendable (CGSize) -> Void
     ) {
         var session: VTPixelTransferSession?
@@ -194,7 +217,8 @@ public final class StereoPump: @unchecked Sendable {
         self.device = warp.device
         self.commandQueue = commandQueue
         self.startHostTime = startHostTime
-        self.depthSource = depthSource
+        self.depthSource = packedLayout == nil ? depthSource : nil
+        self.packedLayout = packedLayout
         self.frameInterval = frameInterval
         self.onVideoSizeKnown = onVideoSizeKnown
         self.transferSession = session
@@ -299,8 +323,14 @@ public final class StereoPump: @unchecked Sendable {
         let tickStart = CACurrentMediaTime()
         let width = CVPixelBufferGetWidth(src)
         let height = CVPixelBufferGetHeight(src)
-        guard width > 0, height > 0,
-              ensurePools(width: width, height: height),
+        // Eye buffers are one eye's display size: the frame itself when warping
+        // a mono picture, a half (stretched back out if squeezed) when cropping.
+        let eyeSize = packedLayout?.eyeSize(packed: CGSize(width: width, height: height))
+            ?? CGSize(width: width, height: height)
+        let eyeWidth = Int(eyeSize.width)
+        let eyeHeight = Int(eyeSize.height)
+        guard width > 0, height > 0, eyeWidth > 0, eyeHeight > 0,
+              ensurePools(width: eyeWidth, height: eyeHeight),
               let bgraPool, let outPool,
               let srcTexture = makeTexture(from: src, cache: cache) else { return }
 
@@ -339,8 +369,13 @@ public final class StereoPump: @unchecked Sendable {
         }
 
         let warpState = signposter.beginInterval("pump-warp")
-        encodeEye(into: leftTex, source: srcTexture, depth: frameDepth, eyeSign: 1.0, config: cfg, commandBuffer: cmdBuf)
-        encodeEye(into: rightTex, source: srcTexture, depth: frameDepth, eyeSign: -1.0, config: cfg, commandBuffer: cmdBuf)
+        if let packedLayout {
+            encodePackedEye(.left, layout: packedLayout, into: leftTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
+            encodePackedEye(.right, layout: packedLayout, into: rightTex, source: srcTexture, config: cfg, commandBuffer: cmdBuf)
+        } else {
+            encodeEye(into: leftTex, source: srcTexture, depth: frameDepth, eyeSign: 1.0, config: cfg, commandBuffer: cmdBuf)
+            encodeEye(into: rightTex, source: srcTexture, depth: frameDepth, eyeSign: -1.0, config: cfg, commandBuffer: cmdBuf)
+        }
         cmdBuf.commit()
         // Safe here: this runs on the background pump queue, never main. The warp
         // must complete before VTPixelTransferSession reads the BGRA surfaces.
@@ -396,7 +431,7 @@ public final class StereoPump: @unchecked Sendable {
             let transferMs = stageTiming.transfer / n * 1000
             let tickMs = stageTiming.tick / n * 1000
             RAVEMediaLog.pipeline.info(
-                "pump \(width)×\(height): \(fps, format: .fixed(precision: 1), privacy: .public) fps over \(window, format: .fixed(precision: 1), privacy: .public) s — depth \(depthMs, format: .fixed(precision: 1), privacy: .public) ms, warp \(warpMs, format: .fixed(precision: 1), privacy: .public) ms, transfer+enqueue \(transferMs, format: .fixed(precision: 1), privacy: .public) ms, tick \(tickMs, format: .fixed(precision: 1), privacy: .public) ms"
+                "pump \(width)×\(height)\(self.packedLayout == nil ? "" : " packed", privacy: .public): \(fps, format: .fixed(precision: 1), privacy: .public) fps over \(window, format: .fixed(precision: 1), privacy: .public) s — depth \(depthMs, format: .fixed(precision: 1), privacy: .public) ms, warp \(warpMs, format: .fixed(precision: 1), privacy: .public) ms, transfer+enqueue \(transferMs, format: .fixed(precision: 1), privacy: .public) ms, tick \(tickMs, format: .fixed(precision: 1), privacy: .public) ms"
             )
             stageTiming = StageTiming()
         }
@@ -512,6 +547,37 @@ public final class StereoPump: @unchecked Sendable {
         encoder.endEncoding()
     }
 
+    /// One eye of a packed stereo frame: a crop of the source, stretched to
+    /// the eye buffer.
+    private func encodePackedEye(
+        _ eye: RAVEPackedStereoLayout.Eye,
+        layout: RAVEPackedStereoLayout,
+        into dest: MTLTexture,
+        source: MTLTexture,
+        config: Config,
+        commandBuffer: MTLCommandBuffer
+    ) {
+        let region = layout.eyeRegion(eye, mirrored: config.mirror)
+        var uniforms = PackedEyeUniforms(
+            brightness: config.brightness,
+            contrast: config.contrast,
+            saturation: config.saturation,
+            mirror: config.mirror ? 1 : 0,
+            regionScale: region.scale,
+            regionOffset: region.offset
+        )
+        let desc = MTLRenderPassDescriptor()
+        desc.colorAttachments[0].texture = dest
+        desc.colorAttachments[0].loadAction = .dontCare
+        desc.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: desc) else { return }
+        encoder.setRenderPipelineState(warp.packedEyePipelineState)
+        encoder.setFragmentTexture(source, index: 0)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PackedEyeUniforms>.size, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        encoder.endEncoding()
+    }
+
     private func ensureDepthTexture(width: Int, height: Int, eye: Int) -> MTLTexture? {
         if let existing = eyeDepthTextures[eye], existing.width == width, existing.height == height {
             return existing
@@ -617,7 +683,8 @@ public final class StereoPump: @unchecked Sendable {
     }
 
     private func reportSizeIfNeeded(_ pixelBuffer: CVPixelBuffer) {
-        let size = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+        let frame = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+        let size = packedLayout?.eyeSize(packed: frame) ?? frame
         guard size.width > 0, size.height > 0, lastReportedSize != size else { return }
         lastReportedSize = size
         onVideoSizeKnown(size)

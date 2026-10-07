@@ -164,6 +164,10 @@ public final class Pseudo3DStereoEngine {
     /// frames at 60fps video) or a pre-processed cache entry (exact PTS sync).
     /// Changing it reloads the pump.
     private var depthMode: Pseudo3DDepthMode = .realtime
+    /// Set when the video already carries both eyes (side by side, over/under):
+    /// the pump crops each eye out instead of warping, and no depth model or
+    /// cache is involved. Part of what is loaded, like the URL.
+    public private(set) var packedLayout: RAVEPackedStereoLayout?
     /// Physical width of the fitted video plane in meters (videoAspect × entity
     /// scale, tracked by fitVideo). Drives plane-size disparity normalization —
     /// see makePumpConfig.
@@ -419,7 +423,7 @@ public final class Pseudo3DStereoEngine {
         let savedLoopA = loopA
         let savedLoopB = loopB
         loadedURL = nil
-        load(url: url, roomActive: isRoomActive)
+        load(url: url, roomActive: isRoomActive, packedStereo: packedLayout)
         setLoopBounds(a: savedLoopA, b: savedLoopB)
         if resumeTime > 0 { seek(to: resumeTime) }
         if wasPaused { pause() }
@@ -432,17 +436,20 @@ public final class Pseudo3DStereoEngine {
     ///   engine reports a playback failure indistinguishable from an
     ///   undecodable file. Retained across `reloadDepthPipeline`, which reloads
     ///   the same URL and would otherwise drop them.
-    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false, httpHeaderFields: [String: String]? = nil) {
+    /// - Parameter packedStereo: the video is already stereo, packed this way.
+    ///   It plays as real 3D, cropped per eye, and needs no depth model;
+    ///   `depthMode` is ignored. Nil is the fake-3D warp of a mono video.
+    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false, httpHeaderFields: [String: String]? = nil, packedStereo: RAVEPackedStereoLayout? = nil) {
         if let requestedMode { depthMode = requestedMode }
         if let httpHeaderFields { self.httpHeaderFields = httpHeaderFields }
-        guard loadedURL != url else { return }
+        guard loadedURL != url || packedLayout != packedStereo else { return }
 
         // Cached mode plays back baked depth and needs no model; resolve its
         // entry up front (a missing/deleted cache falls back to realtime). A
         // still-converting entry is accepted too — progressive playback; the
         // reader follows the growing file.
         var cacheEntry: DepthCacheStore.Entry?
-        if case .cached(let videoIdentity) = depthMode {
+        if packedStereo == nil, case .cached(let videoIdentity) = depthMode {
             cacheEntry = DepthCacheStore.entry(videoIdentity: videoIdentity)
             // A running conversion supersedes an older completed entry (e.g.
             // re-converting with a newly selected pre-process model): follow
@@ -459,13 +466,15 @@ public final class Pseudo3DStereoEngine {
         // Fake-3D requires real depth — there is no heuristic fallback. Without
         // a cache entry or a model (e.g. a restored window whose model was since
         // deleted), fall back to the flat player rather than warping heuristically.
-        guard Pseudo3DDiagnostics.useStaticTestPattern || cacheEntry != nil || CoreMLDepthProvider.hasAvailableModel(role: .realtime) else {
+        guard Pseudo3DDiagnostics.useStaticTestPattern || packedStereo != nil || cacheEntry != nil
+                || CoreMLDepthProvider.hasAvailableModel(role: .realtime) else {
             Task { @MainActor in self.onPlaybackError?() }
             return
         }
 
         cleanupPlayer()
         loadedURL = url
+        packedLayout = packedStereo
         isRoomActive = roomActive
         knownVideoSize = nil
         refitBurstTask?.cancel()
@@ -590,7 +599,9 @@ public final class Pseudo3DStereoEngine {
         // slow inference still gates its own tick, so this degrades to the
         // old 30fps cadence when the model can't keep up.
         let depthSource: PumpDepthSource?
-        if let cacheEntry {
+        if packedStereo != nil {
+            depthSource = nil
+        } else if let cacheEntry {
             depthSource = CachedDepthSource(entry: cacheEntry, device: warp.device)
         } else {
             depthSource = RealtimeDepthSource(device: warp.device)
@@ -602,6 +613,7 @@ public final class Pseudo3DStereoEngine {
             startHostTime: CACurrentMediaTime(),
             depthSource: depthSource,
             frameInterval: 1.0 / 60.0,
+            packedLayout: packedStereo,
             onVideoSizeKnown: sizeCallback
         ) else {
             Task { @MainActor in self.onPlaybackError?() }
@@ -641,14 +653,17 @@ public final class Pseudo3DStereoEngine {
     /// Realtime-only by design: cached depth needs a stable per-video identity
     /// and a conversion pass up front, and arbitrary browsing has neither.
     ///
+    /// - Parameter packedStereo: the frames already hold both eyes (see
+    ///   `load(url:…)`); no depth model is needed.
     /// - Returns: false when there is no depth model or no Metal warp — the
     ///   same "no fake-3D" answer `load(url:…)` gives, which callers already
     ///   handle by staying on the flat page.
     @discardableResult
-    public func attach(frameSource: PumpFrameSource) -> Bool {
+    public func attach(frameSource: PumpFrameSource, packedStereo: RAVEPackedStereoLayout? = nil) -> Bool {
         // Fake-3D requires real depth; there is no heuristic fallback. Checked
         // before teardown so a failed attach leaves any current playback alone.
-        guard Pseudo3DDiagnostics.useStaticTestPattern || CoreMLDepthProvider.hasAvailableModel(role: .realtime),
+        guard Pseudo3DDiagnostics.useStaticTestPattern || packedStereo != nil
+                || CoreMLDepthProvider.hasAvailableModel(role: .realtime),
               let warp = RAVEStereoWarpResources.shared else {
             Task { @MainActor in self.onPlaybackError?() }
             return false
@@ -656,6 +671,7 @@ public final class Pseudo3DStereoEngine {
 
         cleanupPlayer()
         depthMode = .realtime
+        packedLayout = packedStereo
         isRoomActive = true
         knownVideoSize = nil
         refitBurstTask?.cancel()
@@ -678,8 +694,9 @@ public final class Pseudo3DStereoEngine {
             frameSource: frameSource,
             warp: warp,
             startHostTime: CACurrentMediaTime(),
-            depthSource: RealtimeDepthSource(device: warp.device),
+            depthSource: packedStereo == nil ? RealtimeDepthSource(device: warp.device) : nil,
             frameInterval: 1.0 / 60.0,
+            packedLayout: packedStereo,
             onVideoSizeKnown: sizeCallback
         ) else {
             Task { @MainActor in self.onPlaybackError?() }

@@ -390,6 +390,19 @@ inside a web page that also owns the audio. It is realtime-depth only for the sa
 reason: cached depth needs a stable per-video identity and a conversion pass up
 front, and arbitrary browsing has neither.
 
+**Packed stereo is the same pump with a crop for a warp.** A video that already holds
+both eyes (side by side or over/under, each at full or half resolution) passes
+`packedStereo: RAVEPackedStereoLayout` to `load(url:…)` or `attach(frameSource:…)`.
+The pump then cuts each eye out of the decoded frame (`videoPackedEyeFragmentShader`,
+which also stretches a half-resolution eye back out) instead of warping, needs no depth
+model, and reports one eye's display size so the plane fits the picture, not the packed
+frame. Everything after the eye targets (420f pool, colour tags, tagged-buffer enqueue)
+is shared with fake-3D, so it streams like any video and never converts to MV-HEVC.
+Mirroring a stereo pair swaps the eyes as well as flipping (`eyeRegion(_:mirrored:)`);
+a flip alone inverts the depth. The layout is read at load/attach, so changing it
+means loading again (for an external source, a new source; re-attaching invalidates
+the old one). This is the portfolio's live 3D path, Hypnos's video window first.
+
 **The pump stops ticking while the app is backgrounded.** visionOS refuses GPU
 submission from a background app, so every command buffer a tick builds is aborted with
 `kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`. An `AVPlayer`-driven
