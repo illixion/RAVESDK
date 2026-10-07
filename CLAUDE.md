@@ -482,6 +482,13 @@ cache without bound. Spatial Stash wires it to `CacheBudget.cap(for: .depth,)` i
 `AppModel.init`. `RAVEMediaLog` keeps `Bundle.main.bundleIdentifier` as its subsystem
 so `RAVEConsole` still sees these lines; only the categories are the package's own.
 
+**Stills: `CoreMLDepthProvider.stillDepth(for: CGImage)`** returns a CPU
+`StillDepthMap` (8-bit, near = 255, p2…p98-normalized, cropped to the image's own
+region of Vision's `.scaleFit` letterbox). It deliberately bypasses the video
+stabilizer: its temporal EMA would blend one image's depth into the next. Same
+one-caller-at-a-time rule as the video entry points; Hypnos's gallery tiles own a
+dedicated provider for it.
+
 **What deliberately stayed in the app:** the SwiftUI view (window-chrome constants,
 gestures), the binding of transport to a per-app playback model (the engine publishes
 `RAVEPlaybackState` and knows nothing about what consumes it), and the audio *session*
