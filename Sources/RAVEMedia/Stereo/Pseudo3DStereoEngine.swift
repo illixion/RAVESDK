@@ -742,11 +742,8 @@ public final class Pseudo3DStereoEngine {
             }
         }
 
-        // Start the renderer timeline once; frames are tagged relative to this.
-        if !didStartSynchronizer {
-            didStartSynchronizer = true
-            synchronizer.setRate(1, time: .zero)
-        }
+        // Frames are tagged relative to the renderer timeline's zero.
+        let startHostTime = restartRendererTimeline()
 
         // Hand the pump everything it needs; it runs entirely off the main thread.
         let sizeCallback: @Sendable (CGSize) -> Void = { [weak self] size in
@@ -774,7 +771,7 @@ public final class Pseudo3DStereoEngine {
             videoRenderer: videoRenderer,
             frameSource: AVPlayerFrameSource(output: output),
             warp: warp,
-            startHostTime: CACurrentMediaTime(),
+            startHostTime: startHostTime,
             depthSource: depthSource,
             frameInterval: 1.0 / 60.0,
             packedLayout: packedStereo,
@@ -841,10 +838,7 @@ public final class Pseudo3DStereoEngine {
         knownVideoSize = nil
         refitBurstTask?.cancel()
 
-        if !didStartSynchronizer {
-            didStartSynchronizer = true
-            synchronizer.setRate(1, time: .zero)
-        }
+        let startHostTime = restartRendererTimeline()
 
         let sizeCallback: @Sendable (CGSize) -> Void = { [weak self] size in
             Task { @MainActor in
@@ -859,7 +853,7 @@ public final class Pseudo3DStereoEngine {
             videoRenderer: videoRenderer,
             frameSource: frameSource,
             warp: warp,
-            startHostTime: CACurrentMediaTime(),
+            startHostTime: startHostTime,
             depthSource: packedStereo == nil ? RealtimeDepthSource(device: warp.device) : nil,
             frameInterval: 1.0 / 60.0,
             packedLayout: packedStereo,
@@ -985,6 +979,20 @@ public final class Pseudo3DStereoEngine {
         onPlaybackError = nil
         onDurationKnown = nil
         onPlaybackUpdate = nil
+    }
+
+    /// Restarts the renderer's timeline at zero for a new pump, which tags
+    /// its frames from the host time returned. It used to start once per
+    /// engine while each pump counted from its own start, so a second load
+    /// (a reload, a stream reopened after the background) sent frames a
+    /// minute off the timeline, and the picture sat frozen for that minute
+    /// while the pump reported full speed (device, 2026-10-07). The flush
+    /// drops the old pump's frames, which are stamped on the old timeline.
+    private func restartRendererTimeline() -> CFTimeInterval {
+        didStartSynchronizer = true
+        videoRenderer.flush()
+        synchronizer.setRate(1, time: .zero)
+        return CACurrentMediaTime()
     }
 
     private func cleanupPlayer() {
