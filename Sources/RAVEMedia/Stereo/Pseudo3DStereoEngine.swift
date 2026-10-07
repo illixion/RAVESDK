@@ -160,6 +160,9 @@ public final class Pseudo3DStereoEngine {
     static let squareCornerOverscan: Float = 0.012
     /// While true, fade the video so an open menu/popover shows through it.
     @ObservationIgnored private var chromeOpen = false
+    /// The open chrome is one the picture's tap target doesn't steal the gaze
+    /// from (a popover), so a tap on the picture still lands and can close it.
+    @ObservationIgnored private var chromeTakesInput = false
     /// Video opacity while a menu/popover is open (low = chrome clearly visible).
     @ObservationIgnored private let chromeDimOpacity: Float = 0.12
     /// How far the picture has gone into its menu state: 0 = normal, 1 =
@@ -179,9 +182,10 @@ public final class Pseudo3DStereoEngine {
     /// How long a menu may hold the picture's input off before a tap on the
     /// picture works again.
     static var chromeInputGrace: Double { 15 }
-    /// Metres the plane sits behind the centre of its view's depth: at the
-    /// centre it read ~5 cm in front of the window (device, 2026-10-07).
-    static var planeDepthTrim: Float { 0.05 }
+    /// Metres the plane sits behind the centre of its view's depth. At the
+    /// centre it read ~5 cm in front of the window, and 5 cm back it still
+    /// covered the window's resize handles (device, 2026-10-07).
+    static var planeDepthTrim: Float { 0.12 }
     /// Caller-driven opacity (slideshow crossfades), multiplied with the chrome
     /// dim. SwiftUI's `.opacity` doesn't reach RealityKit content on visionOS.
     @ObservationIgnored private var contentOpacity: Float = 1
@@ -214,6 +218,8 @@ public final class Pseudo3DStereoEngine {
 
     /// Initial mute state applied to a freshly loaded player.
     @ObservationIgnored public var startMuted = true
+    /// Volume (0…1) a newly made player starts at; `setVolume` changes it live.
+    @ObservationIgnored public var startVolume: Float = 1
     /// Restart at the top when playback reaches the end.
     @ObservationIgnored public var loops = true
 
@@ -324,7 +330,7 @@ public final class Pseudo3DStereoEngine {
         ).offsetBy(translation: local.center)
         entity.components.set(CollisionComponent(shapes: [box], isStatic: true))
         var target = InputTargetComponent()
-        target.isEnabled = !chromeOpen
+        target.isEnabled = !chromeOpen || chromeTakesInput
         entity.components.set(target)
         tapTargetInstalled = true
     }
@@ -455,15 +461,19 @@ public final class Pseudo3DStereoEngine {
     /// chrome shows through the (front-plane) video instead of being occluded.
     /// The picture also goes flat while it's open: its pop-out still read in
     /// front of the menus (device, 2026-10-07).
-    public func setChromeOpen(_ open: Bool) {
+    ///
+    /// - Parameter takesInput: the picture keeps its tap target while this
+    ///   chrome is open. A menu drawn over the picture gets the gaze only
+    ///   while the picture takes none (even a flat target on the plane won
+    ///   the hover, device 2026-10-07); a popover keeps it either way.
+    public func setChromeOpen(_ open: Bool, takesInput: Bool = false) {
+        chromeTakesInput = takesInput
+        videoEntity?.components[InputTargetComponent.self]?.isEnabled = !open || takesInput
         guard open != chromeOpen else { return }
         chromeOpen = open
-        // A menu drawn over the picture gets the gaze only while the picture
-        // takes none: even a flat target on the plane won the hover (device,
-        // 2026-10-07). Some menus never report closing, and a tap on the
-        // picture is the way out of that, so the target comes back on its
-        // own once a menu has been "open" for `chromeInputGrace`.
-        videoEntity?.components[InputTargetComponent.self]?.isEnabled = !open
+        // Some menus never report closing, and a tap on the picture is the
+        // way out of that, so the target comes back on its own once a menu
+        // has been "open" for `chromeInputGrace`.
         if open {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(Self.chromeInputGrace))
@@ -571,6 +581,7 @@ public final class Pseudo3DStereoEngine {
         let resumeTime = currentTime
         let wasPaused = player?.timeControlStatus == .paused
         let wasMuted = player?.isMuted ?? startMuted
+        if let player { startVolume = player.volume }
         let savedLoopA = loopA
         let savedLoopB = loopB
         loadedURL = nil
@@ -672,6 +683,7 @@ public final class Pseudo3DStereoEngine {
         let player = AVPlayer(playerItem: item)
         player.applySpatialAudioPolicy(for: asset)
         player.isMuted = startMuted
+        player.volume = startVolume
         player.automaticallyWaitsToMinimizeStalling = true
 
         self.player = player
@@ -897,6 +909,11 @@ public final class Pseudo3DStereoEngine {
     public func setMuted(_ muted: Bool) {
         player?.isMuted = muted
         reportPlaybackState()
+    }
+
+    public func setVolume(_ volume: Float) {
+        startVolume = volume
+        player?.volume = volume
     }
 
     public func setLoopBounds(a: Double?, b: Double?) { loopA = a; loopB = b }

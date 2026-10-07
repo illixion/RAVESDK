@@ -45,6 +45,9 @@ public final class FilmPlayer {
     // Tuning, read by the stage every tick.
     /// Mute is independent of saved gain tuning and keeps the clock running.
     public var isMuted = false { didSet { tick() } }
+    /// Listening volume, 0…1, on top of the saved gain tuning (which is the
+    /// mix, not how loud the viewer wants it).
+    public var volume: Float = 1 { didSet { tick() } }
     public var masterGainDB: Float = 0
     public var lfeGainDB: Float = 0
     public var reverbDB: Float = 0
@@ -254,7 +257,7 @@ public final class FilmPlayer {
         let frame = currentFrame
         for element in scene.elements {
             let db = masterGainDB + state(of: element, frame: frame).gainDB + (element.isBed ? lfeGainDB : 0)
-            audio.targetGain[element.channel] = isMuted || db <= -120 ? 0 : powf(10, db / 20)
+            audio.targetGain[element.channel] = isMuted || db <= -120 ? 0 : powf(10, db / 20) * max(0, min(1, volume))
             let peak = audio.peak[element.channel]
             audio.peak[element.channel] = 0
             levels[element.channel] = max(peak, levels[element.channel] * 0.85)

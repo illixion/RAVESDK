@@ -16,6 +16,7 @@ public struct RAVEExternalStereoVideoView: View {
     private let source: any PumpFrameSource
     private let settings: Pseudo3DSettings
     private let chromeOpen: Bool
+    private let chromeTakesInput: Bool
     private let onUnavailable: () -> Void
     private let onToggleChrome: () -> Void
     private let packedStereo: RAVEPackedStereoLayout?
@@ -24,7 +25,8 @@ public struct RAVEExternalStereoVideoView: View {
     @State private var engine = Pseudo3DStereoEngine()
 
     public init(source: any PumpFrameSource, settings: Pseudo3DSettings = .default,
-                chromeOpen: Bool = false, packedStereo: RAVEPackedStereoLayout? = nil,
+                chromeOpen: Bool = false, chromeTakesInput: Bool = false,
+                packedStereo: RAVEPackedStereoLayout? = nil,
                 squareCorners: Bool = false,
                 subtitles: RAVEStereoSubtitleFrame? = nil,
                 onUnavailable: @escaping () -> Void,
@@ -35,6 +37,7 @@ public struct RAVEExternalStereoVideoView: View {
         self.source = source
         self.settings = settings
         self.chromeOpen = chromeOpen
+        self.chromeTakesInput = chromeTakesInput
         self.onUnavailable = onUnavailable
         self.onToggleChrome = onToggleChrome
     }
@@ -43,7 +46,7 @@ public struct RAVEExternalStereoVideoView: View {
         GeometryReader3D { geometry in
             RealityView { content in
                 engine.configure(adjustments: .neutral, settings: settings, isFlipped: false)
-                engine.setChromeOpen(chromeOpen)
+                engine.setChromeOpen(chromeOpen, takesInput: chromeTakesInput)
                 engine.setSquareCorners(squareCorners)
                 engine.onPlaybackError = onUnavailable
                 engine.setSubtitles(subtitles)
@@ -63,7 +66,8 @@ public struct RAVEExternalStereoVideoView: View {
         .onChange(of: settings) { _, value in
             engine.configure(adjustments: .neutral, settings: value, isFlipped: false)
         }
-        .onChange(of: chromeOpen) { _, value in engine.setChromeOpen(value) }
+        .onChange(of: chromeOpen) { _, value in engine.setChromeOpen(value, takesInput: chromeTakesInput) }
+        .onChange(of: chromeTakesInput) { _, value in engine.setChromeOpen(chromeOpen, takesInput: value) }
         .onChange(of: squareCorners) { _, value in engine.setSquareCorners(value) }
         .onChange(of: subtitles) { _, value in engine.setSubtitles(value) }
         .onDisappear { engine.cleanup() }

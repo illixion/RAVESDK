@@ -8,15 +8,18 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
     public var bufferedUntil: Double
     public var isPlaying: Bool
     public var isMuted: Bool
+    /// 0…1, or nil for a host with no volume of its own (mute only).
+    public var volume: Double?
     public var markers: [Double]
 
     public init(currentTime: Double, duration: Double, bufferedUntil: Double = 0,
-                isPlaying: Bool, isMuted: Bool, markers: [Double] = []) {
+                isPlaying: Bool, isMuted: Bool, volume: Double? = nil, markers: [Double] = []) {
         self.currentTime = currentTime
         self.duration = duration
         self.bufferedUntil = bufferedUntil
         self.isPlaying = isPlaying
         self.isMuted = isMuted
+        self.volume = volume
         self.markers = markers
     }
 
@@ -68,6 +71,8 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     private let togglePlayback: () -> Void
     private let seek: (Double) -> Void
     private let toggleMute: () -> Void
+    private let setVolume: ((Double) -> Void)?
+    private let menuDismissal: Int
     private let onInteraction: () -> Void
     private let onScrubbingChanged: (Bool) -> Void
     private let accessories: Accessories
@@ -82,6 +87,8 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 onScrubbingChanged: @escaping (Bool) -> Void = { _ in },
                 layout: RAVEPlayerControlsLayout = .stacked,
                 onMenuChanged: @escaping (Bool) -> Void = { _ in },
+                setVolume: ((Double) -> Void)? = nil,
+                menuDismissal: Int = 0,
                 @ViewBuilder accessories: () -> Accessories) {
         self.state = state
         self.layout = layout
@@ -89,6 +96,8 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         self.togglePlayback = togglePlayback
         self.seek = seek
         self.toggleMute = toggleMute
+        self.setVolume = setVolume
+        self.menuDismissal = menuDismissal
         self.onInteraction = onInteraction
         self.onScrubbingChanged = onScrubbingChanged
         self.accessories = accessories()
@@ -109,6 +118,9 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             #endif
         }
         .onChange(of: showsMore) { _, shown in onMenuChanged(shown) }
+        // A host bumps `menuDismissal` to close "More" from outside, such as
+        // a tap on the picture behind it.
+        .onChange(of: menuDismissal) { _, _ in showsMore = false }
         .onDisappear {
             if showsMore { onMenuChanged(false) }
             showsMore = false
@@ -143,7 +155,8 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 .disabled(!state.isSeekable)
             timelineRow
                 .frame(minWidth: Self.compactTimelineMinWidth, maxWidth: .infinity)
-            control(state.isMuted ? "Unmute" : "Mute", state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", action: toggleMute)
+            muteControl
+            volumeSlider
             if Accessories.self != EmptyView.self {
                 if overflow {
                     #if os(tvOS)
@@ -170,6 +183,10 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                                 .environment(\.ravePlayerControlsInMenu, true)
                                 .buttonStyle(.borderless)
                                 .padding(16)
+                                // Without it the popover swallows every tap in
+                                // the window, so one on the picture couldn't
+                                // close it (device, 2026-10-07).
+                                .presentationBackgroundInteraction(.enabled)
                         }
                     #endif
                 } else {
@@ -181,6 +198,48 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             }
         }
     }
+
+    private var muteControl: some View {
+        control(state.isMuted ? "Unmute" : "Mute", Self.speakerSymbol(muted: state.isMuted, volume: state.volume),
+                action: toggleMute)
+    }
+
+    static func speakerSymbol(muted: Bool, volume: Double?) -> String {
+        guard !muted else { return "speaker.slash.fill" }
+        guard let volume else { return "speaker.wave.2.fill" }
+        switch volume {
+        case ..<0.01: return "speaker.fill"
+        case ..<0.34: return "speaker.wave.1.fill"
+        case ..<0.67: return "speaker.wave.2.fill"
+        default: return "speaker.wave.3.fill"
+        }
+    }
+
+    /// Beside mute, when the host has a volume. Dragging it while muted
+    /// unmutes, the way a system volume control does. tvOS has no Slider;
+    /// its remote's volume is the TV's.
+    @ViewBuilder private var volumeSlider: some View {
+        #if !os(tvOS)
+        if let volume = state.volume, let setVolume {
+            Slider(value: Binding(
+                get: { volume },
+                set: { value in
+                    onInteraction()
+                    if state.isMuted, value > 0 { toggleMute() }
+                    setVolume(value)
+                }
+            ), in: 0 ... 1)
+            .frame(width: Self.volumeSliderWidth)
+            .accessibilityLabel("Volume")
+        }
+        #endif
+    }
+
+    #if os(visionOS)
+    private static var volumeSliderWidth: CGFloat { 140 }
+    #else
+    private static var volumeSliderWidth: CGFloat { 100 }
+    #endif
 
     private var moreLabel: some View {
         Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly).ravePlayerControlLabel()
@@ -213,7 +272,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                             .disabled(!state.isSeekable)
                     }
                     Spacer(minLength: 0)
-                    control(state.isMuted ? "Unmute" : "Mute", state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", action: toggleMute)
+                    muteControl
                 }
                 if Accessories.self != EmptyView.self {
                     // The row at its natural width when it fits, which is also what

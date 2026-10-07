@@ -111,8 +111,11 @@ public final class FilmVideoPlayer {
     /// The renderer is flushed and fed again from the playhead; the owner's
     /// seek re-anchors its own clock with it.
     private func restartAfterDecoderLoss() {
-        guard index != nil else { return }
+        // Flushed even with nothing loaded: the idle player behind the shared
+        // film session otherwise kept asking every second for as long as the
+        // app ran (device log, 2026-10-07).
         renderer.flush()
+        guard index != nil else { return }
         if let onDecodingInterrupted {
             onDecodingInterrupted()
         } else {
