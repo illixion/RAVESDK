@@ -538,3 +538,143 @@ kernel void depthTemporalEncode(
     const float v = wsum > 1e-6 ? (acc / wsum) : center;
     outLuma.write(float4(saturate((v - p.rangeLo) * p.rangeInvSpan), 0.0, 0.0, 1.0), gid);
 }
+
+// MARK: - Subtitles in the Stereo Picture
+//
+// See StereoSubtitles.swift. A subtitle image is drawn over each finished eye
+// image, shifted sideways by that eye's share of the text's disparity.
+
+struct SubtitleQuadUniforms {
+    float2 rectOrigin;   // eye UV, origin top left, before the shift
+    float2 rectSize;
+    float shift;         // this eye's horizontal shift in eye UV
+    float transfer;      // 0 = SDR, 1 = PQ, 2 = HLG
+    float whiteNits;     // the text's white on an HDR picture
+    float padding;
+};
+
+vertex VertexOut stereoSubtitleVertex(
+    uint vertexID [[vertex_id]],
+    constant SubtitleQuadUniforms &u [[buffer(0)]]
+) {
+    const float2 corners[] = {
+        float2(0, 1), float2(1, 1), float2(0, 0),
+        float2(0, 0), float2(1, 1), float2(1, 0)
+    };
+    float2 corner = corners[vertexID];
+    float2 uv = u.rectOrigin + corner * u.rectSize + float2(u.shift, 0);
+    VertexOut out;
+    out.position = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0, 1);
+    out.texCoord = corner;   // the image's rows run top down
+    return out;
+}
+
+static inline float3 subtitleSRGBToLinear(float3 c) {
+    return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
+}
+
+// SMPTE ST 2084 inverse EOTF: absolute luminance in nits to the PQ signal.
+static inline float3 subtitlePQEncode(float3 nits) {
+    const float m1 = 0.1593017578125, m2 = 78.84375;
+    const float c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+    float3 y = pow(clamp(nits / 10000.0, 0.0, 1.0), m1);
+    return pow((c1 + c2 * y) / (1.0 + c3 * y), m2);
+}
+
+// BT.2100 HLG: display luminance on the nominal 1000-nit display (system
+// gamma 1.2) back to scene light, then the OETF. 203 nits lands on 75 %,
+// BT.2408's reference white.
+static inline float3 subtitleHLGEncode(float3 nits) {
+    const float a = 0.17883277, b = 0.28466892, c = 0.55991073;
+    float3 e = pow(clamp(nits / 1000.0, 0.0, 1.0), 1.0 / 1.2);
+    return select(a * log(max(12.0 * e - b, 1e-6)) + c, sqrt(3.0 * e), e <= 1.0 / 12.0);
+}
+
+fragment float4 stereoSubtitleFragment(
+    VertexOut in [[stage_in]],
+    texture2d<float> tex [[texture(0)]],
+    constant SubtitleQuadUniforms &u [[buffer(0)]]
+) {
+    constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_zero);
+    float4 c = tex.sample(s, in.texCoord);   // premultiplied sRGB
+    if (c.a <= 0.0) { discard_fragment(); }
+    // SDR eyes are BT.709-coded, close enough to sRGB to write as is.
+    if (u.transfer < 0.5) { return c; }
+    float3 nits = subtitleSRGBToLinear(c.rgb / c.a) * u.whiteNits;
+    float3 coded = u.transfer < 1.5 ? subtitlePQEncode(nits) : subtitleHLGEncode(nits);
+    return float4(coded * c.a, c.a);
+}
+
+// Disparity behind the subtitle text in a real stereo pair. One threadgroup
+// per patch of the region, one thread per candidate disparity d: the left
+// eye's 8×8 patch against the right eye's patch d pixels to the left
+// (xL - xR = d, so positive d is crossed: in front of the screen), compared
+// mean-removed so the eyes' exposure needn't match. A patch answers only if
+// it has texture and one candidate clearly wins; flat sky or a repeating
+// pattern answers nothing rather than something wrong.
+struct SubtitleMatchParams {
+    float2 regionOrigin;   // eye pixels
+    float2 regionSize;
+    uint2 patchGrid;
+    int candidateStep;     // pixels between candidates
+    int sampleStep;        // pixels between patch samples
+};
+
+static inline float subtitleLuma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+
+kernel void stereoSubtitleMatch(
+    texture2d<float, access::read> left [[texture(0)]],
+    texture2d<float, access::read> right [[texture(1)]],
+    constant SubtitleMatchParams &p [[buffer(0)]],
+    device float2 *results [[buffer(1)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]
+) {
+    constexpr int kCandidates = 128;   // = threads per group, StereoSubtitleCompositor.candidateCount
+    constexpr int kSamples = 64;       // 8×8
+    threadgroup float leftLuma[kSamples];
+    threadgroup float cost[kCandidates];
+
+    int2 limit = int2(left.get_width(), left.get_height()) - 1;
+    float2 cell = p.regionSize / float2(p.patchGrid);
+    int2 origin = int2(p.regionOrigin + (float2(group) + 0.5) * cell) - 4 * p.sampleStep;
+
+    if (tid < uint(kSamples)) {
+        int2 at = clamp(origin + int2(tid % 8, tid / 8) * p.sampleStep, int2(0), limit);
+        leftLuma[tid] = subtitleLuma(left.read(uint2(at)).rgb);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float leftMean = 0;
+    for (int i = 0; i < kSamples; i++) { leftMean += leftLuma[i]; }
+    leftMean /= kSamples;
+
+    int d = (int(tid) - kCandidates / 2) * p.candidateStep;
+    float rightMean = 0;
+    for (int i = 0; i < kSamples; i++) {
+        int2 at = clamp(origin + int2(i % 8 * p.sampleStep - d, i / 8 * p.sampleStep), int2(0), limit);
+        rightMean += subtitleLuma(right.read(uint2(at)).rgb);
+    }
+    rightMean /= kSamples;
+    float sad = 0;
+    for (int i = 0; i < kSamples; i++) {
+        int2 at = clamp(origin + int2(i % 8 * p.sampleStep - d, i / 8 * p.sampleStep), int2(0), limit);
+        sad += abs((leftLuma[i] - leftMean) - (subtitleLuma(right.read(uint2(at)).rgb) - rightMean));
+    }
+    cost[tid] = sad;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid != 0) { return; }
+    int best = 0;
+    for (int k = 1; k < kCandidates; k++) { if (cost[k] < cost[best]) { best = k; } }
+    float runnerUp = 1e30;   // not INFINITY: the library builds with fast math
+    for (int k = 0; k < kCandidates; k++) {
+        if (abs(k - best) > 2) { runnerUp = min(runnerUp, cost[k]); }
+    }
+    float texture = 0;
+    for (int i = 0; i < kSamples; i++) { texture += abs(leftLuma[i] - leftMean); }
+    texture /= kSamples;
+    bool valid = texture > 0.02 && best > 0 && best < kCandidates - 1 && cost[best] < 0.8 * runnerUp;
+    results[group.y * p.patchGrid.x + group.x] =
+        float2(float((best - kCandidates / 2) * p.candidateStep), valid ? 1.0 : 0.0);
+}

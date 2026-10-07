@@ -166,6 +166,9 @@ public final class StereoPump: @unchecked Sendable {
     /// Flushes the renderer when visionOS took its decoding away; see
     /// `RAVEDecoderRecovery`. Made in `start()`, as it captures self.
     private var decoderRecovery: RAVEDecoderRecovery?
+    /// Draws subtitles into both eyes (see StereoSubtitles.swift). Nil only if
+    /// its shaders failed to build, which leaves the picture without them.
+    private let subtitles: StereoSubtitleCompositor?
 
     private let configLock = NSLock()
     private var config = Config()
@@ -231,7 +234,17 @@ public final class StereoPump: @unchecked Sendable {
         self.frameInterval = frameInterval
         self.onVideoSizeKnown = onVideoSizeKnown
         self.transferSession = session
+        self.subtitles = RAVEMediaMetal.shared.flatMap {
+            StereoSubtitleCompositor(device: $0.device, library: $0.library)
+        }
         CVMetalTextureCacheCreate(nil, nil, warp.device, nil, &textureCache)
+    }
+
+    /// Any thread. Nil turns subtitles off. The last frame is drawn again with
+    /// the new text, since a paused picture has no new frame coming.
+    func setSubtitles(_ overlay: StereoSubtitleOverlay?) {
+        subtitles?.setOverlay(overlay)
+        queue.async { [weak self] in self?.reshowLastFrame() }
     }
 
     public func updateConfig(_ newConfig: Config) {
@@ -305,6 +318,16 @@ public final class StereoPump: @unchecked Sendable {
     private func flushAndReshow() {
         videoRenderer.flush()
         guard let lastFrame, let textureCache else { return }
+        renderAndEnqueue(from: lastFrame.pixelBuffer, itemTime: lastFrame.itemTime, cache: textureCache,
+                         pts: CMTime(seconds: CACurrentMediaTime() - startHostTime, preferredTimescale: 90_000))
+    }
+
+    private func reshowLastFrame() {
+        lifecycleLock.lock()
+        let backgrounded = isBackgrounded
+        lifecycleLock.unlock()
+        guard !backgrounded, videoRenderer.isReadyForMoreMediaData,
+              let lastFrame, let textureCache else { return }
         renderAndEnqueue(from: lastFrame.pixelBuffer, itemTime: lastFrame.itemTime, cache: textureCache,
                          pts: CMTime(seconds: CACurrentMediaTime() - startHostTime, preferredTimescale: 90_000))
     }
@@ -383,6 +406,7 @@ public final class StereoPump: @unchecked Sendable {
         let depthDone = CACurrentMediaTime()
 
         var cfg = currentConfig()
+        let fullDepthStrength = cfg.depthStrength
         if depthSource?.flattensWhenUnavailable == true {
             // Cached mode: a seek/startup gap renders FLAT (never the heuristic
             // warp, never stale depth), then depth ramps back in to avoid a pop.
@@ -404,10 +428,20 @@ public final class StereoPump: @unchecked Sendable {
             encodeEye(into: leftTex, source: srcTexture, depth: frameDepth, eyeSign: 1.0, config: cfg, commandBuffer: cmdBuf)
             encodeEye(into: rightTex, source: srcTexture, depth: frameDepth, eyeSign: -1.0, config: cfg, commandBuffer: cmdBuf)
         }
+        // Depth saturates to [0, 1], so no warped pixel shifts further than
+        // (1 - convergence) × strength; the margin in front of that keeps the
+        // strength the ramp is heading for, so text doesn't sink mid-ramp.
+        subtitles?.encode(
+            left: leftTex, right: rightTex, packed: layout != nil,
+            maxContentShift: (1 - cfg.convergence) * cfg.depthStrength,
+            depthStrength: fullDepthStrength,
+            transfer: StereoSubtitleCompositor.transferMode(of: src), commandBuffer: cmdBuf
+        )
         cmdBuf.commit()
         // Safe here: this runs on the background pump queue, never main. The warp
         // must complete before VTPixelTransferSession reads the BGRA surfaces.
         cmdBuf.waitUntilCompleted()
+        subtitles?.didComplete()
         signposter.endInterval("pump-warp", warpState)
         let warpDone = CACurrentMediaTime()
 

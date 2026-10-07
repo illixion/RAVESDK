@@ -183,6 +183,11 @@ public final class Pseudo3DStereoEngine {
     /// see makePumpConfig.
     @ObservationIgnored private var planeWidthMeters: Float?
 
+    /// What the host wants drawn into the picture; kept so a rebuilt pump
+    /// and a new eye size get it again. See `setSubtitles`.
+    @ObservationIgnored private var subtitleFrame: RAVEStereoSubtitleFrame?
+    @ObservationIgnored private var subtitleGeneration = 0
+
     // A-B loop
     private var loopA: Double?
     private var loopB: Double?
@@ -394,6 +399,31 @@ public final class Pseudo3DStereoEngine {
         self.settings = settings
         self.isFlipped = isFlipped
         pump?.updateConfig(makePumpConfig())
+    }
+
+    /// Subtitles drawn into both eyes at a depth in front of the picture's
+    /// content (see StereoSubtitles.swift). Nil turns them off. The frame's
+    /// `render` runs now and again whenever the eye size changes.
+    public func setSubtitles(_ frame: RAVEStereoSubtitleFrame?) {
+        guard frame != subtitleFrame else { return }
+        subtitleFrame = frame
+        pushSubtitles()
+    }
+
+    private func pushSubtitles() {
+        guard let pump else { return }
+        guard let frame = subtitleFrame, let device = RAVEMediaMetal.shared?.device else {
+            pump.setSubtitles(nil)
+            return
+        }
+        // Before the first frame there is no eye size to render for: arm the
+        // pump (a packed pair starts measuring), and draw once the size comes.
+        let subtitles = knownVideoSize.map { frame.render($0) } ?? []
+        subtitleGeneration += 1
+        pump.setSubtitles(StereoSubtitleOverlay(
+            subtitles: subtitles, hdrWhiteNits: frame.hdrWhiteNits,
+            generation: subtitleGeneration, device: device
+        ))
     }
 
     /// Fade/restore the video when a menu/popover opens/closes, so the presented
@@ -643,6 +673,7 @@ public final class Pseudo3DStereoEngine {
                 self?.knownVideoSize = size
                 self?.onVideoSizeKnown?(size)
                 self?.scheduleRefitBurst()
+                self?.pushSubtitles()
             }
         }
         // Cached depth: 60fps warp of pre-computed PTS-matched depth, no ANE.
@@ -674,6 +705,7 @@ public final class Pseudo3DStereoEngine {
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump
+        pushSubtitles()
 
         // Resume where the previous (2D) player left off when the caller says
         // so — engaging fake-3D mid-watch shouldn't restart the video.
@@ -738,6 +770,7 @@ public final class Pseudo3DStereoEngine {
                 self?.knownVideoSize = size
                 self?.onVideoSizeKnown?(size)
                 self?.scheduleRefitBurst()
+                self?.pushSubtitles()
             }
         }
 
@@ -757,6 +790,7 @@ public final class Pseudo3DStereoEngine {
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump
+        pushSubtitles()
         return true
     }
 

@@ -403,6 +403,18 @@ a flip alone inverts the depth. The layout is read at load/attach, so changing i
 means loading again (for an external source, a new source; re-attaching invalidates
 the old one). This is the portfolio's live 3D path, Hypnos's video window first.
 
+**Subtitles are drawn into the eyes, not over the plane** (`StereoSubtitles.swift`).
+SwiftUI over the stereo plane never shows in front of it, and a panel beside it sits at
+the window's depth while the content reads nearer. The host hands the engine a
+`RAVEStereoSubtitleFrame` (`setSubtitles`, or `subtitles:` on
+`RAVEExternalStereoVideoView`) whose `render` closure returns images sized for the eye;
+the pump draws them into both eyes with crossed disparity after the warp/crop. Depth:
+fake-3D's warp bounds every pixel's shift at `(1 - convergence) × strength`, so the text
+sits a margin in front of that; a packed pair is block-matched behind the text
+(`stereoSubtitleMatch`, 90th-percentile nearest patch). A cue holds its depth, moving
+only forward. The text's white is written in the frame's transfer function: PQ/HLG get
+`hdrWhiteNits` (default 203, BT.2408), SDR plain white. Both margins are untuned on device.
+
 **Decoding can be taken away; every renderer and decoder must recover.** While another
 app has an immersive space open (and on other occasions), visionOS withdraws video
 decoding: `AVSampleBufferVideoRenderer` goes `.failed` with

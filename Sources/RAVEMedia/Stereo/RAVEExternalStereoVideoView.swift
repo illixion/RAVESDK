@@ -10,6 +10,8 @@ import SwiftUI
 /// depth model); nil is the fake-3D warp of a mono source. It is read when a
 /// source attaches, so changing it needs a new source: re-attaching invalidates
 /// the old one (a `SampleBufferFrameSource` drops its decoder).
+///
+/// `subtitles` are drawn into the picture itself (see `RAVEStereoSubtitleFrame`).
 public struct RAVEExternalStereoVideoView: View {
     private let source: any PumpFrameSource
     private let settings: Pseudo3DSettings
@@ -18,15 +20,18 @@ public struct RAVEExternalStereoVideoView: View {
     private let onToggleChrome: () -> Void
     private let packedStereo: RAVEPackedStereoLayout?
     private let squareCorners: Bool
+    private let subtitles: RAVEStereoSubtitleFrame?
     @State private var engine = Pseudo3DStereoEngine()
 
     public init(source: any PumpFrameSource, settings: Pseudo3DSettings = .default,
                 chromeOpen: Bool = false, packedStereo: RAVEPackedStereoLayout? = nil,
                 squareCorners: Bool = false,
+                subtitles: RAVEStereoSubtitleFrame? = nil,
                 onUnavailable: @escaping () -> Void,
                 onToggleChrome: @escaping () -> Void = {}) {
         self.packedStereo = packedStereo
         self.squareCorners = squareCorners
+        self.subtitles = subtitles
         self.source = source
         self.settings = settings
         self.chromeOpen = chromeOpen
@@ -41,6 +46,7 @@ public struct RAVEExternalStereoVideoView: View {
                 engine.setChromeOpen(chromeOpen)
                 engine.setSquareCorners(squareCorners)
                 engine.onPlaybackError = onUnavailable
+                engine.setSubtitles(subtitles)
                 content.add(engine.makeVideoEntity())
                 engine.observeVideoSize(content: content)
                 engine.attach(frameSource: source, packedStereo: packedStereo)
@@ -59,6 +65,7 @@ public struct RAVEExternalStereoVideoView: View {
         }
         .onChange(of: chromeOpen) { _, value in engine.setChromeOpen(value) }
         .onChange(of: squareCorners) { _, value in engine.setSquareCorners(value) }
+        .onChange(of: subtitles) { _, value in engine.setSubtitles(value) }
         .onDisappear { engine.cleanup() }
     }
 }
