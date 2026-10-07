@@ -21,7 +21,8 @@
 
  A cue keeps its depth while it shows, moving only forward (nearer content
  arriving behind it), never back: text drifting in depth is uncomfortable
- to read. A new cue starts at the depth measured for it.
+ to read. A new cue starts at the depth measured for it. The host's
+ `depthOffset` moves all of it nearer or farther from there.
 
  Text comes in as images the host renders (the host owns the styling), at
  the size it should cover in an eye of a given height. Its colour is
@@ -67,6 +68,10 @@ public struct RAVEStereoSubtitleFrame: Equatable {
     public var version: Int
     /// The luminance of the text's white on an HDR picture.
     public var hdrWhiteNits: Double
+    /// Moves the text away from the depth chosen for it, as each eye's shift
+    /// in fractions of the eye's width: positive is farther, negative nearer.
+    /// Applied as is, so it can put text behind the content it would cover.
+    public var depthOffset: Double
     /// Draws the cues showing for an eye of the given size, in pixels. Called
     /// on the main actor when the frame changes and when the eye size does.
     public var render: @MainActor (_ eyeSize: CGSize) -> [RAVEStereoSubtitle]
@@ -74,15 +79,16 @@ public struct RAVEStereoSubtitleFrame: Equatable {
     /// BT.2408's reference white for graphics in an HDR programme.
     public static let defaultHDRWhiteNits: Double = 203
 
-    public init(version: Int, hdrWhiteNits: Double = defaultHDRWhiteNits,
+    public init(version: Int, hdrWhiteNits: Double = defaultHDRWhiteNits, depthOffset: Double = 0,
                 render: @escaping @MainActor (_ eyeSize: CGSize) -> [RAVEStereoSubtitle]) {
         self.version = version
         self.hdrWhiteNits = hdrWhiteNits
+        self.depthOffset = depthOffset
         self.render = render
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.version == rhs.version && lhs.hdrWhiteNits == rhs.hdrWhiteNits
+        lhs.version == rhs.version && lhs.hdrWhiteNits == rhs.hdrWhiteNits && lhs.depthOffset == rhs.depthOffset
     }
 }
 
@@ -97,12 +103,15 @@ struct StereoSubtitleOverlay: @unchecked Sendable {
 
     let items: [Item]
     let hdrWhiteNits: Float
+    /// Per-eye shift in eye UV taken off the chosen depth (positive = farther).
+    let depthOffset: Float
     /// Bumped per overlay handed to the pump: a new one is a new cue.
     let generation: Int
 
     /// Uploads each image. Runs on the caller's thread; subtitle images are a
     /// few hundred kilobytes and change a few times a minute.
-    init?(subtitles: [RAVEStereoSubtitle], hdrWhiteNits: Double, generation: Int, device: MTLDevice) {
+    init?(subtitles: [RAVEStereoSubtitle], hdrWhiteNits: Double, depthOffset: Double,
+          generation: Int, device: MTLDevice) {
         var items: [Item] = []
         for subtitle in subtitles {
             guard let texture = Self.makeTexture(subtitle.image, device: device) else { return nil }
@@ -113,6 +122,7 @@ struct StereoSubtitleOverlay: @unchecked Sendable {
         }
         self.items = items
         self.hdrWhiteNits = Float(hdrWhiteNits)
+        self.depthOffset = Float(depthOffset)
         self.generation = generation
     }
 
@@ -311,7 +321,7 @@ final class StereoSubtitleCompositor: @unchecked Sendable {
                 var uniforms = SubtitleQuadUniforms(
                     rectOrigin: SIMD2(Float(rect.minX), Float(rect.minY)),
                     rectSize: SIMD2(Float(rect.width), Float(rect.height)),
-                    shift: eyeSign * shift, transfer: transfer, whiteNits: overlay.hdrWhiteNits
+                    shift: eyeSign * (shift - overlay.depthOffset), transfer: transfer, whiteNits: overlay.hdrWhiteNits
                 )
                 encoder.setVertexBytes(&uniforms, length: MemoryLayout<SubtitleQuadUniforms>.size, index: 0)
                 encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SubtitleQuadUniforms>.size, index: 0)

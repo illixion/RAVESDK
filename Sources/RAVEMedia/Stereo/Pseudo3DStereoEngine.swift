@@ -423,7 +423,7 @@ public final class Pseudo3DStereoEngine {
         let subtitles = knownVideoSize.map { frame.render($0) } ?? []
         subtitleGeneration += 1
         pump.setSubtitles(StereoSubtitleOverlay(
-            subtitles: subtitles, hdrWhiteNits: frame.hdrWhiteNits,
+            subtitles: subtitles, hdrWhiteNits: frame.hdrWhiteNits, depthOffset: frame.depthOffset,
             generation: subtitleGeneration, device: device
         ))
     }
