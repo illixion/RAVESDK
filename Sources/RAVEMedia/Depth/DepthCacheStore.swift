@@ -32,7 +32,11 @@ public enum DepthCacheStore {
     /// v4: temporal window gated by depth similarity to the center frame
     /// (moving silhouettes shimmered — the uncompensated ±2 average painted
     /// scrolling ghost bands the sharp v3 encode made visible).
-    public static let pipelineVersion = 4
+    /// v5: studio refinement — the display mapping is locked across each shot
+    /// through anchor fits on static pixels instead of following each frame's
+    /// own range (depth breathing), the temporal window aligns its neighbours'
+    /// units, and the warp shows cached depth through `DepthBudget.studio`.
+    public static let pipelineVersion = 5
 
     static let depthVideoFilename = "depth.mov"
     /// Two-pass (high-frame-rate) conversions write the second pass's frames
@@ -69,9 +73,10 @@ public enum DepthCacheStore {
         /// Per-frame presentation timestamps (seconds), ascending.
         public let framePTS: [Double]
         /// Per-frame affine mapping from the stored luma value v (0-1) to the
-        /// display-normalized depth the warp consumes: d = v*scale + bias. Bakes
-        /// the frame's own encode range together with the lookahead-smoothed
-        /// display range, so playback needs no further stats work.
+        /// shot-space depth the warp consumes (through `DepthBudget.studio`):
+        /// d = v*scale + bias. Bakes the frame's own encode range together with
+        /// the shot's locked scale/shift, so playback needs no further stats
+        /// work. d may leave 0…1; the budget's toe and shoulder take it.
         public let displayScale: [Float]
         public let displayBias: [Float]
         /// Per-frame median depth in display space (0-1), lookahead-smoothed.

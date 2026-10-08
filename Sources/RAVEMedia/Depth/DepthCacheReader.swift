@@ -339,7 +339,8 @@ final class DepthCacheReader: @unchecked Sendable {
         }
         return PumpFrameDepth(
             texture: decoded.texture, uvScale: uvScale, uvOffset: uvOffset,
-            valueScale: valueScale, valueBias: valueBias
+            valueScale: valueScale, valueBias: valueBias,
+            budget: .studio
         )
     }
 

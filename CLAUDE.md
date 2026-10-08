@@ -501,6 +501,60 @@ stabilizer: its temporal EMA would blend one image's depth into the next. Same
 one-caller-at-a-time rule as the video entry points; Hypnos's gallery tiles own a
 dedicated provider for it.
 
+**Depth is anchored, not normalized per frame** (`DepthRefinement.swift`,
+`DepthAnchorGPU.swift`). Apple's Core ML Depth Anything V2 normalizes each map to
+its own min…max, so a subject walking up to the camera used to push the unchanged
+room back ("depth breathing"; measured with the real model on a composited clip:
+a background patch fell from 0.59 to 0.18 in 0.4 s). Studio conversion holds the
+environment across a shot; the pipeline now does the same, realtime and cached:
+- **Anchor fit.** Pixels whose luma didn't change since the last inference, and
+  that the previous frame put farther than 0.9 in shot space in *both* frames
+  (`anchorCeiling`), are the same surfaces at the same depth. A reduced-major-axis
+  fit over them (`DepthAlignmentSums.fit`, not least squares: an OLS slope is
+  diluted by jitter in x, and chained frame to frame that bias collapses depth)
+  measures the model's renormalization. The ceiling matters: without it a near
+  subject's pixels — and pixels it has just covered whose luma happened to match
+  — pinned the frame's maximum and dragged the slope below 1.
+- **Locked scale/shift** (`DepthScaleShiftTracker`): carried through the fits and
+  relaxed toward the frame's own p2–p98 range — slowly (3 s) while the frame
+  overflows the budget (subject close: hold the room), faster (0.6 s) while it
+  underfills (subject gone), 0.5 s when nothing anchored. Cuts (`DepthCutDetector`,
+  shared with the converter, plus a mean-luma jump) and seeks reset it.
+- **Depth budget** (`DepthBudget.studio`, knees 0.08/0.7): the warp shows depth
+  through a tanh toe/shoulder S-curve instead of `saturate` (`pseudo3DDepthBudget`,
+  `VideoStereoUniforms.depthBudget`, carried per frame on `PumpFrameDepth.budget`).
+  Content past the near end plateaus just short of the glass, so convergence 1.0
+  still means nothing crosses the window. `.legacy` (0, 1) is the old clamp.
+- **Static-pixel hold** (realtime `depthAnchorApply`): the global affine can't undo
+  the model reshuffling the background non-affinely when a subject enters, so a
+  pixel whose image didn't change blends toward the new estimate at α 0.03
+  (τ ≈ 1.3 s); moving pixels keep the old motion-adaptive EMA. This is what took
+  the background's largest frame-to-frame step from 0.164 to 0.009.
+- **Edge refinement live.** Realtime now uses the joint bilateral (r8, σ4, luma
+  σ 0.06) instead of the plain gaussian, so it takes the dense warp grid like
+  cached depth (edge-snapped depth stairsteps on the moderate grid).
+
+Realtime runs two waited command buffers per inference (guide + bilateral +
+anchor reduce + range fold + histogram; then apply) — on an M-series Mac the
+whole call measured 34.7 ms vs 33.5 ms for the old stabilized one, i.e. ~1 ms of
+added work; device cost is unmeasured. `RAVEDepthRefinement.isEnabled`
+(`depthRefinementEnabled`, default on; Hypnos → Settings → Stable Depth) is read
+when a `RealtimeDepthSource` is built. The converter always refines (v5): it fits
+consecutive refined maps in stage B, aligns each temporal-window neighbour into the
+center frame's units (`slotScale/slotBias` in `depthTemporalEncode`), and its
+post-pass (`DepthShotMapping`) runs one tracker per half-rate lattice, then smooths
+the shot-space range with a centered [1, 2, 1] that also ties the lattices together.
+Measurement harness: `DepthRefinementHarnessTests` (needs `xcodebuild test` for the
+metallib, a model and a frame directory; see its header). Untuned on device: the
+knees, the hold/recover times, the static α, the anchor ceiling, and whether the
+dense grid's cost fits the live tick.
+
+**Convergence stays fixed at 1.0.** A midground (tracked-median) convergence was
+considered again and left out: clamped so the nearest content never crosses the
+window, it reduces to tracking the frame's nearest depth, which slides the whole
+scene back whenever a subject approaches — the breathing the anchor removes,
+reintroduced as a convergence pull.
+
 **What deliberately stayed in the app:** the SwiftUI view (window-chrome constants,
 gestures), the binding of transport to a per-app playback model (the engine publishes
 `RAVEPlaybackState` and knows nothing about what consumes it), and the audio *session*

@@ -87,6 +87,9 @@ private struct DepthEncodeParams {
     var weights: (Float, Float, Float, Float, Float)
     /// Depth-similarity gate for the temporal window: 1/(2σ²) in raw units.
     var motionSigmaInv: Float
+    /// Each slot's raw units → the center frame's (the anchor fits, chained).
+    var slotScale: (Float, Float, Float, Float, Float)
+    var slotBias: (Float, Float, Float, Float, Float)
 }
 
 final class DepthConverter: @unchecked Sendable {
@@ -123,9 +126,6 @@ final class DepthConverter: @unchecked Sendable {
     /// Robust per-frame range percentiles (clips depth outliers/speckle).
     fileprivate static let rangeLoPercentile: Float = 0.02
     fileprivate static let rangeHiPercentile: Float = 0.98
-    /// Display-range smoothing half-width (frames) within a segment (~1s at 30fps
-    /// each way). Wider = steadier range, slower adaptation to gradual changes.
-    fileprivate static let rangeSmoothingRadius = 30
     /// Edge-aware refinement: joint-bilateral radius/sigmas. The spatial term
     /// band-limits depth for the warp grid; the luma term pins depth edges to
     /// image edges (kills silhouette halos on crisp CG content).
@@ -153,12 +153,8 @@ final class DepthConverter: @unchecked Sendable {
     static let encodeUpsampleFactor = 2
     static let upsampleRadius: Int32 = 6
     static let upsampleSigmaSpatial: Float = 3.0
-    /// Scene-cut detection: total-variation distance between consecutive frames'
-    /// normalized depth histograms, plus raw-range jump checks. A cut both
-    /// truncates the temporal window and snaps the display range.
-    fileprivate static let cutShapeDistance: Float = 0.5
-    fileprivate static let cutRangeRatioBounds: ClosedRange<Float> = 0.6...1.667
-    fileprivate static let cutRangeLoJump: Float = 0.35
+    /// Scene cuts (`DepthCutDetector`: histogram shape, range jumps, luma
+    /// jump) truncate the temporal window and restart the scale/shift lock.
     /// Depth is smooth, low-entropy content; 4 Mbps HEVC at ~1036px (2× the
     /// model output, see encodeUpsampleFactor) is generous.
     /// (If banding ever shows on-device, bump to 10-bit x420 instead of bitrate.)
@@ -269,6 +265,7 @@ final class DepthConverter: @unchecked Sendable {
         let bilateralVPipeline: MTLComputePipelineState
         let encodePipeline: MTLComputePipelineState
         let textureCache: CVMetalTextureCache
+        let metal: RAVEMediaMetal
     }
 
     private func makeGPUContext() -> GPUContext? {
@@ -295,7 +292,8 @@ final class DepthConverter: @unchecked Sendable {
             minMaxPipeline: minMax, histogramPipeline: histogram,
             guidePipeline: guide, bilateralHPipeline: bilateralH, bilateralVPipeline: bilateralV,
             encodePipeline: encode,
-            textureCache: cache
+            textureCache: cache,
+            metal: metal
         )
     }
 
@@ -307,6 +305,12 @@ final class DepthConverter: @unchecked Sendable {
         var hi: Float
         var median: Float  // raw units
         var cutBefore: Bool
+        /// This frame's raw units → the previous same-sweep frame's (the anchor
+        /// fit over static pixels); nil when nothing anchored it.
+        var relative: DepthAffine?
+        /// Which half-rate lattice (sweep parity) produced it: the fits chain
+        /// within a lattice only.
+        var lattice: Int
     }
 
     /// One decode-infer-encode sweep over the source. A single-pass conversion
@@ -620,14 +624,25 @@ extension DepthConverter {
         /// at model res, then joint-bilaterally upsampled ×encodeUpsampleFactor.
         private var ring: [MTLTexture] = []
         private var scratch: MTLTexture?             // bilateral H target (model res)
-        private var midTex: MTLTexture?              // bilateral V target (model res)
-        private var guideTex: MTLTexture?            // luma guide, model res
+        /// Bilateral V target and luma guide at model res, ping-ponged so the
+        /// previous inferred frame's pair is still there for the anchor fit.
+        private var midTexes: [MTLTexture] = []
+        private var guideTexes: [MTLTexture] = []
+        private var mapIndex = 0
+        private var hasPrevMap = false
+        /// The previous inferred frame's background layer (anchor ceiling),
+        /// from a provisional forward lock over this sweep — the post-pass
+        /// recomputes the mapping itself, this only decides which pixels anchor.
+        private var prevBackground = DepthAnchorCeiling.none
+        private var liveTracker = DepthScaleShiftTracker()
+        private var liveTrackerSeconds: Double?
+        private let anchor: DepthAnchorGPU
+        private var cuts = DepthCutDetector()
         private var hiGuideTex: MTLTexture?          // luma guide, encode res
         private var hiScratch: MTLTexture?           // upsample H target (encode res)
         private var guideParams = DepthGuideParams(uvScale: SIMD2(1, 1), uvOffset: SIMD2(0, 0))
         private var partialsBuffer: MTLBuffer?
         private var partialsCount = 0
-        private var prevShape: [Float]?
         private var decodedWidth = 0
         private var decodedHeight = 0
         private var depthWidth = 0
@@ -656,9 +671,11 @@ extension DepthConverter {
             progress: @escaping ProgressHandler,
             isCancelled: @escaping @Sendable () -> Bool
         ) throws {
-            guard let bins = gpu.device.makeBuffer(length: 256 * MemoryLayout<UInt32>.stride, options: .storageModeShared) else {
+            guard let bins = gpu.device.makeBuffer(length: 256 * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+                  let anchor = DepthAnchorGPU(metal: gpu.metal) else {
                 throw DepthConversionError.gpuSetupFailed
             }
+            self.anchor = anchor
             self.gpu = gpu
             self.provider = provider
             self.plan = plan
@@ -746,11 +763,11 @@ extension DepthConverter {
                         ring.append(tex)
                     }
                     scratch = makeTex(width: depthWidth, height: depthHeight)
-                    midTex = makeTex(width: depthWidth, height: depthHeight)
-                    guideTex = makeTex(width: depthWidth, height: depthHeight)
+                    midTexes = (0..<2).compactMap { _ in makeTex(width: depthWidth, height: depthHeight) }
+                    guideTexes = (0..<2).compactMap { _ in makeTex(width: depthWidth, height: depthHeight) }
                     hiGuideTex = makeTex(width: hiWidth, height: hiHeight)
                     hiScratch = makeTex(width: hiWidth, height: hiHeight)
-                    guard scratch != nil, midTex != nil, guideTex != nil,
+                    guard scratch != nil, midTexes.count == 2, guideTexes.count == 2,
                           hiGuideTex != nil, hiScratch != nil else { throw DepthConversionError.gpuSetupFailed }
                     // Guide kernel maps depth UV back into video UV (inverse of
                     // the warp's letterbox transform).
@@ -773,23 +790,33 @@ extension DepthConverter {
                 var p98 = percentile(bins, total: total, q: DepthConverter.rangeHiPercentile, lo: rawLo, hi: rawHi)
                 if p98 - p02 < 1e-6 { p98 = p02 + 1 } // flat frame — keep the mapping finite
 
-                let shape: [Float] = total > 0 ? bins.map { Float($0) / Float(total) } : Array(repeating: 0, count: 256)
-                var cutBefore = false
-                if let prev = prevShape, let prevStat = stats.last {
-                    let shapeDist = 0.5 * zip(shape, prev).reduce(Float(0)) { $0 + abs($1.0 - $1.1) }
-                    let prevSpan = max(prevStat.hi - prevStat.lo, 1e-6)
-                    let ratio = (p98 - p02) / prevSpan
-                    let loJump = abs(p02 - prevStat.lo) / prevSpan
-                    cutBefore = shapeDist > DepthConverter.cutShapeDistance
-                        || !DepthConverter.cutRangeRatioBounds.contains(ratio)
-                        || loJump > DepthConverter.cutRangeLoJump
-                }
-                prevShape = shape
-
                 try refine(rawTex: rawTex, videoFrame: pixelBuffer, into: ring[frameIndex % ring.count])
                 withExtendedLifetime(keepAlive) {}
 
-                stats.append(FrameStat(pts: pts, lo: p02, hi: p98, median: p50, cutBefore: cutBefore))
+                // Anchor this frame's refined map to the previous inferred one
+                // over the pixels whose image didn't change.
+                let anchorStats = try anchorAgainstPrevious()
+                let cutBefore = frameIndex > 0 && cuts.isCut(
+                    shape: DepthCutDetector.shape(of: bins), lo: p02, hi: p98,
+                    lumaJump: anchorStats?.meanLumaDelta
+                )
+                if frameIndex == 0 { _ = cuts.isCut(shape: DepthCutDetector.shape(of: bins), lo: p02, hi: p98) }
+                let relative = cutBefore ? nil : anchorStats?.sums.fit(
+                    pixelCount: depthWidth * depthHeight, frameSpan: p98 - p02
+                )
+                let liveMapping = liveTracker.update(
+                    lo: p02, hi: p98, relative: relative, cut: cutBefore || frameIndex == 0,
+                    dt: liveTrackerSeconds.map { max(pts.seconds - $0, 0) } ?? 0
+                )
+                liveTrackerSeconds = pts.seconds
+                prevBackground = DepthAnchorCeiling(mapping: liveMapping)
+                hasPrevMap = true
+                mapIndex = 1 - mapIndex
+
+                stats.append(FrameStat(
+                    pts: pts, lo: p02, hi: p98, median: p50, cutBefore: cutBefore,
+                    relative: relative, lattice: sweep.parity
+                ))
             } else {
                 // Tolerate isolated inference hiccups by repeating the previous
                 // frame's depth; fail only if the first frame does.
@@ -803,7 +830,10 @@ extension DepthConverter {
                 cmd.commit()
                 cmd.waitUntilCompleted()
                 let repeated = stats[frameIndex - 1]
-                stats.append(FrameStat(pts: pts, lo: repeated.lo, hi: repeated.hi, median: repeated.median, cutBefore: false))
+                stats.append(FrameStat(
+                    pts: pts, lo: repeated.lo, hi: repeated.hi, median: repeated.median, cutBefore: false,
+                    relative: .identity, lattice: sweep.parity
+                ))
             }
 
             // Emit every frame whose full ±2 window is now available.
@@ -931,6 +961,30 @@ extension DepthConverter {
             return (lo, hi)
         }
 
+        /// Anchor sums of the refined map just written (`midTexes[mapIndex]`)
+        /// against the previous inferred frame's, nil-free stats on the first.
+        /// Returns nil only before there is a previous frame.
+        private func anchorAgainstPrevious() throws -> DepthAnchorStats? {
+            guard hasPrevMap else { return nil }
+            let prev = 1 - mapIndex
+            guard let cmd = gpu.commandQueue.makeCommandBuffer(),
+                  let enc = cmd.makeComputeCommandEncoder() else {
+                throw DepthConversionError.gpuSetupFailed
+            }
+            guard anchor.encodeReduce(
+                enc, depth: midTexes[mapIndex], depthPrev: midTexes[prev],
+                guide: guideTexes[mapIndex], guidePrev: guideTexes[prev],
+                background: prevBackground
+            ) else {
+                enc.endEncoding()
+                throw DepthConversionError.gpuSetupFailed
+            }
+            enc.endEncoding()
+            cmd.commit()
+            cmd.waitUntilCompleted()
+            return anchor.readStats(width: depthWidth, height: depthHeight, hadPrev: true)
+        }
+
         /// 256-bin histogram over [lo, hi]; returns raw bin counts.
         private func histogram(of rawTex: MTLTexture, lo: Float, hi: Float) throws -> [UInt32] {
             memset(binsBuffer.contents(), 0, 256 * MemoryLayout<UInt32>.stride)
@@ -967,7 +1021,7 @@ extension DepthConverter {
         /// (No temporal EMA here; the temporal window is applied at encode time
         /// with lookahead.)
         private func refine(rawTex: MTLTexture, videoFrame: CVPixelBuffer, into dest: MTLTexture) throws {
-            guard let scratch, let midTex, let guideTex, let hiGuideTex, let hiScratch,
+            guard let scratch, midTexes.count == 2, guideTexes.count == 2, let hiGuideTex, let hiScratch,
                   let cmd = gpu.commandQueue.makeCommandBuffer(),
                   let enc = cmd.makeComputeCommandEncoder() else {
                 throw DepthConversionError.gpuSetupFailed
@@ -992,6 +1046,8 @@ extension DepthConverter {
             )
             let hiWidth = dest.width
             let hiHeight = dest.height
+            let midTex = midTexes[mapIndex]
+            let guideTex = guideTexes[mapIndex]
 
             // Luma guides at both resolutions (same kernel; UV-space params).
             enc.setComputePipelineState(gpu.guidePipeline)
@@ -1067,6 +1123,10 @@ extension DepthConverter {
             let weightSum = weights.reduce(0, +)
             guard weightSum > 0 else { throw DepthConversionError.encodingFailed("Empty temporal window") }
             let w = weights.map { $0 / weightSum }
+            let slots = (0..<(2 * DepthConverter.temporalRadius + 1)).map { i -> DepthAffine in
+                let j = c - DepthConverter.temporalRadius + i
+                return weights[i] > 0 ? relativeMapping(from: j, to: c) : .identity
+            }
 
             var pixelBufferOut: CVPixelBuffer?
             guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixelBufferOut) == kCVReturnSuccess,
@@ -1097,7 +1157,9 @@ extension DepthConverter {
                 rangeLo: stat.lo,
                 rangeInvSpan: 1 / span,
                 weights: (w[0], w[1], w[2], w[3], w[4]),
-                motionSigmaInv: 1 / (2 * sigma * sigma)
+                motionSigmaInv: 1 / (2 * sigma * sigma),
+                slotScale: (slots[0].a, slots[1].a, slots[2].a, slots[3].a, slots[4].a),
+                slotBias: (slots[0].b, slots[1].b, slots[2].b, slots[3].b, slots[4].b)
             )
             guard let cmd = gpu.commandQueue.makeCommandBuffer(),
                   let enc = cmd.makeComputeCommandEncoder() else {
@@ -1125,6 +1187,27 @@ extension DepthConverter {
             guard adaptor.append(pixelBuffer, withPresentationTime: stat.pts) else {
                 throw DepthConversionError.encodingFailed(writer?.error?.localizedDescription ?? "append failed")
             }
+        }
+
+        /// Frame `j`'s raw units → frame `c`'s, through the chain of anchor fits
+        /// between them (this sweep's frames). A missing fit counts as identity
+        /// — the depth-similarity gate still guards that neighbour — and an
+        /// implausible product falls back to identity outright.
+        private func relativeMapping(from j: Int, to c: Int) -> DepthAffine {
+            guard j != c else { return .identity }
+            var m = DepthAffine.identity
+            if j > c {
+                // relative[k] maps k → k-1: apply j's first, then down to c+1.
+                for k in stride(from: j, through: c + 1, by: -1) {
+                    m = (stats[k].relative ?? .identity).after(m)
+                }
+            } else {
+                // k-1 → k is relative[k] inverted: apply j+1's inverse first.
+                for k in (j + 1)...c {
+                    m = (stats[k].relative?.inverse ?? .identity).after(m)
+                }
+            }
+            return (0.5...2).contains(m.a) && m.b.isFinite ? m : .identity
         }
 
         // MARK: Writer
@@ -1214,55 +1297,31 @@ extension DepthConverter {
         }
 
         /// Turn per-frame raw stats (merged across sweeps) into the final
-        /// display mapping: within each cut-delimited segment, the display
-        /// range is a centered moving average of the per-frame robust ranges
-        /// (lookahead smoothing — no pumping, no lag); across cuts it snaps.
+        /// display mapping, studio style: the scale/shift from each frame's raw
+        /// units to shot space is locked across the shot through the anchor fits
+        /// (`DepthScaleShiftTracker`, one per lattice, reset at cuts), then the
+        /// frame's robust range in shot space is smoothed with a small centered
+        /// window within the segment and the frame's affine re-derived from it.
         /// Each frame's stored-luma → display-depth affine (scale/bias) bakes
-        /// both its encode range and the display range.
+        /// both its encode range and that mapping; the warp shows the result
+        /// through `DepthBudget.studio`, so depth past the near end plateaus.
         private func buildMeta(completed: Bool) -> DepthCacheStore.Meta {
             let frames = mergedStats()
+            let mapping = DepthShotMapping.map(frames.map {
+                DepthShotMapping.Frame(seconds: $0.pts.seconds, lo: $0.lo, hi: $0.hi, cutBefore: $0.cutBefore,
+                          relative: $0.relative, lattice: $0.lattice)
+            })
             let n = frames.count
-            var segmentStarts = [0]
-            for i in 1..<max(n, 1) where frames[i].cutBefore {
-                segmentStarts.append(i)
-            }
-            segmentStarts.append(n)
-
             var displayScale = [Float](repeating: 1, count: n)
             var displayBias = [Float](repeating: 0, count: n)
             var displayMedian = [Float](repeating: 0.5, count: n)
-
-            for s in 0..<(segmentStarts.count - 1) {
-                let start = segmentStarts[s]
-                let end = segmentStarts[s + 1]
-                guard start < end else { continue }
-
-                var rawMedianNorm = [Float](repeating: 0.5, count: end - start)
-                for i in start..<end {
-                    let w0 = max(start, i - DepthConverter.rangeSmoothingRadius)
-                    let w1 = min(end - 1, i + DepthConverter.rangeSmoothingRadius)
-                    var sumLo: Float = 0
-                    var sumHi: Float = 0
-                    for j in w0...w1 {
-                        sumLo += frames[j].lo
-                        sumHi += frames[j].hi
-                    }
-                    let count = Float(w1 - w0 + 1)
-                    let dispLo = sumLo / count
-                    let span = max(sumHi / count - dispLo, 1e-5)
-                    displayScale[i] = (frames[i].hi - frames[i].lo) / span
-                    displayBias[i] = (frames[i].lo - dispLo) / span
-                    rawMedianNorm[i - start] = min(max((frames[i].median - dispLo) / span, 0), 1)
-                }
-                // Smooth the median over the same window so auto-convergence drifts
-                // rather than tracking per-frame jitter.
-                for i in start..<end {
-                    let w0 = max(start, i - DepthConverter.rangeSmoothingRadius)
-                    let w1 = min(end - 1, i + DepthConverter.rangeSmoothingRadius)
-                    var sum: Float = 0
-                    for j in w0...w1 { sum += rawMedianNorm[j - start] }
-                    displayMedian[i] = sum / Float(w1 - w0 + 1)
-                }
+            for i in 0..<n {
+                let f = frames[i]
+                let m = mapping[i]
+                // stored v = (raw - lo) / span  →  display = m(v·span + lo)
+                displayScale[i] = m.a * (f.hi - f.lo)
+                displayBias[i] = m(f.lo)
+                displayMedian[i] = DepthBudget.studio.apply(m(f.median))
             }
 
             // The encoded file's dims (model output × upsample, even-rounded) —

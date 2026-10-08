@@ -63,6 +63,7 @@ struct VideoStereoUniforms {
     var depthUVOffset: SIMD2<Float>
     var depthValueScale: Float
     var depthValueBias: Float
+    var depthBudget: SIMD2<Float>
 }
 
 // MARK: - StereoPump (off-main: decode -> warp -> enqueue)
@@ -441,7 +442,7 @@ public final class StereoPump: @unchecked Sendable {
             encodeEye(into: leftTex, source: srcTexture, depth: frameDepth, eyeSign: 1.0, config: cfg, commandBuffer: cmdBuf)
             encodeEye(into: rightTex, source: srcTexture, depth: frameDepth, eyeSign: -1.0, config: cfg, commandBuffer: cmdBuf)
         }
-        // Depth saturates to [0, 1], so no warped pixel shifts further than
+        // The depth budget keeps depth inside [0, 1], so no warped pixel shifts further than
         // (1 - convergence) × strength; the margin in front of that keeps the
         // strength the ramp is heading for, so text doesn't sink mid-ramp.
         subtitles?.encode(
@@ -559,7 +560,8 @@ public final class StereoPump: @unchecked Sendable {
             depthUVScale: depth?.uvScale ?? SIMD2(1, 1),
             depthUVOffset: depth?.uvOffset ?? SIMD2(0, 0),
             depthValueScale: depth?.valueScale ?? 1,
-            depthValueBias: depth?.valueBias ?? 0
+            depthValueBias: depth?.valueBias ?? 0,
+            depthBudget: (depth?.budget ?? .legacy).knees
         )
 
         // With a real depth map: occlusion-correct depth-displaced mesh. Without

@@ -89,7 +89,24 @@ struct VideoStereoUniforms {
     // display range into this per-frame affine.
     float depthValueScale;
     float depthValueBias;
+    // Depth budget knees (see DepthBudget): identity between them, tanh toe
+    // and shoulder outside. (0, 1) is the old clamp.
+    float2 depthBudget;
 };
+
+// The depth budget: shot-space depth (unbounded once anchored) → 0…1, near
+// content plateauing short of 1 instead of clipping. Mirrors DepthBudget.apply.
+static inline float pseudo3DDepthBudget(float y, float2 knees) {
+    if (y > knees.y) {
+        const float w = 1.0 - knees.y;
+        return w > 0.0 ? knees.y + w * precise::tanh((y - knees.y) / w) : min(y, 1.0);
+    }
+    if (y < knees.x) {
+        const float w = knees.x;
+        return w > 0.0 ? knees.x - w * precise::tanh((knees.x - y) / w) : max(y, 0.0);
+    }
+    return y;
+}
 
 // Stereo-window guard: feather disparity to zero over the outer few percent of
 // frame width. Without it, near (popped-out) content cut by the frame edge is a
@@ -132,8 +149,8 @@ fragment float4 videoPseudo3DEyeFragmentShader(
     // unreachable — a real depth map always takes the mesh-warp path — but is
     // kept consistent with videoStereoMeshVertex's letterbox remap.)
     float depth = u.useDepth > 0.5
-        ? saturate(depthTex.sample(texSampler, uv * u.depthUVScale + u.depthUVOffset).r
-                   * u.depthValueScale + u.depthValueBias)
+        ? pseudo3DDepthBudget(depthTex.sample(texSampler, uv * u.depthUVScale + u.depthUVOffset).r
+                              * u.depthValueScale + u.depthValueBias, u.depthBudget)
         : pseudo3DHeuristicDepth(tex, texSampler, uv);
     // Near objects (depth high) must get CROSSED disparity to read as "in front":
     // the left eye sees them shifted right, the right eye left. That means
@@ -229,9 +246,9 @@ vertex MeshVertexOut videoStereoMeshVertex(
     // depth was inferred on the unmirrored frame, so the letterbox remap applies
     // after the flip.
     float2 duv = uv * u.depthUVScale + u.depthUVOffset;
-    // near≈1 after the per-frame value mapping (identity for realtime depth)
-    float depth = saturate(depthTex.sample(depthSampler, duv, level(0)).r
-                           * u.depthValueScale + u.depthValueBias);
+    // near≈1 after the per-frame value mapping and the depth budget
+    float depth = pseudo3DDepthBudget(depthTex.sample(depthSampler, duv, level(0)).r
+                                      * u.depthValueScale + u.depthValueBias, u.depthBudget);
     float disparity = (depth - u.convergence) * u.depthStrength
                       * pseudo3DEdgeFeather(grid.x);
 
@@ -498,6 +515,8 @@ struct DepthEncodeParams {
     float rangeInvSpan;   // 1 / (hi - lo)
     float weights[5];     // temporal window weights, normalized; 0 for unused slots
     float motionSigmaInv; // depth-similarity gate: 1/(2σ²), raw units; 0 = ungated
+    float slotScale[5];   // each slot's raw units → the center frame's (anchoring)
+    float slotBias[5];
 };
 
 /// Weighted temporal average of up to 5 refined raw-depth maps (the center
@@ -529,7 +548,10 @@ kernel void depthTemporalEncode(
     float acc = 0.0;
     float wsum = 0.0;
     for (uint i = 0; i < 5; ++i) {
-        const float d = maps[i].sample(s, uv).r;
+        // Neighbours are brought into the center frame's units first: the
+        // model renormalizes per frame, so raw values of adjacent frames are
+        // not comparable when a near subject enters or leaves.
+        const float d = maps[i].sample(s, uv).r * p.slotScale[i] + p.slotBias[i];
         const float delta = d - center;
         const float w = p.weights[i] * exp(-delta * delta * p.motionSigmaInv);
         acc += w * d;
@@ -537,6 +559,177 @@ kernel void depthTemporalEncode(
     }
     const float v = wsum > 1e-6 ? (acc / wsum) : center;
     outLuma.write(float4(saturate((v - p.rangeLo) * p.rangeInvSpan), 0.0, 0.0, 1.0), gid);
+}
+
+// MARK: - Depth Anchoring (scale/shift locking, see DepthRefinement.swift)
+//
+// Monocular depth has an arbitrary scale and shift per frame, so a near
+// subject entering renormalizes the map and pushes the unchanged room back.
+// Pixels whose image did not change since the last frame anchor a fit of this
+// frame's depth units onto the previous frame's; the CPU chains those fits into
+// a temporally locked mapping and the apply kernel writes the result. Both
+// kernels run at depth resolution.
+
+struct DepthAnchorReduceParams {
+    float staticLuma;  // luma change below which a pixel anchors the fit
+    uint  hasPrev;     // 1 when depthPrev / guidePrev hold the previous frame
+    // Background layer: only pixels farther than this in both frames (the
+    // previous frame's units, soft over `ceilingSoftness`) anchor the fit, so
+    // a near subject — or a pixel it just covered, whose luma happened to
+    // match — can't pull it.
+    float ceiling;
+    float ceilingSoftness;
+};
+
+/// Per 16×16 threadgroup, `depthAnchorPartialStride` floats: the anchor's
+/// weighted sums w, wx, wy, wxx, wyy, wxy (x = this frame, y = previous), the
+/// summed absolute luma change, and this frame's min and max depth. Must be
+/// dispatched with threadsPerThreadgroup = 16×16.
+constant uint depthAnchorPartialStride = 9;
+
+kernel void depthAnchorReduce(
+    texture2d<float, access::read> depth     [[texture(0)]],
+    texture2d<float, access::read> depthPrev [[texture(1)]],
+    texture2d<float, access::read> guide     [[texture(2)]],
+    texture2d<float, access::read> guidePrev [[texture(3)]],
+    device float *partials                   [[buffer(0)]],
+    constant DepthAnchorReduceParams &p      [[buffer(1)]],
+    uint2 gid  [[thread_position_in_grid]],
+    uint  tix  [[thread_index_in_threadgroup]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint2 tgPerGrid [[threadgroups_per_grid]]
+) {
+    threadgroup float s[7 * 256];
+    threadgroup float sMin[256];
+    threadgroup float sMax[256];
+    float v[7] = { 0, 0, 0, 0, 0, 0, 0 };
+    float lo = INFINITY;
+    float hi = -INFINITY;
+    if (gid.x < depth.get_width() && gid.y < depth.get_height()) {
+        const float x = depth.read(gid).r;
+        if (isfinite(x)) {
+            lo = x;
+            hi = x;
+            if (p.hasPrev != 0) {
+                const float y = depthPrev.read(gid).r;
+                const float dl = abs(guide.read(gid).r - guidePrev.read(gid).r);
+                // Soft gate: full weight when unchanged, none at the threshold.
+                const float w = isfinite(y)
+                    ? saturate(1.0 - dl / p.staticLuma)
+                      * saturate((p.ceiling - max(x, y)) / p.ceilingSoftness)
+                    : 0.0;
+                v[0] = w;
+                v[1] = w * x;
+                v[2] = w * y;
+                v[3] = w * x * x;
+                v[4] = w * y * y;
+                v[5] = w * x * y;
+                v[6] = dl;
+            }
+        }
+    }
+    for (uint k = 0; k < 7; ++k) { s[k * 256 + tix] = v[k]; }
+    sMin[tix] = lo;
+    sMax[tix] = hi;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (tix < stride) {
+            for (uint k = 0; k < 7; ++k) { s[k * 256 + tix] += s[k * 256 + tix + stride]; }
+            sMin[tix] = min(sMin[tix], sMin[tix + stride]);
+            sMax[tix] = max(sMax[tix], sMax[tix + stride]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tix == 0) {
+        device float *out = partials + (tgid.y * tgPerGrid.x + tgid.x) * depthAnchorPartialStride;
+        for (uint k = 0; k < 7; ++k) { out[k] = s[k * 256]; }
+        out[7] = sMin[0];
+        out[8] = sMax[0];
+    }
+}
+
+/// Folds the reduce's per-group min/max into `range` (one float2) so the
+/// histogram can follow in the same command buffer. One threadgroup of 256.
+kernel void depthAnchorFoldRange(
+    device const float *partials [[buffer(0)]],
+    constant uint &count         [[buffer(1)]],
+    device float2 *range         [[buffer(2)]],
+    uint tix [[thread_index_in_threadgroup]]
+) {
+    threadgroup float sMin[256];
+    threadgroup float sMax[256];
+    float lo = INFINITY;
+    float hi = -INFINITY;
+    for (uint i = tix; i < count; i += 256) {
+        lo = min(lo, partials[i * depthAnchorPartialStride + 7]);
+        hi = max(hi, partials[i * depthAnchorPartialStride + 8]);
+    }
+    sMin[tix] = lo;
+    sMax[tix] = hi;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (tix < stride) {
+            sMin[tix] = min(sMin[tix], sMin[tix + stride]);
+            sMax[tix] = max(sMax[tix], sMax[tix + stride]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tix == 0) {
+        range[0] = isfinite(sMin[0]) && isfinite(sMax[0]) ? float2(sMin[0], sMax[0]) : float2(0.0, 1.0);
+    }
+}
+
+/// `depthHistogram256` with its range read from the fold's buffer.
+kernel void depthHistogram256Ranged(
+    texture2d<float, access::read> src [[texture(0)]],
+    device atomic_uint *bins           [[buffer(0)]],
+    device const float2 *range         [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= src.get_width() || gid.y >= src.get_height()) { return; }
+    const float d = src.read(gid).r;
+    if (!isfinite(d)) { return; }
+    const float lo = range[0].x;
+    const float invSpan = 1.0 / max(range[0].y - lo, 1e-6);
+    const uint bin = uint(clamp((d - lo) * invSpan, 0.0f, 0.999999f) * 256.0f);
+    atomic_fetch_add_explicit(&bins[bin], 1u, memory_order_relaxed);
+}
+
+struct DepthAnchorApplyParams {
+    float a;           // this frame's units → shot space
+    float b;
+    float baseAlpha;   // temporal blend, as DepthStabilizeParams
+    float motionGain;
+    uint  hasPrev;
+    float staticLuma;  // luma change below which a pixel counts as static
+    float staticAlpha; // temporal blend for a static pixel
+};
+
+/// Shot-space depth with a temporal EMA. Where the image moved, the
+/// motion-adaptive EMA as before (now on a scale that no longer jumps when the
+/// model renormalizes, so a rescale no longer reads as "everything moved").
+/// Where it didn't, the surface is the same surface at the same depth, so the
+/// pixel's depth is held: only a slow blend toward the new estimate, whatever
+/// the model now says. Monocular depth reshuffles the background non-affinely
+/// when a subject enters; the global anchor can't undo that, this holds it.
+kernel void depthAnchorApply(
+    texture2d<float, access::read>  depth     [[texture(0)]],
+    texture2d<float, access::read>  prev      [[texture(1)]],
+    texture2d<float, access::write> next      [[texture(2)]],
+    texture2d<float, access::read>  guide     [[texture(3)]],
+    texture2d<float, access::read>  guidePrev [[texture(4)]],
+    constant DepthAnchorApplyParams &p        [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= next.get_width() || gid.y >= next.get_height()) { return; }
+    float y = depth.read(gid).r * p.a + p.b;
+    if (p.hasPrev != 0) {
+        const float old = prev.read(gid).r;
+        const float moving = clamp(p.baseAlpha + p.motionGain * abs(y - old), p.baseAlpha, 1.0);
+        const float still = saturate(1.0 - abs(guide.read(gid).r - guidePrev.read(gid).r) / p.staticLuma);
+        y = mix(old, y, mix(moving, p.staticAlpha, still));
+    }
+    next.write(float4(y, 0.0, 0.0, 1.0), gid);
 }
 
 // MARK: - Subtitles in the Stereo Picture

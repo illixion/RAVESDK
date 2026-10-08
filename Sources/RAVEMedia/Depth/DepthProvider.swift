@@ -47,13 +47,21 @@ public struct PumpFrameDepth {
     /// cached depth bakes its per-frame encode + display ranges here).
     public let valueScale: Float
     public let valueBias: Float
+    /// How the mapped value becomes the warp's 0…1: `.legacy` clamps, a
+    /// refined source (anchored, unbounded shot-space depth) uses the studio
+    /// S-curve so near content plateaus instead of clipping.
+    public let budget: DepthBudget
 
-    public init(texture: MTLTexture, uvScale: SIMD2<Float>, uvOffset: SIMD2<Float>, valueScale: Float, valueBias: Float) {
+    public init(
+        texture: MTLTexture, uvScale: SIMD2<Float>, uvOffset: SIMD2<Float>,
+        valueScale: Float, valueBias: Float, budget: DepthBudget = .legacy
+    ) {
         self.texture = texture
         self.uvScale = uvScale
         self.uvOffset = uvOffset
         self.valueScale = valueScale
         self.valueBias = valueBias
+        self.budget = budget
     }
 }
 
@@ -114,16 +122,24 @@ public final class RealtimeDepthSource: PumpDepthSource, @unchecked Sendable {
     /// warp has fully completed before the next tick.
     private var held: PumpFrameDepth?
     private var heldItemSeconds = -Double.infinity
+    /// Studio refinement (`RAVEDepthRefinement`), decided at creation: anchored
+    /// shot-space depth, the depth budget, edge-aware filtering.
+    private let refined: Bool
 
     public init?(device: MTLDevice) {
         guard let provider = CoreMLDepthProvider(device: device, role: .realtime) else { return nil }
         self.provider = provider
+        self.refined = RAVEDepthRefinement.isEnabled && provider.supportsRefinement
     }
 
     /// An inference hiccup renders flat (+ ramp back) rather than swapping in
     /// the heuristic warp for one frame — a visible depth pop.
     public let flattensWhenUnavailable = true
-    public let prefersDenseWarpGrid = false
+    /// Refined depth is edge-snapped by the joint bilateral, the same reason
+    /// cached depth takes the dense grid: on the moderate grid its sharp
+    /// silhouettes would stairstep. Unrefined depth keeps the moderate grid
+    /// (its residual detail rendered as per-vertex wobble on the dense one).
+    public var prefersDenseWarpGrid: Bool { refined }
 
     public func frameDepth(itemTime: CMTime, frame: CVPixelBuffer) -> PumpFrameDepth? {
         let t = itemTime.seconds
@@ -132,7 +148,10 @@ public final class RealtimeDepthSource: PumpDepthSource, @unchecked Sendable {
         if let held, t.isFinite, t >= heldItemSeconds, t - heldItemSeconds < Self.reinferInterval {
             return held
         }
-        guard let texture = provider.depth(for: frame) else {
+        let inferred = refined
+            ? provider.refinedDepth(for: frame, frameSeconds: t)
+            : provider.depth(for: frame)
+        guard let texture = inferred else {
             // Inference hiccup: don't hold through it — the next frame should
             // try again rather than extend a map of unknown age.
             held = nil
@@ -145,7 +164,7 @@ public final class RealtimeDepthSource: PumpDepthSource, @unchecked Sendable {
         )
         let depth = PumpFrameDepth(
             texture: texture, uvScale: uv.scale, uvOffset: uv.offset,
-            valueScale: 1, valueBias: 0
+            valueScale: 1, valueBias: 0, budget: refined ? .studio : .legacy
         )
         held = depth
         heldItemSeconds = t.isFinite ? t : -.infinity
@@ -206,6 +225,21 @@ public final class CoreMLDepthProvider: DepthProvider, @unchecked Sendable {
     private var hasPrevDepth = false
 
     private let signposter = RAVEMediaLog.signposter
+
+    /// Studio refinement chain (anchoring, locked scale/shift, edge-aware
+    /// filtering), built on first use. See `RealtimeDepthRefiner`.
+    private lazy var refiner: RealtimeDepthRefiner? = textureCache.flatMap {
+        RealtimeDepthRefiner(device: device, commandQueue: commandQueue, textureCache: $0)
+    }
+
+    /// Whether `refinedDepth` can run (its kernels loaded).
+    public var supportsRefinement: Bool { refiner != nil }
+
+    /// The last refined frame's mapping, whether it was anchored, whether it
+    /// was a cut (tests and the measurement harness).
+    var refinementDiagnostics: (mapping: DepthAffine, anchored: Bool, cut: Bool)? {
+        refiner.map { ($0.lastMapping, $0.lastAnchored, $0.lastCut) }
+    }
 
     public convenience init?(device: MTLDevice, role: DepthModelRole = .realtime) {
         guard let modelURL = Self.findModelURL(role: role) else { return nil }
@@ -430,6 +464,36 @@ public final class CoreMLDepthProvider: DepthProvider, @unchecked Sendable {
         // transient view would dangle once Vision recycles its buffer.
         if stabilized == nil, !keepAlive.isEmpty { return nil }
         return stabilized ?? raw
+    }
+
+    /// Refined realtime depth for one frame: unbounded shot-space depth (near
+    /// ≈ 1 on the frame's own range while the lock holds), to be shown through
+    /// `DepthBudget.studio`. `frameSeconds` is the frame's media time; a jump
+    /// back or of more than half a second restarts the lock. Nil on failure
+    /// (the pump renders that frame flat). Same threading rule as `depth(for:)`.
+    public func refinedDepth(for pixelBuffer: CVPixelBuffer, frameSeconds: Double) -> MTLTexture? {
+        guard let refiner else { return depth(for: pixelBuffer) }
+        let inferState = signposter.beginInterval("depth-inference")
+        let raw: MTLTexture?
+        var keepAlive: [Any] = []
+        switch performInference(on: pixelBuffer) {
+        case let obs as VNPixelBufferObservation:
+            if let transient = transientTexture(from: obs.pixelBuffer) {
+                raw = transient.texture
+                keepAlive = transient.keepAlive
+            } else {
+                raw = nil
+            }
+        case let obs as VNCoreMLFeatureValueObservation:
+            raw = obs.featureValue.multiArrayValue.flatMap { makeTexture(from: $0) }
+        default:
+            raw = nil
+        }
+        signposter.endInterval("depth-inference", inferState)
+        guard let raw else { return nil }
+        let refined = refiner.refine(raw: raw, frame: pixelBuffer, frameSeconds: frameSeconds)
+        withExtendedLifetime(keepAlive) {}
+        return refined
     }
 
     // MARK: - Depth stabilization
