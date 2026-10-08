@@ -8,6 +8,9 @@
    GET /AtmosObjects/{itemId}/Segments/{n}/Events   positions and gains for audio segment n
    GET /AtmosObjects/{itemId}/Segments/{n}/{g}      FLAC channel group g of audio segment n
 
+ A `FilmOfflineStore` stands in for the server when a film was downloaded to
+ play offline: every request above is answered from the copy on the device.
+
  See JellyfinPlugin/README.md. Segments carry the film's own timestamps, so
  segment n's first frame presents at `segmentStarts[n]` in the same time base
  as the audio scene's `startSeconds`.
@@ -88,6 +91,14 @@ public struct FilmAudioTrack: Decodable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// Answers the plugin's requests from a copy of a film kept on the device.
+public protocol FilmOfflineStore: Sendable {
+    /// The body `GET AtmosObjects/{itemID}/{path}?{query}` would return.
+    /// Throws `FilmServerError.http` with the status the server would have
+    /// sent for something the copy doesn't hold (404, or 422 for no objects).
+    func data(path: String, query: [URLQueryItem]) async throws -> Data
+}
+
 public struct FilmServerClient: FilmAudioSource {
     public let baseURL: URL
     public let token: String
@@ -95,12 +106,24 @@ public struct FilmServerClient: FilmAudioSource {
     /// The audio track every audio request names; nil leaves the choice to
     /// the plugin (its default for `languages`).
     public var audioStream: Int?
+    /// Set for a downloaded film: requests never reach the network.
+    public let offline: (any FilmOfflineStore)?
 
     public init(baseURL: URL, token: String, itemID: String, audioStream: Int? = nil) {
         self.baseURL = baseURL
         self.token = token
         self.itemID = itemID
         self.audioStream = audioStream
+        self.offline = nil
+    }
+
+    /// A client for a film downloaded to the device.
+    public init(itemID: String, offline: any FilmOfflineStore, audioStream: Int? = nil) {
+        self.baseURL = URL(fileURLWithPath: "/")
+        self.token = ""
+        self.itemID = itemID
+        self.audioStream = audioStream
+        self.offline = offline
     }
 
     public func with(audioStream: Int?) -> any FilmAudioSource {
@@ -211,6 +234,9 @@ public struct FilmServerClient: FilmAudioSource {
     }
 
     private func get(_ path: String, query: [URLQueryItem] = []) async throws -> Data {
+        if let offline {
+            return try await offline.data(path: path, query: query)
+        }
         var url = baseURL.appending(path: "AtmosObjects/\(itemID)/\(path)")
         if !query.isEmpty { url.append(queryItems: query) }
         var request = URLRequest(url: url)
