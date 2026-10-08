@@ -88,6 +88,8 @@ is easy to skip.
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
 | `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager, shared player controls, subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
+| `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality selection and stall bookkeeping. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
+| `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login/catalog/playback/watch reports, subtitles and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |

@@ -19,6 +19,8 @@ let package = Package(
     products: [
         .library(name: "RAVENet", targets: ["RAVENet"]),
         .library(name: "RAVEUI", targets: ["RAVEUI"]),
+        .library(name: "RAVEMediaCore", targets: ["RAVEMediaCore"]),
+        .library(name: "RAVEQuestCore", type: .dynamic, targets: ["RAVEQuestCore"]),
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
@@ -39,7 +41,9 @@ let package = Package(
     targets: [
         .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
         .testTarget(name: "RAVENetTests", dependencies: ["RAVENet", .product(name: "DebugTrace", package: "DebugTrace")]),
-        .target(name: "RAVEUI"),
+        .target(name: "RAVEUI", dependencies: ["RAVEMediaCore"]),
+        .target(name: "RAVEMediaCore"),
+        .target(name: "RAVEQuestCore", dependencies: ["RAVEMediaCore"]),
         // Unit tests, despite the name: SwiftPM has no UI-testing product type
         // and XCUITest needs a host app, so driving these views for real
         // happens in a host app's UI test target (Spatial Stash's, which links
