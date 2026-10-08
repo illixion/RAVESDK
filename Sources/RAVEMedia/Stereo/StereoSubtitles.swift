@@ -51,11 +51,16 @@ public struct RAVEStereoSubtitle: @unchecked Sendable {
     /// `image.width × image.height` pixels of an eye this tall, and is scaled
     /// for any other.
     public let referenceEyeHeight: CGFloat
+    /// Where the image goes, in eye UV (origin top left), for subtitles that
+    /// carry their own position (a disc's bitmaps); nil centres it at the
+    /// `placement` edge. Overrides the size `referenceEyeHeight` implies.
+    public let frame: CGRect?
 
-    public init(image: CGImage, placement: Placement, referenceEyeHeight: CGFloat) {
+    public init(image: CGImage, placement: Placement, referenceEyeHeight: CGFloat, frame: CGRect? = nil) {
         self.image = image
         self.placement = placement
         self.referenceEyeHeight = referenceEyeHeight
+        self.frame = frame
     }
 }
 
@@ -99,6 +104,7 @@ struct StereoSubtitleOverlay: @unchecked Sendable {
         let pixelSize: CGSize
         let referenceEyeHeight: CGFloat
         let placement: RAVEStereoSubtitle.Placement
+        let frame: CGRect?
     }
 
     let items: [Item]
@@ -118,7 +124,8 @@ struct StereoSubtitleOverlay: @unchecked Sendable {
             items.append(Item(texture: texture,
                               pixelSize: CGSize(width: subtitle.image.width, height: subtitle.image.height),
                               referenceEyeHeight: subtitle.referenceEyeHeight,
-                              placement: subtitle.placement))
+                              placement: subtitle.placement,
+                              frame: subtitle.frame))
         }
         self.items = items
         self.hdrWhiteNits = Float(hdrWhiteNits)
@@ -359,9 +366,11 @@ final class StereoSubtitleCompositor: @unchecked Sendable {
         }
     }
 
-    /// Where an item sits in an eye, in eye UV (origin top left): centred,
-    /// 5 % of the height in from its edge, as on the flat players.
+    /// Where an item sits in an eye, in eye UV (origin top left): its own
+    /// frame, else centred 5 % of the height in from its edge, as on the
+    /// flat players.
     private func rect(for item: StereoSubtitleOverlay.Item, eyeSize: SIMD2<Float>) -> CGRect {
+        if let frame = item.frame { return frame }
         let scale = CGFloat(eyeSize.y) / max(item.referenceEyeHeight, 1)
         let width = item.pixelSize.width * scale / CGFloat(eyeSize.x)
         let height = item.pixelSize.height * scale / CGFloat(eyeSize.y)

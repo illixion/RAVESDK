@@ -17,6 +17,7 @@
  there, since that is how subtitles get out of the way of burned-in text.
  */
 
+import CoreGraphics
 import Foundation
 
 public struct RAVESubtitleCue: Equatable, Sendable {
@@ -27,6 +28,9 @@ public struct RAVESubtitleCue: Equatable, Sendable {
     /// Italic and bold as inline presentation intents; lines separated by "\n".
     public var text: AttributedString
     public var placement: Placement
+    /// A bitmap subtitle (a disc's PGS) instead of text: drawn where it says,
+    /// at its own size relative to the picture.
+    public var image: RAVESubtitleImage?
 
     public init(start: Double, end: Double, text: AttributedString, placement: Placement = .bottom) {
         self.start = start
@@ -35,7 +39,40 @@ public struct RAVESubtitleCue: Equatable, Sendable {
         self.placement = placement
     }
 
+    /// A bitmap cue; its placement follows which half of the picture it sits in.
+    public init(start: Double, end: Double, image: RAVESubtitleImage) {
+        self.start = start
+        self.end = end
+        text = AttributedString()
+        placement = image.frame.midY < 0.5 ? .top : .bottom
+        self.image = image
+    }
+
     public var plainText: String { String(text.characters) }
+}
+
+/// A subtitle drawn as a picture. The bitmap is made on request rather than
+/// held: a film's worth of them at screen size doesn't fit in memory, while
+/// their compressed form does.
+public struct RAVESubtitleImage: Equatable, Sendable {
+    /// Distinguishes captions, so views can cache what `makeImage` gave.
+    public let id: Int
+    /// Where the image sits in the picture, in fractions of its width and
+    /// height, origin top left.
+    public let frame: CGRect
+    private let make: @Sendable () -> CGImage?
+
+    public init(id: Int, frame: CGRect, make: @escaping @Sendable () -> CGImage?) {
+        self.id = id
+        self.frame = frame
+        self.make = make
+    }
+
+    /// The bitmap, premultiplied, sized for the picture the frame is relative
+    /// to. Safe off the main thread; costs a decode each call.
+    public func makeImage() -> CGImage? { make() }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id && lhs.frame == rhs.frame }
 }
 
 public enum RAVESubtitleError: Error, LocalizedError {
@@ -287,13 +324,22 @@ public struct RAVESubtitleOverlay: View {
             let picture = Self.fittedRect(in: geometry.size, aspect: pictureAspect)
             let fontSize = Self.fontSize(forPictureHeight: picture.height)
             RAVESubtitleCues(track: track, time: time) { showing in
-                VStack(spacing: 0) {
-                    block(showing.filter { $0.placement == .top }, fontSize: fontSize)
-                    Spacer(minLength: 0)
-                    block(showing.filter { $0.placement == .bottom }, fontSize: fontSize)
+                let text = showing.filter { $0.image == nil }
+                ZStack(alignment: .topLeading) {
+                    VStack(spacing: 0) {
+                        block(text.filter { $0.placement == .top }, fontSize: fontSize)
+                        Spacer(minLength: 0)
+                        block(text.filter { $0.placement == .bottom }, fontSize: fontSize)
+                    }
+                    .padding(.vertical, picture.height * 0.05)
+                    .frame(width: picture.width, height: picture.height)
+                    ForEach(showing.compactMap(\.image), id: \.id) { image in
+                        RAVESubtitleBitmap(image: image)
+                            .frame(width: image.frame.width * picture.width, height: image.frame.height * picture.height)
+                            .offset(x: image.frame.minX * picture.width, y: image.frame.minY * picture.height)
+                    }
                 }
-                .padding(.vertical, picture.height * 0.05)
-                .frame(width: picture.width, height: picture.height)
+                .frame(width: picture.width, height: picture.height, alignment: .topLeading)
                 .position(x: picture.midX, y: picture.midY)
             }
         }
@@ -324,6 +370,33 @@ public struct RAVESubtitleOverlay: View {
     }
 }
 
+/// A bitmap subtitle, decoded off the main thread when it first shows.
+public struct RAVESubtitleBitmap: View {
+    private let image: RAVESubtitleImage
+    @State private var decoded: (id: Int, image: CGImage)?
+
+    public init(image: RAVESubtitleImage) {
+        self.image = image
+    }
+
+    public var body: some View {
+        ZStack {
+            if let decoded, decoded.id == image.id {
+                Image(decorative: decoded.image, scale: 1)
+                    .resizable()
+                    .interpolation(.high)
+            }
+        }
+        .task(id: image.id) {
+            let image = self.image
+            if let cg = await Task.detached(priority: .userInitiated, operation: { image.makeImage() }).value {
+                decoded = (image.id, cg)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 /// Subtitles on a panel of their own rather than over the picture: for a
 /// stereo picture, where text drawn over it would have to win a depth
 /// contest with the scene. Every cue is shown in start order whatever its
@@ -346,8 +419,16 @@ public struct RAVESubtitlePanel: View {
     public var body: some View {
         RAVESubtitleCues(track: track, time: time) { showing in
             ZStack(alignment: .top) {
-                if !showing.isEmpty {
+                if showing.contains(where: { $0.image == nil }) {
                     RAVESubtitleText(cues: showing, fontSize: fontSize)
+                }
+                // Bitmaps keep their shape, fitted to the panel's height.
+                VStack(spacing: fontSize * 0.15) {
+                    ForEach(showing.compactMap(\.image), id: \.id) { image in
+                        RAVESubtitleBitmap(image: image)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxHeight: fontSize * 1.45)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, minHeight: CGFloat(reservedLines) * fontSize * 1.45, alignment: .top)
@@ -369,7 +450,7 @@ public struct RAVESubtitleText: View {
 
     public var body: some View {
         VStack(spacing: fontSize * 0.15) {
-            ForEach(Array(cues.enumerated()), id: \.offset) { _, cue in
+            ForEach(Array(cues.filter { $0.image == nil }.enumerated()), id: \.offset) { _, cue in
                 Text(cue.text)
                     .font(.system(size: fontSize, weight: .semibold))
                     .foregroundStyle(.white)
