@@ -56,6 +56,32 @@ import Testing
         #expect(advanced.itemTime.seconds >= 0.65)
     }
 
+    /// Pictures a host decoded itself (Blu-ray MVC) arrive as 4:2:0 pixel
+    /// buffers and come out as BGRA at their own time, never early.
+    @Test func decodedPicturesAreConvertedNotDecoded() throws {
+        let clock = try clock(at: 0.1)
+        let source = SampleBufferFrameSource(timebase: clock)
+        defer { source.invalidate() }
+        for seconds in [0.0, 0.04, 0.08, 0.12] {
+            var pixels: CVPixelBuffer?
+            #expect(CVPixelBufferCreate(kCFAllocatorDefault, 64, 32, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                        [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixels) == kCVReturnSuccess)
+            let image = try #require(pixels)
+            let format = try CMVideoFormatDescription(imageBuffer: image)
+            let timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 25),
+                                            presentationTimeStamp: CMTime(seconds: seconds, preferredTimescale: 600),
+                                            decodeTimeStamp: .invalid)
+            source.submit(try CMSampleBuffer(imageBuffer: image, formatDescription: format, sampleTiming: timing))
+        }
+        let frame = try #require(source.nextFrame(hostTime: 0))
+        #expect(frame.itemTime.seconds == 0.08)
+        #expect(CVPixelBufferGetPixelFormatType(frame.pixelBuffer) == kCVPixelFormatType_32BGRA)
+        #expect(CVPixelBufferGetWidth(frame.pixelBuffer) == 64)
+        #expect(source.decodeFailure == nil)
+        CMTimebaseSetTime(clock, time: CMTime(seconds: 0.13, preferredTimescale: 600))
+        #expect(try #require(source.nextFrame(hostTime: 1)).itemTime.seconds == 0.12)
+    }
+
     @Test func aSeekDiscardsOldPicturesAndReprimesAtTheNewTime() async throws {
         let clock = try clock(at: 0.7)
         let source = SampleBufferFrameSource(timebase: clock)
