@@ -45,6 +45,13 @@ public struct AtmosScene: Decodable, Sendable {
         public let bedChannel: String?
 
         public var isBed: Bool { kind == "bed" }
+
+        public init(id: Int, channel: Int, kind: String, bedChannel: String?) {
+            self.id = id
+            self.channel = channel
+            self.kind = kind
+            self.bedChannel = bedChannel
+        }
     }
 
     public struct Event: Decodable, Sendable {
@@ -53,6 +60,16 @@ public struct AtmosScene: Decodable, Sendable {
         let ramp: Int
         let gain: Double
         let pos: [Double]?
+
+        /// `t` and `ramp` in scene frames, `gain` in dB, `pos` a DAMF room
+        /// position (x right, y front, z up) or nil to keep the last.
+        public init(id: Int, t: Int, ramp: Int, gain: Double, pos: [Double]?) {
+            self.id = id
+            self.t = t
+            self.ramp = ramp
+            self.gain = gain
+            self.pos = pos
+        }
     }
 
     public let sampleRate: Int
@@ -64,6 +81,17 @@ public struct AtmosScene: Decodable, Sendable {
     public let groups: [[Int]]
     /// Container time of scene frame 0 (the TrueHD track's first access unit).
     public let startSeconds: Double
+
+    public init(sampleRate: Int, elements: [Element], frameCount: Int, segmentFrames: Int, segmentCount: Int,
+                groups: [[Int]], startSeconds: Double) {
+        self.sampleRate = sampleRate
+        self.elements = elements
+        self.frameCount = frameCount
+        self.segmentFrames = segmentFrames
+        self.segmentCount = segmentCount
+        self.groups = groups
+        self.startSeconds = startSeconds
+    }
 }
 
 /// One element's position/gain timeline within a segment, sampled by frame.
@@ -314,7 +342,8 @@ public final class AtmosObjectAudio: @unchecked Sendable {
 @available(macOS 15.0, *)
 public final class AtmosSegmentStreamer: Sendable {
     public let audio: AtmosObjectAudio
-    let client: FilmServerClient
+    let client: any FilmAudioSource
+    let scene: AtmosScene
     let groups: [[Int]]
     let segmentCount: Int
     let lookahead = 3
@@ -326,9 +355,10 @@ public final class AtmosSegmentStreamer: Sendable {
     private let tracks = Mutex<[Int: [Int: AtmosElementTrack]]>([:])
     private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "AtmosAudio")
 
-    public init(audio: AtmosObjectAudio, client: FilmServerClient, scene: AtmosScene) {
+    public init(audio: AtmosObjectAudio, client: any FilmAudioSource, scene: AtmosScene) {
         self.audio = audio
         self.client = client
+        self.scene = scene
         groups = scene.groups
         segmentCount = scene.segmentCount
     }
@@ -368,12 +398,9 @@ public final class AtmosSegmentStreamer: Sendable {
     private func load(_ segment: Int, keeping wanted: Set<Int>) async throws {
         // Decode every group before claiming a slot, so the slot is only
         // unavailable for the copy itself.
-        let events = try await client.audioEvents(segment: segment)
-        var decoded: [(channels: [Int], buffer: AVAudioPCMBuffer)] = []
-        for (index, channels) in groups.enumerated() {
-            let data = try await client.audioSegment(segment, group: index)
-            decoded.append((channels, try Self.decodeFLAC(data)))
-        }
+        let content = try await client.audioSegment(segment, of: scene)
+        let events = content.events
+        let decoded = Array(zip(groups, content.buffers))
         guard let slot = audio.slots.first(where: { !wanted.contains($0.segment.load(ordering: .acquiring)) }) else { return }
 
         slot.segment.store(-1, ordering: .releasing)
@@ -397,18 +424,5 @@ public final class AtmosSegmentStreamer: Sendable {
             all[segment] = byElement
         }
         slot.segment.store(segment, ordering: .releasing)
-    }
-
-    /// AVAudioFile only reads from a URL, so the segment takes a trip through tmp.
-    private static func decodeFLAC(_ data: Data) throws -> AVAudioPCMBuffer {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("atmos-\(UUID().uuidString).flac")
-        try data.write(to: url)
-        defer { try? FileManager.default.removeItem(at: url) }
-        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        try file.read(into: buffer)
-        return buffer
     }
 }

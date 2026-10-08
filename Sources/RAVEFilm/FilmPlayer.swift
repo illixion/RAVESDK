@@ -45,7 +45,7 @@ public final class FilmPlayer {
     public private(set) var audioTracks: [FilmAudioTrack] = []
     /// The track playing; see `selectAudioTrack(_:)`.
     public private(set) var audioStream: Int?
-    @ObservationIgnored private var client: FilmServerClient?
+    @ObservationIgnored private var client: (any FilmAudioSource)?
 
     // Tuning, read by the stage every tick.
     /// Mute is independent of saved gain tuning and keeps the clock running.
@@ -105,42 +105,60 @@ public final class FilmPlayer {
     /// Loads the item `client` names: its Atmos scene, and its picture from
     /// the plugin's video segments or, when given, from `picture`.
     public func load(_ client: FilmServerClient, picture: FilmPictureSource? = nil, startAt seconds: Double = 0) async {
+        await load(audio: client, startAt: seconds) { @MainActor [video] in
+            if let picture {
+                video.load(picture, startAt: seconds)
+            } else {
+                await video.load(client, startAt: seconds)
+            }
+        }
+    }
+
+    /// Loads a film from its picture and, if it has any, its sound.
+    public func load(picture: FilmPictureSource, audio: (any FilmAudioSource)?, startAt seconds: Double = 0) async {
+        await load(audio: audio, startAt: seconds) { @MainActor [video] in
+            video.load(picture, startAt: seconds)
+        }
+    }
+
+    /// Whether the loaded film has sound playing through the stage.
+    public var hasAudioScene: Bool { scene != nil }
+
+    private func load(audio source: (any FilmAudioSource)?, startAt seconds: Double,
+                      picture: @escaping @MainActor () async -> Void) async {
         stop()
         status = "Loading…"
         audioStatus = "Loading…"
         audioTracks = []
         audioStream = nil
         self.client = nil
-        async let videoLoad: Void = { @MainActor [video] in
-            if let picture {
-                video.load(picture, startAt: seconds)
-            } else {
-                await video.load(client, startAt: seconds)
+        async let videoLoad: Void = picture()
+        var scene: AtmosScene?
+        if let source {
+            // The default track follows the device's languages.
+            let tracks = (try? await source.audioTracks(languages: FilmServerClient.deviceLanguages)) ?? []
+            let chosen = tracks.first(where: \.isDefault) ?? tracks.first
+            let client = source.with(audioStream: chosen?.index)
+            audioTracks = tracks
+            audioStream = chosen?.index
+            self.client = client
+            do {
+                scene = try await client.audioScene(startSeconds: seconds)
+                audioStatus = scene == nil ? "No object audio; picture only" : "Streaming"
+            } catch {
+                audioStatus = "Audio unavailable: \(error.localizedDescription)"
+                logger.error("\(self.audioStatus, privacy: .public)")
             }
-        }()
-        // The plugin's default track follows the device's languages.
-        let tracks = (try? await client.audioTracks(languages: FilmServerClient.deviceLanguages)) ?? []
-        let chosen = tracks.first(where: \.isDefault) ?? tracks.first
-        let client = client.with(audioStream: chosen?.index)
-        audioTracks = tracks
-        audioStream = chosen?.index
-        self.client = client
-        let scene: AtmosScene?
-        do {
-            scene = try await client.audioScene(startSeconds: seconds)
-            audioStatus = scene == nil ? "No Atmos objects; picture only" : "Streaming"
-        } catch {
-            scene = nil
-            audioStatus = "Audio unavailable: \(error.localizedDescription)"
-            logger.error("\(self.audioStatus, privacy: .public)")
+        } else {
+            audioStatus = "No sound"
         }
         await videoLoad
 
-        if let scene { install(scene, client: client, at: seconds) }
+        if let scene, let client { install(scene, client: client, at: seconds) }
         status = video.status
     }
 
-    private func install(_ scene: AtmosScene, client: FilmServerClient, at seconds: Double) {
+    private func install(_ scene: AtmosScene, client: any FilmAudioSource, at seconds: Double) {
         let audio = AtmosObjectAudio(scene: scene)
         let streamer = AtmosSegmentStreamer(audio: audio, client: client, scene: scene)
         streamer.focus(on: frame(for: seconds, in: scene))

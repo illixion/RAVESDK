@@ -13,6 +13,7 @@
  as the audio scene's `startSeconds`.
  */
 
+import AVFoundation
 import Foundation
 
 public struct FilmVideoIndex: Decodable, Sendable {
@@ -77,9 +78,17 @@ public struct FilmAudioTrack: Decodable, Identifiable, Hashable, Sendable {
     /// The plugin's pick for the languages the request listed.
     public let isDefault: Bool
     public var id: Int { index }
+
+    public init(index: Int, codec: String, language: String?, title: String, isDefault: Bool) {
+        self.index = index
+        self.codec = codec
+        self.language = language
+        self.title = title
+        self.isDefault = isDefault
+    }
 }
 
-public struct FilmServerClient: Sendable {
+public struct FilmServerClient: FilmAudioSource {
     public let baseURL: URL
     public let token: String
     public let itemID: String
@@ -94,7 +103,7 @@ public struct FilmServerClient: Sendable {
         self.audioStream = audioStream
     }
 
-    public func with(audioStream: Int?) -> FilmServerClient {
+    public func with(audioStream: Int?) -> any FilmAudioSource {
         var copy = self
         copy.audioStream = audioStream
         return copy
@@ -165,6 +174,28 @@ public struct FilmServerClient: Sendable {
         } catch FilmServerError.http(_, 422) {
             return nil
         }
+    }
+
+    public func audioSegment(_ segment: Int, of scene: AtmosScene) async throws -> FilmAudioSegment {
+        let events = try await audioEvents(segment: segment)
+        var buffers: [AVAudioPCMBuffer] = []
+        for index in scene.groups.indices {
+            buffers.append(try Self.decodeFLAC(try await audioSegment(segment, group: index)))
+        }
+        return FilmAudioSegment(events: events, buffers: buffers)
+    }
+
+    /// AVAudioFile only reads from a URL, so the segment takes a trip through tmp.
+    private static func decodeFLAC(_ data: Data) throws -> AVAudioPCMBuffer {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("atmos-\(UUID().uuidString).flac")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        try file.read(into: buffer)
+        return buffer
     }
 
     func audioEvents(segment: Int) async throws -> [AtmosScene.Event] {
