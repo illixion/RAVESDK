@@ -174,6 +174,18 @@ final class RealtimeDepthRefiner {
     static let bilateralRadius: Int32 = 8
     static let bilateralSigmaSpatial: Float = 4
     static let bilateralSigmaLuma: Float = 0.06
+    /// The refined map is handed to the warp at this multiple of model
+    /// resolution, joint-bilaterally upsampled against a guide at that
+    /// resolution (the converter's `encodeUpsampleFactor` and kernel, for the
+    /// same reason). The bilateral snaps depth edges into hard steps, and at 1×
+    /// the depth texel lattice (~3.7 px at 1080p) is what quantizes the warped
+    /// silhouette: the warp's bilinear read of each row's step lands it on a
+    /// texel boundary, so smooth edges stairstep, worst on near subjects.
+    /// The gaussian this replaced hid the lattice by smearing every edge into a
+    /// ramp several texels wide. Anchoring and the EMA stay at model resolution.
+    static let upsampleFactor = 2
+    static let upsampleRadius: Int32 = 6
+    static let upsampleSigmaSpatial: Float = 3
     /// Temporal EMA on shot-space depth where the image moved (as the old
     /// stabilizer's)…
     static let emaBaseAlpha: Float = 0.35
@@ -200,6 +212,9 @@ final class RealtimeDepthRefiner {
     private var maps: [MTLTexture] = []      // refined model-unit depth
     private var outputs: [MTLTexture] = []   // shot-space depth (EMA'd)
     private var scratch: MTLTexture?
+    private var hiGuide: MTLTexture?
+    private var hiScratch: MTLTexture?
+    private var hiOutputs: [MTLTexture] = [] // upsampled outputs, handed to the warp
     private var current = 0
     private var hasPrev = false
     private var lastSeconds = -Double.infinity
@@ -249,7 +264,7 @@ final class RealtimeDepthRefiner {
     func refine(raw: MTLTexture, frame: CVPixelBuffer, frameSeconds: Double) -> MTLTexture? {
         guard ensureTextures(width: raw.width, height: raw.height),
               let videoTex = videoTexture(frame),
-              let scratch else { return nil }
+              let scratch, let hiGuide, let hiScratch else { return nil }
         var dt = frameSeconds - lastSeconds
         if !frameSeconds.isFinite || !dt.isFinite || dt < 0 || dt > Self.seekGapSeconds {
             if lastSeconds.isFinite { reset() }
@@ -322,7 +337,6 @@ final class RealtimeDepthRefiner {
         enc.endEncoding()
         cmd.commit()
         cmd.waitUntilCompleted()
-        withExtendedLifetime(videoTex.keepAlive) {}
         signposter.endInterval("depth-refine", refineState)
         guard cmd.status == .completed,
               let stats = anchor.readStats(width: width, height: height, hadPrev: usePrev) else { return nil }
@@ -362,20 +376,51 @@ final class RealtimeDepthRefiner {
         applyEnc.setTexture(guides[usePrev ? prev : cur], index: 4)
         applyEnc.setBytes(&apply, length: MemoryLayout<DepthAnchorApplyParams>.stride, index: 0)
         applyEnc.dispatchThreadgroups(groups, threadsPerThreadgroup: tg)
+
+        // 4. Guided ×upsampleFactor upsample for the warp: the normalized-UV
+        // reads of the coarse map are a bilinear lift, and the hi-res guide's
+        // luma term pins each edge to the image edge between depth texels.
+        let hiGroups = MTLSize(width: (hiGuide.width + 15) / 16, height: (hiGuide.height + 15) / 16, depth: 1)
+        var upsample = DepthStabilizeParams(
+            blurRadius: Self.upsampleRadius, blurSigma: Self.upsampleSigmaSpatial,
+            baseAlpha: 1, motionGain: 0, hasPrev: 0, sigmaLuma: Self.bilateralSigmaLuma
+        )
+        applyEnc.setComputePipelineState(guidePipeline)
+        applyEnc.setTexture(videoTex.texture, index: 0)
+        applyEnc.setTexture(hiGuide, index: 1)
+        applyEnc.setBytes(&guideParams, length: MemoryLayout<DepthGuideParams>.stride, index: 0)
+        applyEnc.dispatchThreadgroups(hiGroups, threadsPerThreadgroup: tg)
+
+        applyEnc.setComputePipelineState(bilateralH)
+        applyEnc.setTexture(outputs[cur], index: 0)
+        applyEnc.setTexture(hiGuide, index: 1)
+        applyEnc.setTexture(hiScratch, index: 2)
+        applyEnc.setBytes(&upsample, length: MemoryLayout<DepthStabilizeParams>.stride, index: 0)
+        applyEnc.dispatchThreadgroups(hiGroups, threadsPerThreadgroup: tg)
+
+        applyEnc.setComputePipelineState(bilateralV)
+        applyEnc.setTexture(hiScratch, index: 0)
+        applyEnc.setTexture(hiGuide, index: 1)
+        applyEnc.setTexture(hiOutputs[cur], index: 2)
+        applyEnc.setBytes(&upsample, length: MemoryLayout<DepthStabilizeParams>.stride, index: 0)
+        applyEnc.dispatchThreadgroups(hiGroups, threadsPerThreadgroup: tg)
         applyEnc.endEncoding()
         applyCmd.commit()
         applyCmd.waitUntilCompleted()
+        withExtendedLifetime(videoTex.keepAlive) {}
         guard applyCmd.status == .completed else { return nil }
 
         hasPrev = true
         current = prev
-        return outputs[cur]
+        return hiOutputs[cur]
     }
 
     private func ensureTextures(width: Int, height: Int) -> Bool {
         if width == self.width, height == self.height, scratch != nil { return true }
-        func make() -> MTLTexture? {
-            let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r16Float, width: width, height: height, mipmapped: false)
+        func make(_ factor: Int = 1) -> MTLTexture? {
+            let desc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .r16Float, width: width * factor, height: height * factor, mipmapped: false
+            )
             desc.usage = [.shaderRead, .shaderWrite]
             desc.storageMode = .private
             return device.makeTexture(descriptor: desc)
@@ -384,11 +429,16 @@ final class RealtimeDepthRefiner {
         // samples its input with a linear filter, which 32-bit float textures
         // don't guarantee.
         guard let g0 = make(), let g1 = make(), let m0 = make(), let m1 = make(),
-              let o0 = make(), let o1 = make(), let s = make() else { return false }
+              let o0 = make(), let o1 = make(), let s = make(),
+              let hg = make(Self.upsampleFactor), let hs = make(Self.upsampleFactor),
+              let h0 = make(Self.upsampleFactor), let h1 = make(Self.upsampleFactor) else { return false }
         guides = [g0, g1]
         maps = [m0, m1]
         outputs = [o0, o1]
         scratch = s
+        hiGuide = hg
+        hiScratch = hs
+        hiOutputs = [h0, h1]
         self.width = width
         self.height = height
         current = 0

@@ -535,6 +535,16 @@ environment across a shot; the pipeline now does the same, realtime and cached:
 - **Edge refinement live.** Realtime now uses the joint bilateral (r8, σ4, luma
   σ 0.06) instead of the plain gaussian, so it takes the dense warp grid like
   cached depth (edge-snapped depth stairsteps on the moderate grid).
+  The dense grid is not enough on its own: at model resolution the depth texel
+  lattice (~3.7 px at 1080p) quantizes the warped silhouette just as the
+  converter's v3 note describes, and near subjects stairstepped once this shipped
+  (the gaussian had hidden the lattice by ramping every edge over several texels).
+  So the refiner ends, as the converter does, with a guided ×2 joint-bilateral
+  upsample (r6, σ3) against a 2× luma guide and hands the warp the 2× map;
+  anchoring and the EMA stay at model res. `RealtimeDepthEdgeTests` measures the
+  bilinear crossing against a disc's true edge: 1080p row-to-row wobble 0.43 →
+  0.22 px, worst 3.23 → 1.80 px. An area-filtered guide (for 4K's 7× decimation)
+  was tried and measured no better, so the single-tap guide stays.
 
 Realtime runs two waited command buffers per inference (guide + bilateral +
 anchor reduce + range fold + histogram; then apply) — on an M-series Mac the
