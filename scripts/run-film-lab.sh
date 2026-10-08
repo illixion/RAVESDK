@@ -24,7 +24,7 @@ plutil -insert CFBundlePackageType -string APPL "$app/Contents/Info.plist"
 codesign --force --sign - "$app" >/dev/null
 
 env_args=()
-for name in JELLYFIN_TOKEN FILM_SERVER FILM_ITEM FILM_START FILM_AUTOPLAY FILM_SCRIPT FILM_AUDIO FILM_MUTE; do
+for name in JELLYFIN_TOKEN FILM_SERVER FILM_ITEM FILM_START FILM_AUTOPLAY FILM_SCRIPT FILM_AUDIO FILM_LINK FILM_MUTE; do
     if [[ -n "${!name:-}" ]]; then env_args+=(--env "$name=${!name}"); fi
 done
 : > "$log"

@@ -15,7 +15,8 @@
    the segment plays, the quietest channels are left silent for that segment
    (`FilmAudioSegment.droppedChannels`) rather than the stream falling
    behind for good.
- - Silent channels aren't sent at all.
+ - Silent channels aren't sent at all, and on a tight budget the plugin
+   leaves out the quietest audible ones too (`omittedChannels`).
  */
 
 import AudioToolbox
@@ -27,7 +28,9 @@ import os
 public enum FilmAudioEncoding: Sendable, Hashable {
     /// The FLAC channel groups: lossless, about 3 Mbps for a dozen elements.
     case lossless
-    /// One mono AAC stream per channel at `bitrate` bits per second.
+    /// One mono AAC stream per channel, `bitrate` bits per second on average
+    /// (the plugin gives dialogue more, and the low-frequency bed and quiet
+    /// channels less).
     case aac(bitrate: Int)
     /// One mono Opus stream per channel. Apple platforms decode Ogg Opus
     /// through the system; the codec exists for clients without an AAC
@@ -48,6 +51,15 @@ public enum FilmAudioEncoding: Sendable, Hashable {
         case .aac(let bitrate), .opus(let bitrate): bitrate
         }
     }
+
+    /// For a menu or a log: "Lossless", "AAC 64 kbps".
+    public var summary: String {
+        switch self {
+        case .lossless: "Lossless"
+        case .aac(let bitrate): "AAC \(bitrate / 1000) kbps"
+        case .opus(let bitrate): "Opus \(bitrate / 1000) kbps"
+        }
+    }
 }
 
 /// A parsed bundle: its header, and each channel's stream within the body.
@@ -60,6 +72,10 @@ struct FilmAudioBundle: Sendable {
         let rmsDB: Float
         let peakDB: Float
     }
+
+    /// A channel under this peak (as heard, dBFS) is silent; one above it
+    /// that has no stream was left out to fit the budget.
+    static let silentPeakDB: Float = -80
 
     let data: Data
     let codec: Codec
@@ -101,6 +117,11 @@ struct FilmAudioBundle: Sendable {
             offset += length
         }
         self.channels = channels
+    }
+
+    /// Audible channels the plugin left out to keep to the request's budget.
+    var omittedChannels: Int {
+        channels.filter { $0.range.isEmpty && $0.peakDB >= Self.silentPeakDB }.count
     }
 
     /// Decodes into one planar Float32 buffer per scene group, the shape

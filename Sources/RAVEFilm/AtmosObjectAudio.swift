@@ -355,6 +355,12 @@ public final class AtmosObjectAudio: @unchecked Sendable {
 /// Fetches in playback order, one segment at a time, off the main actor. A
 /// segment the server hasn't decoded yet is decoded on request, so the first
 /// fetch after a long seek takes a second or two.
+///
+/// With everything it needs decoded, a source that reaches its sound over a
+/// network (`FilmStreamingAudioSource`) is asked to fetch further ahead, as
+/// bytes: a compressed segment is a tenth of its decoded size, so a minute
+/// or two of film waits in memory for the price of a few slots, and a link
+/// that drops for a tunnel or a handover doesn't reach the sound.
 // Synchronization.Atomic; the package floor stays at macOS 14.
 @available(macOS 15.0, *)
 public final class AtmosSegmentStreamer: Sendable {
@@ -372,6 +378,10 @@ public final class AtmosSegmentStreamer: Sendable {
     /// Channels left silent because a segment's decode ran past its
     /// deadline (a device too slow for the scene), in total.
     public let droppedChannels = Atomic<Int>(0)
+    /// Audible channels the server left out to fit the link's budget, in total.
+    public let omittedChannels = Atomic<Int>(0)
+    /// Segments fetched ahead of the decode, in total.
+    public let prefetched = Atomic<Int>(0)
     /// How long the last segment took to fetch and decode, in milliseconds.
     public let lastLoadMilliseconds = Atomic<Int>(0)
     /// Where the next fetches should centre; the transport moves it on seek
@@ -379,6 +389,9 @@ public final class AtmosSegmentStreamer: Sendable {
     let focusFrame = Atomic<Int>(0)
     private let tracks = Mutex<[Int: [Int: AtmosElementTrack]]>([:])
     private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "AtmosAudio")
+
+    /// How far past the decoded slots the bytes are fetched, in segments.
+    static let prefetchDepth = 8
 
     public init(audio: AtmosObjectAudio, client: any FilmAudioSource, scene: AtmosScene) {
         self.audio = audio
@@ -400,8 +413,15 @@ public final class AtmosSegmentStreamer: Sendable {
     }
 
     public func run() async {
+        var seenUnderruns = audio.underruns.load(ordering: .relaxed)
+        let streaming = client as? any FilmStreamingAudioSource
         while !Task.isCancelled {
             let playing = audio.playing.load(ordering: .relaxed)
+            let underruns = audio.underruns.load(ordering: .relaxed)
+            if underruns > seenUnderruns {
+                seenUnderruns = underruns
+                if playing { streaming?.audioPlaybackStalled(of: scene) }
+            }
             let frame = playing ? audio.playhead.load(ordering: .relaxed) : focusFrame.load(ordering: .relaxed)
             let current = min(frame / audio.segmentFrames, segmentCount - 1)
             let wanted = Array(max(0, current - (keepsBehind ? 1 : 0)) ... min(segmentCount - 1, current + lookahead))
@@ -417,6 +437,17 @@ public final class AtmosSegmentStreamer: Sendable {
                     failures.add(1, ordering: .relaxed)
                     logger.error("Segment \(next) failed: \(error.localizedDescription, privacy: .public)")
                     try? await Task.sleep(for: .seconds(1))
+                }
+            } else if let streaming {
+                let first = current + lookahead + 1
+                let last = min(segmentCount - 1, current + lookahead + Self.prefetchDepth)
+                // What the playhead has moved past, or a seek has left behind, is no use.
+                streaming.discardPrefetchedAudio(outside: max(0, current - 1) ... last)
+                if first <= last, await streaming.prefetchAudio(Array(first ... last), of: scene) {
+                    prefetched.add(1, ordering: .relaxed)
+                } else {
+                    // Nothing more to fetch, or the link says no: look again shortly.
+                    try? await Task.sleep(for: .milliseconds(first <= last ? 250 : 100))
                 }
             } else {
                 try? await Task.sleep(for: .milliseconds(100))
@@ -440,6 +471,9 @@ public final class AtmosSegmentStreamer: Sendable {
         let took = ContinuousClock.now - started
         lastLoadMilliseconds.store(Int(took.components.seconds * 1000 + took.components.attoseconds / 1_000_000_000_000_000),
                                    ordering: .relaxed)
+        if content.omittedChannels > 0 {
+            omittedChannels.add(content.omittedChannels, ordering: .relaxed)
+        }
         if content.droppedChannels > 0 {
             droppedChannels.add(content.droppedChannels, ordering: .relaxed)
             logger.error("Segment \(segment): \(content.droppedChannels) quiet channel(s) left silent to meet the deadline")

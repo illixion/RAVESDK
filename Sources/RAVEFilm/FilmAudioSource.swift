@@ -22,11 +22,15 @@ public struct FilmAudioSegment: @unchecked Sendable {
     /// Channels left silent because decoding them would have missed the
     /// segment's deadline (compressed bundles only; see `FilmAudioBundle`).
     public var droppedChannels: Int
+    /// Audible channels the server left out of a compressed segment to keep
+    /// to the link's budget (the quietest go first).
+    public var omittedChannels: Int
 
-    public init(events: [AtmosScene.Event], buffers: [AVAudioPCMBuffer], droppedChannels: Int = 0) {
+    public init(events: [AtmosScene.Event], buffers: [AVAudioPCMBuffer], droppedChannels: Int = 0, omittedChannels: Int = 0) {
         self.events = events
         self.buffers = buffers
         self.droppedChannels = droppedChannels
+        self.omittedChannels = omittedChannels
     }
 }
 
@@ -52,4 +56,19 @@ public extension FilmAudioSource {
     func audioSegment(_ segment: Int, of scene: AtmosScene, deadline: ContinuousClock.Instant?) async throws -> FilmAudioSegment {
         try await audioSegment(segment, of: scene)
     }
+}
+
+/// A source that reaches its sound over a network, and so can use the time
+/// the streamer has spare: fetching ahead of the segments it decodes (a
+/// compressed segment is a tenth of its decoded size, so far more of the
+/// film fits in memory as bytes), and learning when the playhead outran it.
+public protocol FilmStreamingAudioSource: FilmAudioSource {
+    /// Fetches the first of `segments` not already held, returning whether
+    /// it fetched one. The streamer calls this only when everything it needs
+    /// now is decoded.
+    func prefetchAudio(_ segments: [Int], of scene: AtmosScene) async -> Bool
+    /// Lets go of fetched segments outside `range`.
+    func discardPrefetchedAudio(outside range: ClosedRange<Int>)
+    /// The sound ran out under the playhead.
+    func audioPlaybackStalled(of scene: AtmosScene)
 }

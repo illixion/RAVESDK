@@ -41,6 +41,10 @@ public final class FilmPlayer {
     public private(set) var isPlaying = false
     public private(set) var status = "Idle"
     public private(set) var audioStatus = "—"
+    /// How the object audio is being fetched right now, for a menu:
+    /// "Lossless", "AAC 64 kbps", "Auto · AAC 64 kbps". Empty when the sound
+    /// isn't from the plugin.
+    public private(set) var audioQuality = ""
     /// The item's object-audio tracks (empty from an older plugin, or with one).
     public private(set) var audioTracks: [FilmAudioTrack] = []
     /// The track playing; see `selectAudioTrack(_:)`.
@@ -187,11 +191,15 @@ public final class FilmPlayer {
 
     /// Fetches the object audio as `encoding` from here on (lossless FLAC or
     /// a compressed bundle), rebuilding the stage at the current position the
-    /// way a track change does.
-    public func setAudioEncoding(_ encoding: FilmAudioEncoding) async {
-        guard var server = client as? FilmServerClient, server.encoding != encoding else { return }
+    /// way a track change does. With a `governor` ("Auto") it picks the
+    /// encoding of each segment as the link allows, and `encoding` is
+    /// where it starts from when the plugin can't serve a compressed one.
+    public func setAudioEncoding(_ encoding: FilmAudioEncoding, governor: FilmAudioGovernor? = nil) async {
+        guard var server = client as? FilmServerClient,
+              server.encoding != encoding || server.governor !== governor else { return }
         server.encoding = encoding
-        await reloadAudio(with: server, reason: "encoding \(encoding)")
+        server.governor = governor
+        await reloadAudio(with: server, reason: governor == nil ? "encoding \(encoding)" : "encoding auto")
     }
 
     private func reloadAudio(with client: any FilmAudioSource, reason: String) async {
@@ -224,7 +232,8 @@ public final class FilmPlayer {
     }
 
     private static func sameEncoding(_ a: (any FilmAudioSource)?, _ b: any FilmAudioSource) -> Bool {
-        (a as? FilmServerClient)?.encoding == (b as? FilmServerClient)?.encoding
+        let a = a as? FilmServerClient, b = b as? FilmServerClient
+        return a?.encoding == b?.encoding && a?.governor === b?.governor
     }
 
     // MARK: Transport
@@ -367,6 +376,10 @@ public final class FilmPlayer {
         let now = ContinuousClock.now
         guard now - lastTelemetry > .milliseconds(250) else { return }
         lastTelemetry = now
+        if let server = client as? FilmServerClient {
+            let quality = server.qualitySummary(for: scene)
+            if quality != audioQuality { audioQuality = quality }
+        }
         let rendered = audio.renderedFrames.load(ordering: .relaxed)
         if isPlaying, let sample = rateSample {
             let seconds = Double((now - sample.time).components.attoseconds) / 1e18 + Double((now - sample.time).components.seconds)
@@ -385,8 +398,12 @@ public final class FilmPlayer {
                              audio.underruns.load(ordering: .relaxed))
         if let streamer {
             let dropped = streamer.droppedChannels.load(ordering: .relaxed)
+            let omitted = streamer.omittedChannels.load(ordering: .relaxed)
             clockReport += String(format: ", last segment %d ms", streamer.lastLoadMilliseconds.load(ordering: .relaxed))
+                + ", \(audioQuality)" + ((client as? FilmServerClient)?.governor?.measuredRate.map { String(format: " (link %.1f Mbps)", $0 / 1e6) } ?? "")
+                + ", \(streamer.prefetched.load(ordering: .relaxed)) fetched ahead"
                 + (dropped > 0 ? ", \(dropped) channel(s) dropped for time" : "")
+                + (omitted > 0 ? ", \(omitted) left out for the link" : "")
         }
     }
 

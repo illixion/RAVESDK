@@ -10,7 +10,8 @@
    FILM_START       start position in seconds
    FILM_AUTOPLAY    1 to start playing once loaded
    FILM_SCRIPT      timed actions for unattended runs, e.g. "6:seek=1800;12:pause;14:play;20:quit"
-   FILM_AUDIO       object-audio encoding: lossless (default), aac:<bps> or opus:<bps>
+   FILM_AUDIO       object-audio encoding: lossless (default), aac:<bps>, opus:<bps> or auto
+   FILM_LINK        with auto, the path it sees: cellular or constrained (default: unmetered)
    FILM_MUTE        1 to play silently (the whole audio path still runs)
                     (seconds after load : seek=<s> | play | pause | offset=<ms> | quit)
 
@@ -140,6 +141,11 @@ struct LabView: View {
         let audio = (environment["FILM_AUDIO"] ?? "").split(separator: ":")
         if audio.count == 2, let bitrate = Int(audio[1]) {
             client.encoding = audio[0] == "opus" ? .opus(bitrate: bitrate) : .aac(bitrate: bitrate)
+        } else if audio.first == "auto" {
+            // "Auto" as the app has it, on the path FILM_LINK names (the Mac's own isn't a phone's).
+            let link = FilmAudioGovernor.Link(isExpensive: environment["FILM_LINK"] == "cellular",
+                                              isConstrained: environment["FILM_LINK"] == "constrained")
+            client.governor = FilmAudioGovernor(link: { link })
         }
         if environment["FILM_MUTE"] == "1" { player.isMuted = true }
         await player.load(client, startAt: start)
