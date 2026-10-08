@@ -40,6 +40,20 @@ private struct Item: Codable, Sendable {
     let Video3DFormat: String?
     let UserData: UserData?
     let MediaSources: [Source]?
+    let itemType: String?
+    let Overview: String?
+    let ProductionYear: Int?
+    let DateCreated: String?
+    let SeriesName: String?
+    let ParentIndexNumber: Int?
+    let IndexNumber: Int?
+    let ImageTags: [String: String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case Id, Name, RunTimeTicks, Video3DFormat, UserData, MediaSources
+        case itemType = "Type"
+        case Overview, ProductionYear, DateCreated, SeriesName, ParentIndexNumber, IndexNumber, ImageTags
+    }
 }
 private struct UserData: Codable, Sendable { let PlaybackPositionTicks: Int64? }
 private struct Source: Codable, Sendable {
@@ -117,12 +131,16 @@ private func execute(_ c: Command) async throws -> String {
         let user = try id(c.userID)
         let query = [URLQueryItem(name: "Recursive", value: "true"),
                      URLQueryItem(name: "IncludeItemTypes", value: "Movie,Episode"),
-                     URLQueryItem(name: "Fields", value: "MediaSources,MediaStreams"),
+                     URLQueryItem(name: "Fields", value: "MediaSources,MediaStreams,Overview,ImageTags,DateCreated,ProductionYear,SeriesName,ParentIndexNumber,IndexNumber"),
                      URLQueryItem(name: "SortBy", value: "SortName"), URLQueryItem(name: "Limit", value: "100")]
         let page = try JSONDecoder().decode(Page.self, from: await client.data("Users/\(user)/Items", query: query))
         return try json(["items": page.Items.map { item in
             ["id": item.Id, "name": item.Name ?? "Untitled", "position": Double(item.UserData?.PlaybackPositionTicks ?? 0) / 10_000_000,
-             "duration": Double(item.RunTimeTicks ?? 0) / 10_000_000, "stereo": item.Video3DFormat ?? "Mono"] as [String: Any]
+             "duration": Double(item.RunTimeTicks ?? 0) / 10_000_000, "stereo": item.Video3DFormat ?? "Mono",
+             "type": item.itemType ?? "Movie", "overview": item.Overview ?? "", "year": item.ProductionYear ?? 0,
+             "dateCreated": item.DateCreated ?? "", "series": item.SeriesName ?? "",
+             "season": item.ParentIndexNumber ?? 0, "episode": item.IndexNumber ?? 0,
+             "hasPoster": item.ImageTags?["Primary"] != nil] as [String: Any]
         }])
     case "playback":
         let user = try id(c.userID), itemID = try id(c.itemID)
