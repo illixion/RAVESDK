@@ -41,6 +41,11 @@ public final class FilmPlayer {
     public private(set) var isPlaying = false
     public private(set) var status = "Idle"
     public private(set) var audioStatus = "—"
+    /// The item's object-audio tracks (empty from an older plugin, or with one).
+    public private(set) var audioTracks: [FilmAudioTrack] = []
+    /// The track playing; see `selectAudioTrack(_:)`.
+    public private(set) var audioStream: Int?
+    @ObservationIgnored private var client: FilmServerClient?
 
     // Tuning, read by the stage every tick.
     /// Mute is independent of saved gain tuning and keeps the clock running.
@@ -103,6 +108,9 @@ public final class FilmPlayer {
         stop()
         status = "Loading…"
         audioStatus = "Loading…"
+        audioTracks = []
+        audioStream = nil
+        self.client = nil
         async let videoLoad: Void = { @MainActor [video] in
             if let picture {
                 video.load(picture, startAt: seconds)
@@ -110,6 +118,13 @@ public final class FilmPlayer {
                 await video.load(client, startAt: seconds)
             }
         }()
+        // The plugin's default track follows the device's languages.
+        let tracks = (try? await client.audioTracks(languages: FilmServerClient.deviceLanguages)) ?? []
+        let chosen = tracks.first(where: \.isDefault) ?? tracks.first
+        let client = client.with(audioStream: chosen?.index)
+        audioTracks = tracks
+        audioStream = chosen?.index
+        self.client = client
         let scene: AtmosScene?
         do {
             scene = try await client.audioScene(startSeconds: seconds)
@@ -121,18 +136,54 @@ public final class FilmPlayer {
         }
         await videoLoad
 
-        if let scene {
-            let audio = AtmosObjectAudio(scene: scene)
-            let streamer = AtmosSegmentStreamer(audio: audio, client: client, scene: scene)
-            streamer.focus(on: frame(for: seconds, in: scene))
-            self.scene = scene
-            self.audio = audio
-            self.streamer = streamer
-            levels = Array(repeating: 0, count: scene.elements.count)
-            streamTask = Task.detached(priority: .userInitiated) { await streamer.run() }
-            logger.info("Atmos: \(scene.elements.count) elements, \(scene.segmentCount) segments, start \(scene.startSeconds)s")
-        }
+        if let scene { install(scene, client: client, at: seconds) }
         status = video.status
+    }
+
+    private func install(_ scene: AtmosScene, client: FilmServerClient, at seconds: Double) {
+        let audio = AtmosObjectAudio(scene: scene)
+        let streamer = AtmosSegmentStreamer(audio: audio, client: client, scene: scene)
+        streamer.focus(on: frame(for: seconds, in: scene))
+        self.scene = scene
+        self.audio = audio
+        self.streamer = streamer
+        levels = Array(repeating: 0, count: scene.elements.count)
+        streamTask = Task.detached(priority: .userInitiated) { await streamer.run() }
+        logger.info("Atmos: \(scene.elements.count) elements, \(scene.segmentCount) segments, start \(scene.startSeconds)s, stream \(client.audioStream ?? -1)")
+    }
+
+    /// Switches the audio to track `index` (from `audioTracks`) at the
+    /// current position, keeping the picture. The stages rebuild for the new
+    /// audio; playing, the sound resumes once the new track's segment is in.
+    public func selectAudioTrack(_ index: Int) async {
+        guard index != audioStream, let base = client, audioTracks.contains(where: { $0.index == index }) else { return }
+        let client = base.with(audioStream: index)
+        let position = currentTime
+        startTask?.cancel()
+        streamTask?.cancel()
+        streamTask = nil
+        audio?.pause()
+        audio = nil
+        streamer = nil
+        scene = nil
+        lastState = [:]
+        audioStream = index
+        self.client = client
+        audioStatus = "Loading…"
+        logger.info("Audio track → stream \(index) at \(position, format: .fixed(precision: 2))s")
+        let scene: AtmosScene?
+        do {
+            scene = try await client.audioScene(startSeconds: position)
+            audioStatus = scene == nil ? "No Atmos objects; picture only" : "Streaming"
+        } catch {
+            scene = nil
+            audioStatus = "Audio unavailable: \(error.localizedDescription)"
+            logger.error("\(self.audioStatus, privacy: .public)")
+        }
+        // A newer choice (or another film) took over while this one loaded.
+        guard self.client?.itemID == client.itemID, audioStream == index, let scene else { return }
+        install(scene, client: client, at: currentTime)
+        schedule(at: currentTime, seekVideo: false)
     }
 
     // MARK: Transport
@@ -169,6 +220,7 @@ public final class FilmPlayer {
         scene = nil
         lastState = [:]
         isPlaying = false
+        client = nil
     }
 
     /// Re-anchors both halves at the current position, e.g. after an offset change.

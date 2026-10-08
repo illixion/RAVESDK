@@ -66,15 +66,50 @@ public struct FilmLibraryItem: Decodable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// An object-audio track the plugin can decode (`GET AtmosObjects/{id}/Tracks`).
+public struct FilmAudioTrack: Decodable, Identifiable, Hashable, Sendable {
+    /// The stream index, which names the track in every audio request.
+    public let index: Int
+    public let codec: String
+    /// ISO 639-2, as the file or disc labels it.
+    public let language: String?
+    public let title: String
+    /// The plugin's pick for the languages the request listed.
+    public let isDefault: Bool
+    public var id: Int { index }
+}
+
 public struct FilmServerClient: Sendable {
     public let baseURL: URL
     public let token: String
     public let itemID: String
+    /// The audio track every audio request names; nil leaves the choice to
+    /// the plugin (its default for `languages`).
+    public var audioStream: Int?
 
-    public init(baseURL: URL, token: String, itemID: String) {
+    public init(baseURL: URL, token: String, itemID: String, audioStream: Int? = nil) {
         self.baseURL = baseURL
         self.token = token
         self.itemID = itemID
+        self.audioStream = audioStream
+    }
+
+    public func with(audioStream: Int?) -> FilmServerClient {
+        var copy = self
+        copy.audioStream = audioStream
+        return copy
+    }
+
+    /// The device's languages, most preferred first, as ISO 639-2 codes:
+    /// what the plugin picks a film's default audio track by.
+    public static var deviceLanguages: [String] {
+        var seen: [String] = []
+        for identifier in Locale.preferredLanguages {
+            guard let code = Locale(identifier: identifier).language.languageCode?.identifier(.alpha3),
+                  !seen.contains(code) else { continue }
+            seen.append(code)
+        }
+        return seen
     }
 
     /// Films and episodes whose name matches `term`.
@@ -110,11 +145,22 @@ public struct FilmServerClient: Sendable {
         try await get("Video/Segments/\(n)")
     }
 
+    /// The item's object-audio tracks, the default for `languages` marked.
+    /// Empty from a plugin that predates track choice (it answers 404).
+    public func audioTracks(languages: [String]) async throws -> [FilmAudioTrack] {
+        do {
+            let data = try await get("Tracks", query: [URLQueryItem(name: "languages", value: languages.joined(separator: ","))])
+            return try JSONDecoder().decode([FilmAudioTrack].self, from: data)
+        } catch FilmServerError.http(_, 404) {
+            return []
+        }
+    }
+
     /// The Atmos scene layout, starting a server decode at `startSeconds` if
     /// nothing is cached. Nil when the item has no Atmos objects (HTTP 422).
     public func audioScene(startSeconds: Double) async throws -> AtmosScene? {
         do {
-            let data = try await get("Scene", query: [URLQueryItem(name: "startSeconds", value: String(format: "%.3f", startSeconds))])
+            let data = try await get("Scene", query: audioQuery + [URLQueryItem(name: "startSeconds", value: String(format: "%.3f", startSeconds))])
             return try JSONDecoder().decode(AtmosScene.self, from: data)
         } catch FilmServerError.http(_, 422) {
             return nil
@@ -122,11 +168,15 @@ public struct FilmServerClient: Sendable {
     }
 
     func audioEvents(segment: Int) async throws -> [AtmosScene.Event] {
-        try JSONDecoder().decode([AtmosScene.Event].self, from: await get("Segments/\(segment)/Events"))
+        try JSONDecoder().decode([AtmosScene.Event].self, from: await get("Segments/\(segment)/Events", query: audioQuery))
     }
 
     func audioSegment(_ segment: Int, group: Int) async throws -> Data {
-        try await get("Segments/\(segment)/\(group)")
+        try await get("Segments/\(segment)/\(group)", query: audioQuery)
+    }
+
+    private var audioQuery: [URLQueryItem] {
+        audioStream.map { [URLQueryItem(name: "audioStream", value: String($0))] } ?? []
     }
 
     private func get(_ path: String, query: [URLQueryItem] = []) async throws -> Data {

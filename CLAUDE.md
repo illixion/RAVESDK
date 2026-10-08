@@ -532,7 +532,11 @@ replaces the plugin's segments with frames an app decodes itself (Hypnos's
 uncompressed sample buffers in film time, starting exactly at the seek
 target, fed to the same display layer and timebase, so `FilmPlayer`'s audio
 anchoring is unchanged; only `pictureAheadSeconds` (0.75 s) is queued, as
-each is megabytes. `FilmPictureFrame.stereo` carries the frame-packed picture
+each is megabytes. Audio tracks: `FilmServerClient.audioTracks(languages:)` (the plugin's `Tracks`,
+empty from an older plugin) and `audioStream`, sent on every audio request;
+`FilmPlayer.load` starts on the plugin's default for `FilmServerClient.deviceLanguages`,
+and `selectAudioTrack(_:)` swaps only the audio at the playhead (the stages rebuild
+because `player.audio` changes). `FilmPictureFrame.stereo` carries the frame-packed picture
 for the stereo tap. `FilmVideoPlayer.isLoaded` replaces `index != nil` as the
 "a picture is loaded" test.
 
