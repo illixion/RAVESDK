@@ -523,6 +523,18 @@ host clock. It never seeks or owns audio. `onFlush` resets its generation so
 old-seek callbacks cannot paint new playback. `PumpFrameSource`'s BGRA contract
 is enforced by VideoToolbox output attributes. macOS tests use a synthetic
 H.264 B-frame fixture to verify timing, reset and duplicate suppression.
+A sample that already holds a pixel buffer skips decoding and is converted
+to BGRA with a `VTPixelTransferSession`.
+
+**Pictures the platform can't decode.** `FilmVideoPlayer.load(_: FilmPictureSource)`
+replaces the plugin's segments with frames an app decodes itself (Hypnos's
+`MVCPictureSource`: Blu-ray MVC 3D via the local `mvc3d` package). Frames are
+uncompressed sample buffers in film time, starting exactly at the seek
+target, fed to the same display layer and timebase, so `FilmPlayer`'s audio
+anchoring is unchanged; only `pictureAheadSeconds` (0.75 s) is queued, as
+each is megabytes. `FilmPictureFrame.stereo` carries the frame-packed picture
+for the stereo tap. `FilmVideoPlayer.isLoaded` replaces `index != nil` as the
+"a picture is loaded" test.
 
 `RAVEExternalStereoVideoView` mounts a host-owned frame source in visionOS
 using the measured 90pt video recess. The host must reserve ornament space and

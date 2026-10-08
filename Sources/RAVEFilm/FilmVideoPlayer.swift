@@ -17,6 +17,11 @@
  do-not-display: they are decoded (later frames depend on them) but never
  shown. Playback resumes at a host time slightly in the future so the
  decoder has caught up to the target by the time it is due.
+
+ A `FilmPictureSource` (pictures the platform can't decode, decoded by the
+ app) replaces the segments: its frames go to the same layer on the same
+ timebase, so the transport and the audio clock are unchanged. They arrive
+ uncompressed, so only `pictureAheadSeconds` of them are queued.
  */
 
 import DebugTrace
@@ -35,6 +40,10 @@ public final class FilmVideoPlayer {
     public let timebase: CMTimebase
 
     public private(set) var index: FilmVideoIndex?
+    /// Decoded pictures in place of the plugin's segments; see `load(_:startAt:)`.
+    public private(set) var pictureSource: FilmPictureSource?
+    /// A picture is loaded, from either kind of source.
+    public var isLoaded: Bool { index != nil || pictureSource != nil }
     public private(set) var track: FragmentedMP4Track?
     public private(set) var formatSummary = ""
     /// The picture's format as fed to the renderer, HDR static metadata included.
@@ -53,6 +62,8 @@ public final class FilmVideoPlayer {
 
     /// How far ahead of the playhead to keep samples enqueued.
     public var aheadSeconds: Double = 12
+    /// The same for decoded pictures, which are about 6 MB each at 1080p.
+    public var pictureAheadSeconds: Double = 0.75
     /// How far ahead of now a resume is scheduled, so the decoder can reach the target first.
     public var startDelay: Double = 0.2
 
@@ -115,7 +126,7 @@ public final class FilmVideoPlayer {
         // film session otherwise kept asking every second for as long as the
         // app ran (device log, 2026-10-07).
         renderer.flush()
-        guard index != nil else { return }
+        guard isLoaded else { return }
         if let onDecodingInterrupted {
             onDecodingInterrupted()
         } else {
@@ -141,13 +152,14 @@ public final class FilmVideoPlayer {
 
     /// Current film time.
     public var currentTime: Double { CMTimebaseGetTime(timebase).seconds }
-    public var duration: Double { index?.durationSeconds ?? 0 }
+    public var duration: Double { index?.durationSeconds ?? pictureSource?.durationSeconds ?? 0 }
 
     // MARK: Transport
 
     public func load(_ client: FilmServerClient, startAt seconds: Double = 0) async {
         stop()
         self.client = client
+        pictureSource = nil
         index = nil
         track = nil
         format = nil
@@ -183,8 +195,23 @@ public final class FilmVideoPlayer {
         }
     }
 
+    /// Loads pictures decoded by `source` instead of the plugin's segments.
+    public func load(_ source: FilmPictureSource, startAt seconds: Double = 0) {
+        stop()
+        client = nil
+        index = nil
+        track = nil
+        format = nil
+        pictureSource = source
+        frameRate = source.frameRate
+        formatSummary = source.summary
+        logger.info("Loaded decoded pictures: \(source.summary, privacy: .public)")
+        status = "Ready"
+        seek(to: seconds, resume: false)
+    }
+
     public func play() {
-        guard index != nil, !isPlaying else { return }
+        guard isLoaded, !isPlaying else { return }
         isPlaying = true
         start(filmTime: currentTime, atHostTime: CMClockGetTime(CMClockGetHostTimeClock()) + CMTime(seconds: 0.05, preferredTimescale: 1_000_000_000))
     }
@@ -211,8 +238,8 @@ public final class FilmVideoPlayer {
     }
 
     public func seek(to seconds: Double, resume: Bool? = nil) {
-        guard let index else { return }
-        let target = min(max(0, seconds), max(0, index.durationSeconds - 0.5))
+        guard isLoaded else { return }
+        let target = min(max(0, seconds), max(0, duration - 0.5))
         let resume = resume ?? isPlaying
         isPlaying = resume
         feedTask?.cancel()
@@ -222,9 +249,17 @@ public final class FilmVideoPlayer {
         park(at: target)
         bufferedUntil = target
         isPrimed = false
+        let requested = Date()
+        if let pictureSource {
+            let stereo = onSampleBuffer != nil
+            feedTask = Task { [weak self] in
+                await self?.feed(pictureSource, target: target, stereo: stereo, resume: resume, requested: requested)
+            }
+            return
+        }
+        guard let index else { return }
         let first = index.segment(containing: target)
         segments = segments.filter { abs($0.key - first) <= 2 }
-        let requested = Date()
         feedTask = Task { [weak self] in
             await self?.feed(from: first, target: target, resume: resume, requested: requested)
         }
@@ -302,6 +337,39 @@ public final class FilmVideoPlayer {
             }
             segments[n - 1] = nil
             n += 1
+        }
+    }
+
+    /// Feeds decoded pictures. The source starts at the target, so nothing
+    /// is hidden; the layer only queues and shows them.
+    private func feed(_ source: FilmPictureSource, target: Double, stereo: Bool, resume: Bool, requested: Date) async {
+        var primed = false
+        do {
+            for try await frame in source.frames(from: target, stereo: stereo) {
+                while primed, !Task.isCancelled, bufferedUntil - currentTime > pictureAheadSeconds {
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+                while !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(5))
+                }
+                guard !Task.isCancelled else { return }
+                if decoderRecovery?.checkRenderer() == true { return }
+                if format == nil { format = CMSampleBufferGetFormatDescription(frame.picture) }
+                if let stereo = frame.stereo { onSampleBuffer?(stereo) }
+                renderer.enqueue(frame.picture)
+                let end = CMSampleBufferGetPresentationTimeStamp(frame.picture) + CMSampleBufferGetDuration(frame.picture)
+                bufferedUntil = max(bufferedUntil, end.seconds)
+                if !primed {
+                    primed = true
+                    startTask = Task { [weak self] in
+                        await self?.startWhenPrimed(target: target, resume: resume, requested: requested)
+                    }
+                }
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            status = "Picture failed: \(error.localizedDescription)"
+            logger.error("\(self.status, privacy: .public)")
         }
     }
 

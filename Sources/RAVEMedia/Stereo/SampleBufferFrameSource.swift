@@ -12,6 +12,8 @@ import VideoToolbox
 /// All VideoToolbox work runs on the pump queue. Submission/reset can run on
 /// the host actor; a generation prevents callbacks from a previous seek from
 /// leaking into the new timeline. BGRA is required by PumpFrameSource.
+/// A sample that already holds a picture (a host that decodes on its own,
+/// such as frame-packed MVC) is converted to BGRA rather than decoded.
 public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable {
     private let timebase: CMTimebase
     private let lock = NSLock()
@@ -28,6 +30,10 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
     /// backgrounded): a new one starts at the next keyframe, since the frames
     /// in between reference pictures the old one held. Pump queue only.
     private var awaitingKeyframe = false
+    /// Converts decoded samples to BGRA. Pump queue only.
+    private var transfer: VTPixelTransferSession?
+    private var transferPool: CVPixelBufferPool?
+    private var transferPoolSize = (width: 0, height: 0)
 
     public init(timebase: CMTimebase) { self.timebase = timebase }
 
@@ -76,6 +82,16 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
             awaitingKeyframe = false
         }
         for sample in due {
+            if let image = CMSampleBufferGetImageBuffer(sample) {
+                if let converted = bgra(image) {
+                    lock.lock()
+                    if generation == currentGeneration, !invalidated {
+                        frames.append(PumpFrame(pixelBuffer: converted, itemTime: CMSampleBufferGetPresentationTimeStamp(sample)))
+                    }
+                    lock.unlock()
+                }
+                continue
+            }
             guard let format = CMSampleBufferGetFormatDescription(sample) else { continue }
             if awaitingKeyframe {
                 guard Self.isKeyframe(sample) else { continue }
@@ -130,6 +146,32 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
         return eligible
     }
 
+    /// `image` as BGRA, through a pixel transfer when it isn't already.
+    private func bgra(_ image: CVPixelBuffer) -> CVPixelBuffer? {
+        if CVPixelBufferGetPixelFormatType(image) == kCVPixelFormatType_32BGRA { return image }
+        let width = CVPixelBufferGetWidth(image), height = CVPixelBufferGetHeight(image)
+        if transferPool == nil || transferPoolSize != (width, height) {
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            ]
+            transferPool = nil
+            CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &transferPool)
+            transferPoolSize = (width, height)
+        }
+        if transfer == nil {
+            VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &transfer)
+        }
+        guard let transferPool, let transfer else { return nil }
+        var out: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, transferPool, &out) == kCVReturnSuccess, let out,
+              VTPixelTransferSessionTransferImage(transfer, from: image, to: out) == noErr else { return nil }
+        return out
+    }
+
     private static func isKeyframe(_ sample: CMSampleBuffer) -> Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false)
                 as? [[CFString: Any]], let first = attachments.first else { return true }
@@ -150,6 +192,8 @@ public final class SampleBufferFrameSource: PumpFrameSource, @unchecked Sendable
         lock.unlock()
         session.map { VTDecompressionSessionInvalidate($0) }
         session = nil
+        transfer.map { VTPixelTransferSessionInvalidate($0) }
+        transfer = nil
     }
 }
 #endif

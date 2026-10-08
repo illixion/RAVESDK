@@ -97,11 +97,19 @@ public final class FilmPlayer {
 
     // MARK: Loading
 
-    public func load(_ client: FilmServerClient, startAt seconds: Double = 0) async {
+    /// Loads the item `client` names: its Atmos scene, and its picture from
+    /// the plugin's video segments or, when given, from `picture`.
+    public func load(_ client: FilmServerClient, picture: FilmPictureSource? = nil, startAt seconds: Double = 0) async {
         stop()
         status = "Loading…"
         audioStatus = "Loading…"
-        async let videoLoad: Void = video.load(client, startAt: seconds)
+        async let videoLoad: Void = { @MainActor [video] in
+            if let picture {
+                video.load(picture, startAt: seconds)
+            } else {
+                await video.load(client, startAt: seconds)
+            }
+        }()
         let scene: AtmosScene?
         do {
             scene = try await client.audioScene(startSeconds: seconds)
@@ -130,7 +138,7 @@ public final class FilmPlayer {
     // MARK: Transport
 
     public func play() {
-        guard !isPlaying, video.index != nil else { return }
+        guard !isPlaying, video.isLoaded else { return }
         isPlaying = true
         schedule(at: currentTime, seekVideo: false)
     }
