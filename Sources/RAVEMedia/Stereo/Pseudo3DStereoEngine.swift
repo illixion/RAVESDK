@@ -64,13 +64,18 @@ public struct RAVEPlaybackState: Equatable, Sendable {
     public let muted: Bool
     /// Furthest buffered position, in seconds.
     public let buffered: Double
+    /// Waiting for data while it means to play (a stall, not a pause), so a
+    /// host can tell a stream that can't keep up.
+    public let waiting: Bool
 
-    public init(currentTime: Double, duration: Double, paused: Bool, muted: Bool, buffered: Double) {
+    public init(currentTime: Double, duration: Double, paused: Bool, muted: Bool, buffered: Double,
+                waiting: Bool = false) {
         self.currentTime = currentTime
         self.duration = duration
         self.paused = paused
         self.muted = muted
         self.buffered = buffered
+        self.waiting = waiting
     }
 }
 
@@ -952,7 +957,8 @@ public final class Pseudo3DStereoEngine {
                 duration: duration.isFinite ? duration : 0,
                 paused: player.timeControlStatus != .playing,
                 muted: player.isMuted,
-                buffered: buffered
+                buffered: buffered,
+                waiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             )
         )
     }

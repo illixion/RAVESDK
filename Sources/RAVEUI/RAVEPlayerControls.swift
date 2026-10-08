@@ -148,11 +148,17 @@ public struct RAVEPlayerControls<Accessories: View>: View {
 
     private func compactRow(overflow: Bool) -> some View {
         HStack(spacing: 6) {
-            control("Back 10 seconds", "gobackward.10") { skip(-10) }
-                .disabled(!state.isSeekable)
-            control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
-            control("Forward 10 seconds", "goforward.10") { skip(10) }
-                .disabled(!state.isSeekable)
+            // Apart from each other and from the timeline, so the gaze settles
+            // on the intended one: at 6 pt the three 60 pt targets touched and
+            // a look between them snapped to the neighbour.
+            HStack(spacing: Self.transportSpacing) {
+                control("Back 10 seconds", "gobackward.10") { skip(-10) }
+                    .disabled(!state.isSeekable)
+                control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
+                control("Forward 10 seconds", "goforward.10") { skip(10) }
+                    .disabled(!state.isSeekable)
+            }
+            .padding(.trailing, Self.transportSpacing - 6)
             timelineRow
                 .frame(minWidth: Self.compactTimelineMinWidth, maxWidth: .infinity)
             muteControl
@@ -245,6 +251,12 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly).ravePlayerControlLabel()
             .font(.title2)
     }
+
+    #if os(visionOS)
+    private static var transportSpacing: CGFloat { 16 }
+    #else
+    private static var transportSpacing: CGFloat { 8 }
+    #endif
 
     #if os(visionOS) || os(tvOS)
     private static var compactTimelineMinWidth: CGFloat { 480 }
