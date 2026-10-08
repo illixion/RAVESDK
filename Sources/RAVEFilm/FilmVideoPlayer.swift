@@ -342,11 +342,16 @@ public final class FilmVideoPlayer {
 
     /// Feeds decoded pictures. The source starts at the target, so nothing
     /// is hidden; the layer only queues and shows them.
+    ///
+    /// `bufferedUntil` is observed by the transport, so it is published at
+    /// most twice a second: set per frame (24 times a second), it re-rendered
+    /// every view reading it, and menus in those views flickered.
     private func feed(_ source: FilmPictureSource, target: Double, stereo: Bool, resume: Bool, requested: Date) async {
         var primed = false
+        var queuedUntil = target
         do {
             for try await frame in source.frames(from: target, stereo: stereo) {
-                while primed, !Task.isCancelled, bufferedUntil - currentTime > pictureAheadSeconds {
+                while primed, !Task.isCancelled, queuedUntil - currentTime > pictureAheadSeconds {
                     try? await Task.sleep(for: .milliseconds(10))
                 }
                 while !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
@@ -358,7 +363,8 @@ public final class FilmVideoPlayer {
                 if let stereo = frame.stereo { onSampleBuffer?(stereo) }
                 renderer.enqueue(frame.picture)
                 let end = CMSampleBufferGetPresentationTimeStamp(frame.picture) + CMSampleBufferGetDuration(frame.picture)
-                bufferedUntil = max(bufferedUntil, end.seconds)
+                queuedUntil = max(queuedUntil, end.seconds)
+                if queuedUntil - bufferedUntil >= 0.5 { bufferedUntil = queuedUntil }
                 if !primed {
                     primed = true
                     startTask = Task { [weak self] in
