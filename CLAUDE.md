@@ -88,8 +88,8 @@ is easy to skip.
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
 | `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager, shared player controls, subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
-| `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality selection and stall bookkeeping. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
-| `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login/catalog/playback/watch reports, subtitles and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
+| `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality/stall rules, Up Next ordering and skip-segment models/policy. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
+| `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
@@ -98,6 +98,41 @@ is easy to skip.
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
 | `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
+
+### Quest portable-core handoff (2026-10-08)
+
+The Quest core and Hypnos shell are merged into the primary repos. Future work
+starts from current `main`, not the earlier `wt/Hypnos-quest-player` branch.
+Read `../Hypnos/docs/plans/quest-parity-roadmap.md` for the review and ordered
+milestones, `../Hypnos/Quest/README.md` for Android builds and
+`../Hypnos/.claude/rules/hypnos-quest-port.md` for the app/device constraints.
+
+**Next shared work:** share the full chapter-to-segment derivation (Quest
+currently filters away ordinary chapter boundaries), fix server stream/job
+identity and cleanup during quality switches, and converge Jellyfin DTOs,
+PlaybackInfo/source selection and capability-driven playback/download plans.
+`RAVEQuestCore` should become a thin boundary over shared services, not a second
+Jellyfin backend. Android also needs scoped offline ownership and typed state;
+coordinate those fixes with Hypnos. All remain open after this merge.
+
+Keep framework-free code in portable targets inside this package. Do not pull
+SwiftUI, AVFoundation, PHASE, Metal, Core ML or platform-only logging imports
+into them. Native views/decoders/audio output stay in adapters. RAVEUI's current
+re-export lets Apple call sites share core models. Public API changes need
+Android and Apple consumer builds, not just a host package check.
+
+The boundary is C/UTF-8 JSON with explicit buffer release; its current response
+version/error/cancellation contract needs hardening. Low-frequency commands
+may use JSON; frames, PCM and realtime poses must not. Preserve pause/playhead
+through switches while keeping logical session, server job and account IDs
+distinct. Build `RAVEQuestCore` with the open-source Swift/Android SDK matching
+Hypnos's recipe; Apple's Xcode toolchain cannot cross-compile it.
+
+Object audio is later roadmap work, not an existing Quest feature. Preserve
+the current compressed bundle/governor/fetch-ahead behavior when extracting
+scene/bundle formats and scheduling policy from RAVEFilm. Today their files
+still mix portable code with Apple decoding/logging imports; do not link the
+whole Apple film/audio target into Android or duplicate those policies in Kotlin.
 
 ### RAVEBrowser — a model uses pages the way Chrome MCP does, with nothing per site
 
