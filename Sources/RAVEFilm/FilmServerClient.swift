@@ -7,6 +7,7 @@
    GET /AtmosObjects/{itemId}/Scene?startSeconds=T  Atmos layout (422: no objects)
    GET /AtmosObjects/{itemId}/Segments/{n}/Events   positions and gains for audio segment n
    GET /AtmosObjects/{itemId}/Segments/{n}/{g}      FLAC channel group g of audio segment n
+   GET /AtmosObjects/{itemId}/Segments/{n}/Bundle   every channel of segment n, lossy (FilmAudioBundle)
 
  A `FilmOfflineStore` stands in for the server when a film was downloaded to
  play offline: every request above is answered from the copy on the device.
@@ -108,6 +109,10 @@ public struct FilmServerClient: FilmAudioSource {
     public var audioStream: Int?
     /// Set for a downloaded film: requests never reach the network.
     public let offline: (any FilmOfflineStore)?
+    /// Lossless FLAC groups, or a compressed bundle per segment. A download
+    /// holds the FLAC, and a plugin without bundles serves only FLAC, so
+    /// both play lossless whatever this says.
+    public var encoding: FilmAudioEncoding = .lossless
 
     public init(baseURL: URL, token: String, itemID: String, audioStream: Int? = nil) {
         self.baseURL = baseURL
@@ -200,6 +205,44 @@ public struct FilmServerClient: FilmAudioSource {
     }
 
     public func audioSegment(_ segment: Int, of scene: AtmosScene) async throws -> FilmAudioSegment {
+        try await audioSegment(segment, of: scene, deadline: nil)
+    }
+
+    /// The encoding segments are fetched in for `scene`.
+    public func effectiveEncoding(for scene: AtmosScene) -> FilmAudioEncoding {
+        guard offline == nil, let codec = encoding.bundleCodec, scene.bundleCodecs?.contains(codec) == true else { return .lossless }
+        return encoding
+    }
+
+    public func audioSegment(_ segment: Int, of scene: AtmosScene, deadline: ContinuousClock.Instant?) async throws -> FilmAudioSegment {
+        let encoding = effectiveEncoding(for: scene)
+        guard let codec = encoding.bundleCodec, let bitrate = encoding.bitrate else {
+            return try await losslessSegment(segment, of: scene)
+        }
+        async let events = audioEvents(segment: segment)
+        let data = try await get("Segments/\(segment)/Bundle", query: audioQuery + [
+            URLQueryItem(name: "codec", value: codec),
+            URLQueryItem(name: "bitrate", value: String(bitrate)),
+        ])
+        let bundle = try FilmAudioBundle(data: data)
+        guard bundle.channels.count == scene.elements.count else {
+            throw FilmAudioBundle.ParseError.malformed("\(bundle.channels.count) channels for a \(scene.elements.count)-channel scene")
+        }
+        let decoded = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: bundle.decode(groups: scene.groups, deadline: deadline,
+                                                             workers: Self.decodeWorkers))
+            }
+        }
+        if decoded.failed > 0 { throw FilmAudioBundle.ParseError.malformed("\(decoded.failed) channel(s) failed to decode") }
+        return FilmAudioSegment(events: try await events, buffers: decoded.buffers, droppedChannels: decoded.dropped)
+    }
+
+    /// Half the cores: the picture decodes, and the render threads run, on
+    /// the rest.
+    static var decodeWorkers: Int { max(1, ProcessInfo.processInfo.activeProcessorCount / 2) }
+
+    private func losslessSegment(_ segment: Int, of scene: AtmosScene) async throws -> FilmAudioSegment {
         let events = try await audioEvents(segment: segment)
         var buffers: [AVAudioPCMBuffer] = []
         for index in scene.groups.indices {

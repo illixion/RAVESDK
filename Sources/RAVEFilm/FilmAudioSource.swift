@@ -19,10 +19,14 @@ import Foundation
 public struct FilmAudioSegment: @unchecked Sendable {
     public var events: [AtmosScene.Event]
     public var buffers: [AVAudioPCMBuffer]
+    /// Channels left silent because decoding them would have missed the
+    /// segment's deadline (compressed bundles only; see `FilmAudioBundle`).
+    public var droppedChannels: Int
 
-    public init(events: [AtmosScene.Event], buffers: [AVAudioPCMBuffer]) {
+    public init(events: [AtmosScene.Event], buffers: [AVAudioPCMBuffer], droppedChannels: Int = 0) {
         self.events = events
         self.buffers = buffers
+        self.droppedChannels = droppedChannels
     }
 }
 
@@ -39,4 +43,13 @@ public protocol FilmAudioSource: Sendable {
     /// Nil when this film has no sound this source can play.
     func audioScene(startSeconds: Double) async throws -> AtmosScene?
     func audioSegment(_ segment: Int, of scene: AtmosScene) async throws -> FilmAudioSegment
+    /// The same, for a source that can trade completeness for time: by
+    /// `deadline` the segment is wanted even with some channels missing.
+    func audioSegment(_ segment: Int, of scene: AtmosScene, deadline: ContinuousClock.Instant?) async throws -> FilmAudioSegment
+}
+
+public extension FilmAudioSource {
+    func audioSegment(_ segment: Int, of scene: AtmosScene, deadline: ContinuousClock.Instant?) async throws -> FilmAudioSegment {
+        try await audioSegment(segment, of: scene)
+    }
 }

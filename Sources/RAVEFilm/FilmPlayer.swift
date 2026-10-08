@@ -175,7 +175,27 @@ public final class FilmPlayer {
     /// audio; playing, the sound resumes once the new track's segment is in.
     public func selectAudioTrack(_ index: Int) async {
         guard index != audioStream, let base = client, audioTracks.contains(where: { $0.index == index }) else { return }
-        let client = base.with(audioStream: index)
+        audioStream = index
+        await reloadAudio(with: base.with(audioStream: index), reason: "stream \(index)")
+    }
+
+    /// The encoding the playing film's object audio is fetched in, when its
+    /// source is the plugin; nil for any other source.
+    public var audioEncoding: FilmAudioEncoding? {
+        (client as? FilmServerClient).map { client in scene.map(client.effectiveEncoding(for:)) ?? client.encoding }
+    }
+
+    /// Fetches the object audio as `encoding` from here on (lossless FLAC or
+    /// a compressed bundle), rebuilding the stage at the current position the
+    /// way a track change does.
+    public func setAudioEncoding(_ encoding: FilmAudioEncoding) async {
+        guard var server = client as? FilmServerClient, server.encoding != encoding else { return }
+        server.encoding = encoding
+        await reloadAudio(with: server, reason: "encoding \(encoding)")
+    }
+
+    private func reloadAudio(with client: any FilmAudioSource, reason: String) async {
+        let index = client.audioStream
         let position = currentTime
         startTask?.cancel()
         streamTask?.cancel()
@@ -185,10 +205,9 @@ public final class FilmPlayer {
         streamer = nil
         scene = nil
         lastState = [:]
-        audioStream = index
         self.client = client
         audioStatus = "Loading…"
-        logger.info("Audio track → stream \(index) at \(position, format: .fixed(precision: 2))s")
+        logger.info("Audio → \(reason, privacy: .public) at \(position, format: .fixed(precision: 2))s")
         let scene: AtmosScene?
         do {
             scene = try await client.audioScene(startSeconds: position)
@@ -199,9 +218,13 @@ public final class FilmPlayer {
             logger.error("\(self.audioStatus, privacy: .public)")
         }
         // A newer choice (or another film) took over while this one loaded.
-        guard self.client?.itemID == client.itemID, audioStream == index, let scene else { return }
+        guard self.client?.itemID == client.itemID, audioStream == index, Self.sameEncoding(self.client, client), let scene else { return }
         install(scene, client: client, at: currentTime)
         schedule(at: currentTime, seekVideo: false)
+    }
+
+    private static func sameEncoding(_ a: (any FilmAudioSource)?, _ b: any FilmAudioSource) -> Bool {
+        (a as? FilmServerClient)?.encoding == (b as? FilmServerClient)?.encoding
     }
 
     // MARK: Transport
@@ -360,6 +383,11 @@ public final class FilmPlayer {
                              measuredRate, drift, audio.alignment.reanchors,
                              resident.map(String.init).joined(separator: ","),
                              audio.underruns.load(ordering: .relaxed))
+        if let streamer {
+            let dropped = streamer.droppedChannels.load(ordering: .relaxed)
+            clockReport += String(format: ", last segment %d ms", streamer.lastLoadMilliseconds.load(ordering: .relaxed))
+                + (dropped > 0 ? ", \(dropped) channel(s) dropped for time" : "")
+        }
     }
 
     /// Audio position minus picture position, in ms, as each is currently

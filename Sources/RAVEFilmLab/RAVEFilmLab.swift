@@ -10,6 +10,8 @@
    FILM_START       start position in seconds
    FILM_AUTOPLAY    1 to start playing once loaded
    FILM_SCRIPT      timed actions for unattended runs, e.g. "6:seek=1800;12:pause;14:play;20:quit"
+   FILM_AUDIO       object-audio encoding: lossless (default), aac:<bps> or opus:<bps>
+   FILM_MUTE        1 to play silently (the whole audio path still runs)
                     (seconds after load : seek=<s> | play | pause | offset=<ms> | quit)
 
  Prints one telemetry line per second to stdout, so a run can be judged
@@ -134,7 +136,14 @@ struct LabView: View {
         let server = URL(string: environment["FILM_SERVER"] ?? "https://servo.akita-city.ts.net/jellyfin")!
         let item = environment["FILM_ITEM"] ?? "e586b2bba9cfb3cb27fb0ddfa602ac2f"
         let start = Double(environment["FILM_START"] ?? "") ?? 0
-        await player.load(FilmServerClient(baseURL: server, token: token, itemID: item), startAt: start)
+        var client = FilmServerClient(baseURL: server, token: token, itemID: item)
+        let audio = (environment["FILM_AUDIO"] ?? "").split(separator: ":")
+        if audio.count == 2, let bitrate = Int(audio[1]) {
+            client.encoding = audio[0] == "opus" ? .opus(bitrate: bitrate) : .aac(bitrate: bitrate)
+        }
+        if environment["FILM_MUTE"] == "1" { player.isMuted = true }
+        await player.load(client, startAt: start)
+        print("PlayerLab: object audio \(player.audioEncoding.map { "\($0)" } ?? "n/a")")
         print("PlayerLab: \(player.status) — \(player.video.formatSummary) — audio: \(player.audioStatus)")
         if environment["FILM_AUTOPLAY"] == "1" { player.play() }
 

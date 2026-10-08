@@ -81,9 +81,13 @@ public struct AtmosScene: Decodable, Sendable {
     public let groups: [[Int]]
     /// Container time of scene frame 0 (the TrueHD track's first access unit).
     public let startSeconds: Double
+    /// Lossy codecs the plugin's `Segments/{n}/Bundle` serves; nil from a
+    /// plugin that predates bundles (FLAC only).
+    public let bundleCodecs: [String]?
 
     public init(sampleRate: Int, elements: [Element], frameCount: Int, segmentFrames: Int, segmentCount: Int,
-                groups: [[Int]], startSeconds: Double) {
+                groups: [[Int]], startSeconds: Double, bundleCodecs: [String]? = nil) {
+        self.bundleCodecs = bundleCodecs
         self.sampleRate = sampleRate
         self.elements = elements
         self.frameCount = frameCount
@@ -185,7 +189,20 @@ public final class AtmosObjectAudio: @unchecked Sendable {
     /// Peak |sample| per channel since the UI last read it.
     let peak: UnsafeMutablePointer<Float>
 
-    public init(scene: AtmosScene, slotCount: Int = 6) {
+    /// Slots for `scene` within `budgetBytes` of samples: six for a typical
+    /// scene (a dozen elements, 10 s segments: 11.5 MB a slot), down to three
+    /// when a slot is large, as one with a hundred or more channels is
+    /// (128 channels of 10 s: 123 MB a slot).
+    public static func slotCount(for scene: AtmosScene, budgetBytes: Int = 256 << 20) -> Int {
+        let slotBytes = max(1, scene.segmentFrames * scene.elements.count * MemoryLayout<Int16>.size)
+        return min(6, max(3, budgetBytes / slotBytes))
+    }
+
+    public convenience init(scene: AtmosScene) {
+        self.init(scene: scene, slotCount: Self.slotCount(for: scene))
+    }
+
+    public init(scene: AtmosScene, slotCount: Int) {
         channelCount = scene.elements.count
         frameCount = scene.frameCount
         sampleRate = Double(scene.sampleRate)
@@ -346,9 +363,17 @@ public final class AtmosSegmentStreamer: Sendable {
     let scene: AtmosScene
     let groups: [[Int]]
     let segmentCount: Int
-    let lookahead = 3
+    /// Segments kept ahead of the playhead, and whether the one behind is
+    /// kept too: as many as the slots allow with one spare for the refill.
+    let lookahead: Int
+    let keepsBehind: Bool
     public let fetched = Atomic<Int>(0)
     public let failures = Atomic<Int>(0)
+    /// Channels left silent because a segment's decode ran past its
+    /// deadline (a device too slow for the scene), in total.
+    public let droppedChannels = Atomic<Int>(0)
+    /// How long the last segment took to fetch and decode, in milliseconds.
+    public let lastLoadMilliseconds = Atomic<Int>(0)
     /// Where the next fetches should centre; the transport moves it on seek
     /// before playback (and so the playhead) gets there.
     let focusFrame = Atomic<Int>(0)
@@ -361,6 +386,9 @@ public final class AtmosSegmentStreamer: Sendable {
         self.scene = scene
         groups = scene.groups
         segmentCount = scene.segmentCount
+        let slots = audio.slots.count
+        keepsBehind = slots >= 5
+        lookahead = max(1, slots - (keepsBehind ? 3 : 2))
     }
 
     public func track(segment: Int, element: Int) -> AtmosElementTrack? {
@@ -376,12 +404,13 @@ public final class AtmosSegmentStreamer: Sendable {
             let playing = audio.playing.load(ordering: .relaxed)
             let frame = playing ? audio.playhead.load(ordering: .relaxed) : focusFrame.load(ordering: .relaxed)
             let current = min(frame / audio.segmentFrames, segmentCount - 1)
-            let wanted = Array(max(0, current - 1) ... min(segmentCount - 1, current + lookahead))
+            let wanted = Array(max(0, current - (keepsBehind ? 1 : 0)) ... min(segmentCount - 1, current + lookahead))
             // Nearest first: the playhead's segment, then ahead, then the one behind.
             let order = wanted.sorted { abs($0 - current) + ($0 < current ? 10 : 0) < abs($1 - current) + ($1 < current ? 10 : 0) }
             if let next = order.first(where: { !audio.isResident($0) }) {
                 do {
-                    try await load(next, keeping: Set(wanted))
+                    try await load(next, keeping: Set(wanted),
+                                   deadline: playing ? deadline(for: next, playhead: frame) : nil)
                     fetched.add(1, ordering: .relaxed)
                 } catch {
                     if Task.isCancelled { return }
@@ -395,10 +424,26 @@ public final class AtmosSegmentStreamer: Sendable {
         }
     }
 
-    private func load(_ segment: Int, keeping wanted: Set<Int>) async throws {
+    /// When a segment has to be ready while playing: shortly before it
+    /// starts, but never less than a second away, so the segment under the
+    /// playhead (already late) still gets most of its channels back fast.
+    private func deadline(for segment: Int, playhead: Int) -> ContinuousClock.Instant {
+        let untilStart = Double(segment * audio.segmentFrames - playhead) / audio.sampleRate
+        return .now + .seconds(max(1, untilStart - 0.5))
+    }
+
+    private func load(_ segment: Int, keeping wanted: Set<Int>, deadline: ContinuousClock.Instant?) async throws {
         // Decode every group before claiming a slot, so the slot is only
         // unavailable for the copy itself.
-        let content = try await client.audioSegment(segment, of: scene)
+        let started = ContinuousClock.now
+        let content = try await client.audioSegment(segment, of: scene, deadline: deadline)
+        let took = ContinuousClock.now - started
+        lastLoadMilliseconds.store(Int(took.components.seconds * 1000 + took.components.attoseconds / 1_000_000_000_000_000),
+                                   ordering: .relaxed)
+        if content.droppedChannels > 0 {
+            droppedChannels.add(content.droppedChannels, ordering: .relaxed)
+            logger.error("Segment \(segment): \(content.droppedChannels) quiet channel(s) left silent to meet the deadline")
+        }
         let events = content.events
         let decoded = Array(zip(groups, content.buffers))
         guard let slot = audio.slots.first(where: { !wanted.contains($0.segment.load(ordering: .acquiring)) }) else { return }
