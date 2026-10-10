@@ -14,7 +14,7 @@
 
  A packed stereo video (side by side, over/under) takes the same road with the
  warp swapped for a crop: each eye is cut out of the decoded frame
- (`RAVEPackedStereoLayout`), so real 3D plays straight from the decoder with
+ (`PackedStereoLayout`), so real 3D plays straight from the decoder with
  no depth model and no MV-HEVC conversion. Everything after the eye targets is
  shared, which is the point: the format, tags and pacing the compositor accepts
  were found on device once, for both.
@@ -159,10 +159,10 @@ public final class StereoPump: @unchecked Sendable {
     /// heuristic warp only, e.g. a restored window whose model vanished).
     private let depthSource: PumpDepthSource?
     /// Set for a video that already carries both eyes: crop instead of warp.
-    private let packedLayout: RAVEPackedStereoLayout?
+    private let packedLayout: PackedStereoLayout?
     /// Pump-queue only: the packed frame size last checked against the tag.
     private var checkedPackedSize: CGSize?
-    private var correctedLayout: RAVEPackedStereoLayout?
+    private var correctedLayout: PackedStereoLayout?
     private var lastReportedSize: CGSize?
     /// Pump-queue only. One line per pump, not one per frame at 60Hz.
     private var didWarnAboutPixelFormat = false
@@ -244,7 +244,7 @@ public final class StereoPump: @unchecked Sendable {
         startHostTime: CFTimeInterval,
         depthSource: PumpDepthSource?,
         frameInterval: Double,
-        packedLayout: RAVEPackedStereoLayout? = nil,
+        packedLayout: PackedStereoLayout? = nil,
         onVideoSizeKnown: @escaping @Sendable (CGSize) -> Void
     ) {
         var session: VTPixelTransferSession?
@@ -680,7 +680,7 @@ public final class StereoPump: @unchecked Sendable {
     /// The packed layout with its half/full tag checked against the frame's
     /// shape (see `correctingResolution`); re-checked only when the size
     /// changes.
-    private func packedLayout(forFrame size: CGSize) -> RAVEPackedStereoLayout? {
+    private func packedLayout(forFrame size: CGSize) -> PackedStereoLayout? {
         guard let packedLayout else { return nil }
         if checkedPackedSize != size {
             checkedPackedSize = size
@@ -700,8 +700,8 @@ public final class StereoPump: @unchecked Sendable {
     /// One eye of a packed stereo frame: a crop of the source, stretched to
     /// the eye buffer.
     private func encodePackedEye(
-        _ eye: RAVEPackedStereoLayout.Eye,
-        layout: RAVEPackedStereoLayout,
+        _ eye: PackedStereoLayout.Eye,
+        layout: PackedStereoLayout,
         into dest: MTLTexture,
         source: MTLTexture,
         config: Config,

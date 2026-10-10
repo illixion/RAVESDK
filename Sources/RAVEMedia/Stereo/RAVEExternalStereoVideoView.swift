@@ -19,7 +19,7 @@ public struct RAVEExternalStereoVideoView: View {
     private let chromeTakesInput: Bool
     private let onUnavailable: () -> Void
     private let onToggleChrome: () -> Void
-    private let packedStereo: RAVEPackedStereoLayout?
+    private let packedStereo: PackedStereoLayout?
     private let squareCorners: Bool
     private let subtitles: RAVEStereoSubtitleFrame?
     private let onPerformance: ((RAVEStereoPerformance) -> Void)?
@@ -27,7 +27,7 @@ public struct RAVEExternalStereoVideoView: View {
 
     public init(source: any PumpFrameSource, settings: Pseudo3DSettings = .default,
                 chromeOpen: Bool = false, chromeTakesInput: Bool = false,
-                packedStereo: RAVEPackedStereoLayout? = nil,
+                packedStereo: PackedStereoLayout? = nil,
                 squareCorners: Bool = false,
                 subtitles: RAVEStereoSubtitleFrame? = nil,
                 onUnavailable: @escaping () -> Void,

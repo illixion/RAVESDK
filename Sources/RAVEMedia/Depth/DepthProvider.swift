@@ -122,14 +122,14 @@ public final class RealtimeDepthSource: PumpDepthSource, @unchecked Sendable {
     /// warp has fully completed before the next tick.
     private var held: PumpFrameDepth?
     private var heldItemSeconds = -Double.infinity
-    /// Studio refinement (`RAVEDepthRefinement`), decided at creation: anchored
+    /// Studio refinement (`DepthRefinement`), decided at creation: anchored
     /// shot-space depth, the depth budget, edge-aware filtering.
     private let refined: Bool
 
     public init?(device: MTLDevice) {
         guard let provider = CoreMLDepthProvider(device: device, role: .realtime) else { return nil }
         self.provider = provider
-        self.refined = RAVEDepthRefinement.isEnabled && provider.supportsRefinement
+        self.refined = DepthRefinement.isEnabled && provider.supportsRefinement
     }
 
     /// An inference hiccup renders flat (+ ramp back) rather than swapping in

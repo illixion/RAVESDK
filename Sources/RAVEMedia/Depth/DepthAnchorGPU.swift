@@ -39,40 +39,6 @@ struct DepthAnchorApplyParams {
     var staticAlpha: Float
 }
 
-/// The previous frame's background layer, in its own units: pixels it put
-/// nearer than `ceiling` don't anchor the next fit.
-struct DepthAnchorCeiling {
-    var ceiling: Float
-    var softness: Float
-
-    static let none = DepthAnchorCeiling(ceiling: .greatestFiniteMagnitude, softness: 1)
-
-    /// Everything the frame's shot-space `mapping` put farther than
-    /// `DepthAlignmentSums.anchorCeiling`, with an edge 0.05 of shot space wide.
-    init(mapping: DepthAffine) {
-        guard let inverse = mapping.inverse else {
-            self = .none
-            return
-        }
-        ceiling = inverse(DepthAlignmentSums.anchorCeiling)
-        softness = 0.05 / mapping.a
-    }
-
-    init(ceiling: Float, softness: Float) {
-        self.ceiling = ceiling
-        self.softness = softness
-    }
-}
-
-/// What one anchor reduction says about a frame.
-struct DepthAnchorStats {
-    var sums: DepthAlignmentSums
-    /// Mean absolute luma change against the previous frame (nil without one).
-    var meanLumaDelta: Float?
-    var min: Float
-    var max: Float
-}
-
 final class DepthAnchorGPU {
     /// Floats per threadgroup partial; matches `depthAnchorPartialStride`.
     static let partialStride = 9
@@ -118,7 +84,7 @@ final class DepthAnchorGPU {
         }
         guard let partials else { return false }
         var params = DepthAnchorReduceParams(
-            staticLuma: RAVEDepthRefinement.staticLumaThreshold,
+            staticLuma: DepthRefinement.staticLumaThreshold,
             hasPrev: depthPrev != nil && guidePrev != nil ? 1 : 0,
             ceiling: background.ceiling,
             ceilingSoftness: max(background.softness, 1e-6)
@@ -365,7 +331,7 @@ final class RealtimeDepthRefiner {
             a: mapping.a, b: mapping.b,
             baseAlpha: Self.emaBaseAlpha, motionGain: Self.emaMotionGain,
             hasPrev: usePrev && !cut ? 1 : 0,
-            staticLuma: RAVEDepthRefinement.staticLumaThreshold,
+            staticLuma: DepthRefinement.staticLumaThreshold,
             staticAlpha: Self.emaStaticAlpha
         )
         applyEnc.setComputePipelineState(anchor.applyPipeline)

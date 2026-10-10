@@ -30,13 +30,15 @@ let package = Package(
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
     ],
-    // The one external dependency. Targets that log do it through
-    // DebugTrace's `DebugLogger`, so their lines reach the in-app console and
-    // debug traces; the console also hosts its capture button.
-    // DebugTrace depends on neither RAVE package, so this adds no cycle and
-    // no RAVESDK <-> RAVEEngine edge. See ~/Projects/CLAUDE.md.
+    // The two sibling packages, neither depending on a RAVE package, so
+    // neither adds a cycle or a RAVESDK <-> RAVEEngine edge (see
+    // ~/Projects/CLAUDE.md). Targets that log do it through DebugTrace's
+    // `DebugLogger`, so their lines reach the in-app console and debug
+    // traces; the console also hosts its capture button. Vergence is the
+    // public stereo 3D pipeline RAVEMedia is moving into.
     dependencies: [
         .package(path: "../DebugTrace"),
+        .package(path: "../vergence"),
     ],
     targets: [
         .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
@@ -64,7 +66,10 @@ let package = Package(
         // source: Xcode compiles it into the target's own `default.metallib`,
         // which is why nothing here reads the app's default library. (The
         // SwiftPM CLI ignores `.metal` altogether — see RAVEMediaMetal.)
-        .target(name: "RAVEMedia", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
+        .target(name: "RAVEMedia", dependencies: [
+            .product(name: "DebugTrace", package: "DebugTrace"),
+            .product(name: "VergenceCore", package: "vergence"),
+        ]),
         .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"], resources: [.copy("Fixtures")]),
         // The Persona camera as AVCapture delivers it, plus the realtime H.264
         // encoder and AVCC helpers every consumer of those frames needs. Its

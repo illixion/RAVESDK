@@ -206,7 +206,7 @@ public final class Pseudo3DStereoEngine {
     /// Set when the video already carries both eyes (side by side, over/under):
     /// the pump crops each eye out instead of warping, and no depth model or
     /// cache is involved. Part of what is loaded, like the URL.
-    public private(set) var packedLayout: RAVEPackedStereoLayout?
+    public private(set) var packedLayout: PackedStereoLayout?
     /// Physical width of the fitted video plane in meters (videoAspect × entity
     /// scale, tracked by fitVideo). Drives plane-size disparity normalization —
     /// see makePumpConfig.
@@ -624,7 +624,7 @@ public final class Pseudo3DStereoEngine {
     /// - Parameter packedStereo: the video is already stereo, packed this way.
     ///   It plays as real 3D, cropped per eye, and needs no depth model;
     ///   `depthMode` is ignored. Nil is the fake-3D warp of a mono video.
-    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false, httpHeaderFields: [String: String]? = nil, packedStereo: RAVEPackedStereoLayout? = nil) {
+    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false, httpHeaderFields: [String: String]? = nil, packedStereo: PackedStereoLayout? = nil) {
         if let requestedMode { depthMode = requestedMode }
         if let httpHeaderFields { self.httpHeaderFields = httpHeaderFields }
         guard loadedURL != url || packedLayout != packedStereo else { return }
@@ -845,7 +845,7 @@ public final class Pseudo3DStereoEngine {
     ///   same "no fake-3D" answer `load(url:…)` gives, which callers already
     ///   handle by staying on the flat page.
     @discardableResult
-    public func attach(frameSource: PumpFrameSource, packedStereo: RAVEPackedStereoLayout? = nil) -> Bool {
+    public func attach(frameSource: PumpFrameSource, packedStereo: PackedStereoLayout? = nil) -> Bool {
         // Fake-3D requires real depth; there is no heuristic fallback. Checked
         // before teardown so a failed attach leaves any current playback alone.
         guard Pseudo3DDiagnostics.useStaticTestPattern || packedStereo != nil
