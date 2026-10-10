@@ -629,7 +629,7 @@ to BGRA with a `VTPixelTransferSession`.
 
 **Pictures the platform can't decode.** `FilmVideoPlayer.load(_: FilmPictureSource)`
 replaces the plugin's segments with frames an app decodes itself (Hypnos's
-`MVCPictureSource`: Blu-ray MVC 3D via the local `mvc3d` package). Frames are
+`MVCPictureSource`: Blu-ray MVC 3D via the local `vergence` package, formerly mvc3d). Frames are
 uncompressed sample buffers in film time, starting exactly at the seek
 target, fed to the same display layer and timebase, so `FilmPlayer`'s audio
 anchoring is unchanged; only `pictureAheadSeconds` (0.75 s) is queued, as
