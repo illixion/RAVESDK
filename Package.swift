@@ -46,6 +46,9 @@ let package = Package(
         .target(name: "RAVEUI", dependencies: ["RAVEMediaCore"]),
         .target(name: "RAVEMediaCore"),
         .target(name: "RAVEQuestCore", dependencies: ["RAVEMediaCore"]),
+        // Drives the JSON boundary (`rave_quest_call`) the Quest app calls,
+        // against a URLProtocol stub of Jellyfin: no server is ever reached.
+        .testTarget(name: "RAVEQuestCoreTests", dependencies: ["RAVEQuestCore", "RAVEMediaCore"]),
         // Unit tests, despite the name: SwiftPM has no UI-testing product type
         // and XCUITest needs a host app, so driving these views for real
         // happens in a host app's UI test target (Spatial Stash's, which links
