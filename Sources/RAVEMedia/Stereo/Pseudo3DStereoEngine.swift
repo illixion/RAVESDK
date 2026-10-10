@@ -109,7 +109,27 @@ public final class Pseudo3DStereoEngine {
 
     // Source / clock
     private var player: AVPlayer?
-    private var playerItem: AVPlayerItem?
+    private var playerItem: AVPlayerItem? {
+        didSet { playerItem?.preferredMaximumResolution = preferredMaximumResolution }
+    }
+    /// The largest picture an adaptive (HLS) source may choose; zero leaves
+    /// it to the player. A host lowers it when the conversion can't keep up.
+    public var preferredMaximumResolution: CGSize = .zero {
+        didSet {
+            guard preferredMaximumResolution != oldValue, let playerItem else { return }
+            playerItem.preferredMaximumResolution = preferredMaximumResolution
+            // The player keeps what it has buffered (up to a minute or more)
+            // at the old size; a seek to the playhead drops it, and the new
+            // cap shows within about a second (measured on Apple's HLS sample).
+            if Self.isLower(preferredMaximumResolution, than: oldValue) { seek(to: currentTime) }
+        }
+    }
+
+    /// Whether `cap` allows less than `previous` (zero is no cap).
+    nonisolated static func isLower(_ cap: CGSize, than previous: CGSize) -> Bool {
+        guard cap != .zero else { return false }
+        return previous == .zero || cap.width < previous.width || cap.height < previous.height
+    }
     private var videoOutput: AVPlayerItemVideoOutput?
     private var loadedURL: URL?
     /// Headers for the loaded source — see `load(url:roomActive:…)`.

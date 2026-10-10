@@ -18,6 +18,7 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
     case auto
     case original
     case mbps40
+    case mbps30
     case mbps20
     case mbps10
     case mbps4
@@ -32,13 +33,14 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
     }
 
     /// The capped levels, highest first: what `auto` steps down through.
-    public static let capped: [LibraryStreamQuality] = [.mbps40, .mbps20, .mbps10, .mbps4, .mbps1_5]
+    public static let capped: [LibraryStreamQuality] = [.mbps40, .mbps30, .mbps20, .mbps10, .mbps4, .mbps1_5]
 
     /// Total bitrate (video + audio), or nil for the original.
     public var maxBitrate: Int? {
         switch self {
         case .auto, .original: nil
         case .mbps40: 40_000_000
+        case .mbps30: 30_000_000
         case .mbps20: 20_000_000
         case .mbps10: 10_000_000
         case .mbps4: 4_000_000
@@ -51,6 +53,7 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
         switch self {
         case .auto, .original: nil
         case .mbps40: 3840
+        case .mbps30: 2560
         case .mbps20, .mbps10: 1920
         case .mbps4: 1280
         case .mbps1_5: 854
@@ -61,6 +64,7 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
         switch self {
         case .auto, .original: nil
         case .mbps40: 2160
+        case .mbps30: 1440
         case .mbps20, .mbps10: 1080
         case .mbps4: 720
         case .mbps1_5: 480
@@ -88,6 +92,7 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
         case .auto: "Auto"
         case .original: "Always Direct Play"
         case .mbps40: "4K · 40 Mbps"
+        case .mbps30: "1440p · 30 Mbps"
         case .mbps20: "1080p · 20 Mbps"
         case .mbps10: "1080p · 10 Mbps"
         case .mbps4: "720p · 4 Mbps"
@@ -101,6 +106,7 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
         case .auto: "Auto"
         case .original: "Original"
         case .mbps40: "4K"
+        case .mbps30: "1440p"
         case .mbps20: "1080p 20"
         case .mbps10: "1080p 10"
         case .mbps4: "720p"
@@ -134,6 +140,15 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
             let bitrate = Int(value)
         else { return nil }
         return capped.first { $0.maxBitrate == bitrate }
+    }
+
+    /// The highest capped level whose picture is smaller than `height`, at
+    /// or below `current` (nil: the original): where a stream whose picture
+    /// is too large to convert to 3D in time goes. Nil when nothing lower
+    /// would make the picture smaller.
+    public static func smallerPicture(than height: Int, from current: LibraryStreamQuality?) -> LibraryStreamQuality? {
+        let ceiling = current?.maxBitrate ?? Int.max
+        return capped.first { ($0.maxBitrate ?? 0) <= ceiling && ($0.maxHeight ?? 0) < height && $0 != current }
     }
 
     /// The next level down from what is playing now, or nil at the bottom.
