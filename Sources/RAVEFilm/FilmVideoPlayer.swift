@@ -301,6 +301,16 @@ public final class FilmVideoPlayer {
                 segments[n] = nil // retry with a fresh request
                 status = "Segment \(n) failed: \(error.localizedDescription)"
                 logger.error("\(self.status, privacy: .public)")
+                // The clock (the sound) doesn't wait for the picture. Once it
+                // is past this segment, its frames could only show late, so
+                // go on to the next keyframe: retrying it forever froze the
+                // picture for the rest of the film while the sound played on
+                // (a plugin that never produced one segment, 2026-10-10).
+                if n + 1 < index.segmentStarts.count, currentTime >= index.segmentStarts[n + 1] {
+                    logger.error("Skipping video segment \(n, privacy: .public): the film is already past it")
+                    n += 1
+                    continue
+                }
                 try? await Task.sleep(for: .seconds(1))
                 continue
             }
