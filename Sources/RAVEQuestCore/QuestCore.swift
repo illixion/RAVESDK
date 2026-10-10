@@ -101,6 +101,15 @@ private struct Segment: Decodable {
     let EndTicks: Int64?
 }
 private struct Chapter: Decodable { let Name: String?; let StartPositionTicks: Int64? }
+/// The Convolution plugin's answer for spatial video (GET Spatial/{id}).
+private struct SpatialStream: Decodable {
+    let spatial: Bool
+    let playlist: String?
+    let video3DFormat: String?
+    let width: Int?
+    let height: Int?
+    let bitsPerSecond: Int?
+}
 private enum CoreFailure: Error { case invalidCommand, noSource, downloadsForbidden }
 
 private func json(_ object: Any) throws -> String {
@@ -313,6 +322,19 @@ private func execute(_ c: Command) async throws -> String {
         var query = [URLQueryItem(name: "MediaSourceId", value: source.Id),
                      URLQueryItem(name: "DeviceId", value: "convolution-quest"),
                      URLQueryItem(name: "PlaySessionId", value: session)]
+        // A spatial video (MV-HEVC, from a Vision Pro or iPhone) decodes here
+        // as its left eye only. The plugin streams it side by side instead,
+        // converting as it plays; whatever quality was asked for, that
+        // stream is the only 3D one.
+        if let spatial = await spatialStream(client, itemID: itemID, source: source, video: video) {
+            return try json(["url": client.request(spatial.playlist!).url!.absoluteString, "authorization": c.authorization ?? "",
+                             "name": item.Name ?? "Untitled", "sourceID": source.Id, "playSessionID": session,
+                             "width": spatial.width ?? 3840, "height": spatial.height ?? 1920, "codec": "hevc",
+                             "bitrate": spatial.bitsPerSecond ?? source.Bitrate ?? 0,
+                             "stereo": spatial.video3DFormat ?? "FullSideBySide", "subtitles": [[String: Any]](),
+                             "quality": quality.rawValue, "spatialVideo": true,
+                             "position": c.position ?? Double(item.UserData?.PlaybackPositionTicks ?? 0) / 10_000_000])
+        }
         let path: String
         if quality.caps(sourceBitrate: source.Bitrate) {
             path = "Videos/\(itemID)/master.m3u8"
@@ -355,6 +377,19 @@ private func execute(_ c: Command) async throws -> String {
     default: throw CoreFailure.invalidCommand
     }
 }
+/// The plugin's side-by-side stream of a spatial video, when this is one and
+/// the server has the plugin. Only HEVC in MOV/MP4 is asked about, and any
+/// failure (no plugin, not spatial, a server that can't decode MV-HEVC) means
+/// the item plays as it is.
+private func spatialStream(_ client: JellyfinHTTP, itemID: String, source: Source, video: Stream?) async -> SpatialStream? {
+    let containers = Set((source.Container ?? "").lowercased().split(separator: ",").map(String.init))
+    guard video?.Codec?.lowercased() == "hevc", !containers.isDisjoint(with: ["mov", "mp4", "m4v"]),
+          let data = try? await client.data("Spatial/\(itemID)", timeout: 40),
+          let spatial = try? JSONDecoder().decode(SpatialStream.self, from: data),
+          spatial.spatial, spatial.playlist != nil else { return nil }
+    return spatial
+}
+
 private func subtitleJSON(_ text: String) throws -> String {
     let track = try RAVESubtitleTrack(text: text)
     return try json(["cues": track.cues.map { cue in
