@@ -22,6 +22,7 @@ public struct RAVEExternalStereoVideoView: View {
     private let packedStereo: RAVEPackedStereoLayout?
     private let squareCorners: Bool
     private let subtitles: RAVEStereoSubtitleFrame?
+    private let onPerformance: ((RAVEStereoPerformance) -> Void)?
     @State private var engine = Pseudo3DStereoEngine()
 
     public init(source: any PumpFrameSource, settings: Pseudo3DSettings = .default,
@@ -30,7 +31,9 @@ public struct RAVEExternalStereoVideoView: View {
                 squareCorners: Bool = false,
                 subtitles: RAVEStereoSubtitleFrame? = nil,
                 onUnavailable: @escaping () -> Void,
-                onToggleChrome: @escaping () -> Void = {}) {
+                onToggleChrome: @escaping () -> Void = {},
+                onPerformance: ((RAVEStereoPerformance) -> Void)? = nil) {
+        self.onPerformance = onPerformance
         self.packedStereo = packedStereo
         self.squareCorners = squareCorners
         self.subtitles = subtitles
@@ -49,6 +52,7 @@ public struct RAVEExternalStereoVideoView: View {
                 engine.setChromeOpen(chromeOpen, takesInput: chromeTakesInput)
                 engine.setSquareCorners(squareCorners)
                 engine.onPlaybackError = onUnavailable
+                engine.onPerformance = onPerformance
                 engine.setSubtitles(subtitles)
                 content.add(engine.makeVideoEntity())
                 engine.observeVideoSize(content: content)

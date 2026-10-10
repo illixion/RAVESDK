@@ -231,6 +231,9 @@ public final class Pseudo3DStereoEngine {
     // Callbacks
     @ObservationIgnored public var onVideoSizeKnown: ((CGSize) -> Void)?
     @ObservationIgnored public var onPlaybackError: (() -> Void)?
+    /// Every couple of seconds of playback: whether the conversion keeps up
+    /// with the source (`RAVEStereoPerformance.isOverloaded`). Main actor.
+    @ObservationIgnored public var onPerformance: ((RAVEStereoPerformance) -> Void)?
     @ObservationIgnored public var onDurationKnown: ((Double) -> Void)?
     /// One-shot latch for `onDurationKnown` (duration is polled from the
     /// periodic time observer, which fires ~30×/s). Reset per loaded item.
@@ -488,6 +491,15 @@ public final class Pseudo3DStereoEngine {
             }
         }
         let now = CACurrentMediaTime()
+        // Engaged with a menu already open (3D picked from the More
+        // popover): start flat and dimmed, the way the picture looks under
+        // an open menu, rather than easing out of a 3D first frame.
+        guard videoEntity != nil else {
+            chromeFadeTask?.cancel()
+            chromeBlend = open ? 1 : 0
+            lastChromeTransition = now
+            return
+        }
         chromeFadeDuration = now - lastChromeTransition < Self.chromeFadeRepeatWindow
             ? min(chromeFadeDuration * 2, Self.chromeFadeMaxDuration)
             : Self.chromeFadeBaseDuration
@@ -523,6 +535,12 @@ public final class Pseudo3DStereoEngine {
         guard abs(contentOpacity - clamped) > 0.001 else { return }
         contentOpacity = clamped
         applyChromeOpacity()
+    }
+
+    private func performanceForwarder() -> @Sendable (RAVEStereoPerformance) -> Void {
+        { [weak self] sample in
+            Task { @MainActor in self?.onPerformance?(sample) }
+        }
     }
 
     /// Reflect `chromeOpen` on the entity. Called from setChromeOpen AND after
@@ -785,6 +803,7 @@ public final class Pseudo3DStereoEngine {
             Task { @MainActor in self.onPlaybackError?() }
             return
         }
+        pump.onPerformance = performanceForwarder()
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump
@@ -867,6 +886,7 @@ public final class Pseudo3DStereoEngine {
             Task { @MainActor in self.onPlaybackError?() }
             return false
         }
+        pump.onPerformance = performanceForwarder()
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump

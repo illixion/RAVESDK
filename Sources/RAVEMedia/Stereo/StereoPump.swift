@@ -199,6 +199,24 @@ public final class StereoPump: @unchecked Sendable {
     private var stageTiming = StageTiming()
     private let stageTimingLogInterval: Double = 5
 
+    /// Pump-queue only: how many of the source's frames reach the eyes,
+    /// reported through `onPerformance` every `performanceInterval`.
+    private var delivery = DeliveryWindow()
+    private let performanceInterval: Double = 2
+    /// Any thread may read; set before `start()`. Called on the pump queue.
+    public var onPerformance: (@Sendable (RAVEStereoPerformance) -> Void)?
+
+    private struct DeliveryWindow {
+        var frames = 0
+        var itemSpan = 0.0
+        var lastItemSeconds: Double?
+        /// The shortest gap between consecutive frames seen this pump: the
+        /// source's own frame spacing. Lifetime, so a window of drops can't
+        /// redefine it.
+        var sourceSpacing = Double.infinity
+        var windowStart = CACurrentMediaTime()
+    }
+
     private struct StageTiming {
         var depth = 0.0
         var warp = 0.0
@@ -373,6 +391,41 @@ public final class StereoPump: @unchecked Sendable {
         // timeline governs audio and seeking, and stays with the source.
         let pts = CMTime(seconds: hostTime - startHostTime, preferredTimescale: 90_000)
         renderAndEnqueue(from: frame.pixelBuffer, itemTime: frame.itemTime, cache: textureCache, pts: pts)
+        noteDelivered(itemSeconds: frame.itemTime.seconds, at: CACurrentMediaTime())
+    }
+
+    /// Counts a frame that reached the eyes against the source time it
+    /// covers. A pump that can't keep up takes only the newest decoded
+    /// frame, so the source frames between are never shown: the gaps between
+    /// shown frames grow past the source's own spacing.
+    private func noteDelivered(itemSeconds: Double, at now: CFTimeInterval) {
+        guard itemSeconds.isFinite else { return }
+        if let last = delivery.lastItemSeconds {
+            let gap = itemSeconds - last
+            // A seek, a loop or a pause/resume isn't a run of dropped frames.
+            if gap > 0, gap < 0.25 {
+                delivery.sourceSpacing = min(delivery.sourceSpacing, max(gap, 1.0 / 120.0))
+                delivery.itemSpan += gap
+                delivery.frames += 1
+            }
+        }
+        delivery.lastItemSeconds = itemSeconds
+        let window = now - delivery.windowStart
+        guard window >= performanceInterval else { return }
+        defer {
+            delivery.frames = 0
+            delivery.itemSpan = 0
+            delivery.windowStart = now
+        }
+        guard let onPerformance, delivery.frames >= 4, delivery.sourceSpacing.isFinite,
+              delivery.itemSpan > 0 else { return }
+        let expected = delivery.itemSpan / delivery.sourceSpacing
+        onPerformance(RAVEStereoPerformance(
+            shownFramesPerSecond: Double(delivery.frames) / window,
+            sourceFramesPerSecond: 1 / delivery.sourceSpacing,
+            deliveredFraction: min(1, Double(delivery.frames) / expected),
+            playbackRate: delivery.itemSpan / window
+        ))
     }
 
     /// Warp the mono frame into two BGRA eye render targets, convert each to a
@@ -799,3 +852,32 @@ private func fourCC(_ value: OSType) -> String {
 }
 
 #endif
+
+/// How well the stereo pump keeps up with its source, over the last couple
+/// of seconds of playback. Reported only while frames are arriving, so a
+/// paused or stalled player says nothing (a stall is the player's to report).
+public struct RAVEStereoPerformance: Sendable, Equatable {
+    /// Frames that reached the eyes, per second of wall time.
+    public var shownFramesPerSecond: Double
+    /// The source's own frame rate, from the shortest gap between frames.
+    public var sourceFramesPerSecond: Double
+    /// Of the source frames the playhead passed, the share that was shown
+    /// (1 = every frame). Below ~0.75 the picture visibly stutters.
+    public var deliveredFraction: Double
+    /// Source seconds per wall second; well under 1 means the player itself
+    /// is starving (decode or network), not the conversion.
+    public var playbackRate: Double
+
+    public init(shownFramesPerSecond: Double, sourceFramesPerSecond: Double,
+                deliveredFraction: Double, playbackRate: Double) {
+        self.shownFramesPerSecond = shownFramesPerSecond
+        self.sourceFramesPerSecond = sourceFramesPerSecond
+        self.deliveredFraction = deliveredFraction
+        self.playbackRate = playbackRate
+    }
+
+    /// The conversion, not the source, is what's falling behind.
+    public var isOverloaded: Bool {
+        deliveredFraction < 0.75 && playbackRate > 0.8
+    }
+}
