@@ -87,11 +87,11 @@ is easy to skip.
 | Target | Purpose |
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
-| `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager, shared player controls, subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
+| `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager, shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
 | `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality/stall rules, Up Next ordering and skip-segment models/policy. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
-| `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp |
+| `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Moving into `~/Projects/vergence` (public, cross-platform): its Foundation-only half already lives in Vergence's `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there, on macOS, Linux and Android |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 | `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
@@ -429,7 +429,7 @@ front, and arbitrary browsing has neither.
 
 **Packed stereo is the same pump with a crop for a warp.** A video that already holds
 both eyes (side by side or over/under, each at full or half resolution) passes
-`packedStereo: RAVEPackedStereoLayout` to `load(url:…)` or `attach(frameSource:…)`.
+`packedStereo: PackedStereoLayout` to `load(url:…)` or `attach(frameSource:…)`.
 The pump then cuts each eye out of the decoded frame (`videoPackedEyeFragmentShader`,
 which also stretches a half-resolution eye back out) instead of warping, needs no depth
 model, and reports one eye's display size so the plane fits the picture, not the packed
@@ -480,7 +480,7 @@ here needs the same; RAVEFilm depends on RAVEMedia for it.
 relativeTo: nil)`), refits on any scale change above 0.001 (a 0.02 threshold left it ~4 %
 oversized after a window resize), and with `setSquareCorners(true)` overscans by
 `squareCornerOverscan` so the window edge squares the screen mesh's rounded corners; that
-needs the window to be the picture alone. `RAVEPackedStereoLayout.correctingResolution`
+needs the window to be the picture alone. `PackedStereoLayout.correctingResolution`
 overrules a wrong half/full tag from the frame's shape (Jellyfin calls a plain `.3D.SBS.`
 file half side by side).
 
@@ -538,7 +538,7 @@ stabilizer: its temporal EMA would blend one image's depth into the next. Same
 one-caller-at-a-time rule as the video entry points; Hypnos's gallery tiles own a
 dedicated provider for it.
 
-**Depth is anchored, not normalized per frame** (`DepthRefinement.swift`,
+**Depth is anchored, not normalized per frame** (`DepthRefinement.swift` in Vergence's `VergenceCore`,
 `DepthAnchorGPU.swift`). Apple's Core ML Depth Anything V2 normalizes each map to
 its own min…max, so a subject walking up to the camera used to push the unchanged
 room back ("depth breathing"; measured with the real model on a composited clip:
@@ -584,7 +584,7 @@ environment across a shot; the pipeline now does the same, realtime and cached:
 Realtime runs two waited command buffers per inference (guide + bilateral +
 anchor reduce + range fold + histogram; then apply) — on an M-series Mac the
 whole call measured 34.7 ms vs 33.5 ms for the old stabilized one, i.e. ~1 ms of
-added work; device cost is unmeasured. `RAVEDepthRefinement.isEnabled`
+added work; device cost is unmeasured. `DepthRefinement.isEnabled`
 (`depthRefinementEnabled`, default on; Hypnos → Settings → Stable Depth) is read
 when a `RealtimeDepthSource` is built. The converter always refines (v5): it fits
 consecutive refined maps in stage B, aligns each temporal-window neighbour into the
