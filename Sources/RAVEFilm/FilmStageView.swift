@@ -23,11 +23,21 @@
    explicit `audioListener` entity hung the main thread in RealityKit's
    listener-transform SVD on iOS, so it isn't used.
 
+ An audio session interruption (another app taking the session; YouTube
+ did, visionOS 2026-10-10) leaves RealityKit's generators silent for good:
+ the transport kept running and seeking changed nothing. As in
+ `FilmPhaseStageView`, the film pauses when one begins and the generators
+ are rebuilt when it ends, on a media services reset, and on the next play
+ while still interrupted (an app that takes the session needn't ever say it
+ is done with it). `AtmosObjectAudio`'s host-time anchoring lines the new
+ generators up again.
+
  Moved from the app's Atmos spike (AtmosSpikeStageView).
  */
 
 import DebugTrace
 import AudioToolbox
+import AVFAudio
 import os
 import RealityKit
 import SwiftUI
@@ -48,6 +58,8 @@ public struct FilmStageView: View {
     @State private var appliedReverb: Float?
     @State private var builtFor: ObjectIdentifier?
     @State private var tickTask: Task<Void, Never>?
+    /// An interruption began and the generators haven't been rebuilt since.
+    @State private var interrupted = false
     #if !os(visionOS)
     @State private var listener = PerspectiveCamera()
     #endif
@@ -82,7 +94,44 @@ public struct FilmStageView: View {
             tickTask?.cancel()
             teardown()
         }
+        #if !os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
+            handleInterruption(note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in
+            logger.info("Media services reset; rebuilding the generators")
+            teardown()
+        }
+        #endif
     }
+
+    #if !os(macOS)
+    private func handleInterruption(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            logger.info("Audio session interrupted; pausing")
+            interrupted = true
+            player.pause()
+        case .ended:
+            let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+            logger.info("Interruption ended (resume: \(options.contains(.shouldResume))); rebuilding the generators")
+            recoverFromInterruption()
+            if options.contains(.shouldResume) { player.play() }
+        @unknown default:
+            break
+        }
+    }
+
+    private func recoverFromInterruption() {
+        interrupted = false
+        try? AVAudioSession.sharedInstance().setActive(true)
+        // The next tick builds fresh generators for the same audio.
+        teardown()
+    }
+    #endif
 
     private func teardown() {
         for controller in controllers { controller.stop() }
@@ -162,6 +211,12 @@ public struct FilmStageView: View {
     }
 
     private func tick() {
+        #if !os(macOS)
+        if interrupted, player.isPlaying {
+            logger.info("Playing after an interruption that never ended; rebuilding the generators")
+            recoverFromInterruption()
+        }
+        #endif
         buildIfNeeded()
         player.tick()
         #if os(visionOS)
