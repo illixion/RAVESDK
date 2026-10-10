@@ -13,7 +13,8 @@
    FILM_AUDIO       object-audio encoding: lossless (default), aac:<bps>, opus:<bps> or auto
    FILM_LINK        with auto, the path it sees: cellular or constrained (default: unmetered)
    FILM_MUTE        1 to play silently (the whole audio path still runs)
-                    (seconds after load : seek=<s> | play | pause | offset=<ms> | quit)
+   FILM_PICTURE     a lower picture tier to open at (1440 or 1080, when the plugin offers it)
+                    (seconds after load : seek=<s> | play | pause | offset=<ms> | tier=<height|original> | quit)
 
  Prints one telemetry line per second to stdout, so a run can be judged
  from its log as well as by eye.
@@ -148,7 +149,8 @@ struct LabView: View {
             client.governor = FilmAudioGovernor(link: { link })
         }
         if environment["FILM_MUTE"] == "1" { player.isMuted = true }
-        await player.load(client, startAt: start)
+        await player.load(client, startAt: start, pictureHeight: Int(environment["FILM_PICTURE"] ?? ""))
+        print("PlayerLab: picture tiers offered \(player.video.offeredPictureHeights)")
         print("PlayerLab: object audio \(player.audioEncoding.map { "\($0)" } ?? "n/a")")
         print("PlayerLab: \(player.status) — \(player.video.formatSummary) — audio: \(player.audioStatus)")
         if environment["FILM_AUTOPLAY"] == "1" { player.play() }
@@ -169,12 +171,20 @@ struct LabView: View {
                 default:
                     if action.hasPrefix("seek="), let target = Double(action.dropFirst(5)) { player.seek(to: target) }
                     if action.hasPrefix("offset="), let ms = Double(action.dropFirst(7)) { player.avOffsetMs = ms }
+                    if action.hasPrefix("tier=") {
+                        let height = Int(action.dropFirst(5))
+                        Task {
+                            let changed = await player.video.setPictureHeight(height)
+                            print("PlayerLab: tier → \(height.map(String.init) ?? "original"): \(changed ? "changed" : "unchanged") — \(player.video.formatSummary)")
+                        }
+                    }
                 }
                 next += 1
             }
             if Int(elapsed * 4) % 4 == 0 {
-                print(String(format: "PlayerLab: t=%.3f playing=%d seg=%d ahead=%.1f seek=%.0fms video=%@ layer=%d | audio %@ latency=%.0fms skew=%@",
-                             now, player.isPlaying ? 1 : 0, player.video.currentSegment, player.video.bufferedUntil - now,
+                print(String(format: "PlayerLab: t=%.3f playing=%d tier=%@ seg=%d ahead=%.1f seek=%.0fms video=%@ layer=%d | audio %@ latency=%.0fms skew=%@",
+                             now, player.isPlaying ? 1 : 0, player.video.pictureHeight.map(String.init) ?? "orig",
+                             player.video.currentSegment, player.video.bufferedUntil - now,
                              player.video.lastSeekLatency * 1000, player.video.status,
                              player.video.displayLayer.sampleBufferRenderer.status.rawValue,
                              player.clockReport, player.outputLatency * 1000,
