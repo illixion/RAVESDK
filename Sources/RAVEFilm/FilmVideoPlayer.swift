@@ -30,6 +30,17 @@
  app) replaces the segments: its frames go to the same layer on the same
  timebase, so the transport and the audio clock are unchanged. They arrive
  uncompressed, so only `pictureAheadSeconds` of them are queued.
+
+ visionOS draws the picture through RealityKit instead of the layer: a
+ `VideoPlayerComponent` on `videoEntity`, fed by a renderer of its own. HDR
+ and Dolby Vision through a display layer came out visibly darker and
+ flatter than the same frames through the video component, which is how
+ AVKit's own visionOS player draws (side by side on the device, 2026-10-10).
+ That renderer has no control timebase, so an `AVSampleBufferRenderSynchronizer`
+ clocks it and every change to `timebase` (start, halt, park) is made to the
+ synchronizer at the same host time; both count the host clock, so they
+ stay locked. A renderer no component holds throws on its first enqueue, so
+ the feed waits until a view has shown the entity (`pictureAttached`).
  */
 
 import DebugTrace
@@ -37,13 +48,28 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import Observation
+#if os(visionOS)
+import RealityKit
+#endif
 import os
 import RAVEMedia
 
 @MainActor
 @Observable
 public final class FilmVideoPlayer {
+    #if os(visionOS)
+    /// The picture's renderer, shown by the `VideoPlayerComponent` on `videoEntity`.
+    public let renderer = AVSampleBufferVideoRenderer()
+    /// The flat picture: RealityKit's video component on `renderer`, a plane
+    /// (aspect × 1 m) for `RAVEVideoPlaneView` to place.
+    public let videoEntity = Entity()
+    @ObservationIgnored private let synchronizer = AVSampleBufferRenderSynchronizer()
+    /// A view has shown `videoEntity`, so enqueueing is safe.
+    @ObservationIgnored public var pictureAttached = false
+    #else
     public let displayLayer = AVSampleBufferDisplayLayer()
+    public var renderer: AVSampleBufferVideoRenderer { displayLayer.sampleBufferRenderer }
+    #endif
     /// Film time, on the host clock.
     public let timebase: CMTimebase
 
@@ -114,25 +140,31 @@ public final class FilmVideoPlayer {
     /// renderer itself, as the feed loop sleeps while buffered or paused.
     @ObservationIgnored private var decoderRecovery: RAVEDecoderRecovery?
 
-    private var renderer: AVSampleBufferVideoRenderer { displayLayer.sampleBufferRenderer }
 
     public init() {
         var timebase: CMTimebase?
         CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault, sourceClock: CMClockGetHostTimeClock(), timebaseOut: &timebase)
         self.timebase = timebase!
         CMTimebaseSetRate(self.timebase, rate: 0)
+        #if os(visionOS)
+        synchronizer.addRenderer(renderer)
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
+        var component = VideoPlayerComponent(videoRenderer: renderer)
+        component.desiredViewingMode = .mono
+        videoEntity.name = "film-picture"
+        videoEntity.components.set(component)
+        #else
         displayLayer.controlTimebase = self.timebase
         displayLayer.videoGravity = .resizeAspect
         // A layer's dynamic range defaults to .standard, which tone-maps HDR10
         // and Dolby Vision frames down to SDR on macOS and iOS.
-        if #available(macOS 26, iOS 26, visionOS 26, *) {
+        if #available(macOS 26, iOS 26, *) {
             displayLayer.preferredDynamicRange = .high
         }
-        #if !os(visionOS)
         displayLayer.preventsDisplaySleepDuringVideoPlayback = true
         #endif
         decoderRecovery = RAVEDecoderRecovery(
-            renderer: displayLayer.sampleBufferRenderer,
+            renderer: renderer,
             maximumAttempts: 40,
             onGiveUp: { [weak self] _ in
                 Task { @MainActor in self?.status = "The picture's decoder could not be restarted." }
@@ -361,15 +393,42 @@ public final class FilmVideoPlayer {
         pendingSeek = nil
         let time = CMTime(seconds: filmTime, preferredTimescale: 1_000_000_000)
         CMTimebaseSetRateAndAnchorTime(timebase, rate: 1, anchorTime: time, immediateSourceTime: hostTime)
+        #if os(visionOS)
+        synchronizer.setRate(1, time: time, atHostTime: hostTime)
+        #endif
     }
 
     private func halt() {
         CMTimebaseSetRate(timebase, rate: 0)
+        #if os(visionOS)
+        synchronizer.setRate(0, time: CMTimebaseGetTime(timebase))
+        #endif
     }
 
     private func park(at seconds: Double) {
+        let time = CMTime(seconds: seconds, preferredTimescale: 1_000_000_000)
         CMTimebaseSetRate(timebase, rate: 0)
-        CMTimebaseSetTime(timebase, time: CMTime(seconds: seconds, preferredTimescale: 1_000_000_000))
+        CMTimebaseSetTime(timebase, time: time)
+        #if os(visionOS)
+        synchronizer.setRate(0, time: time)
+        #endif
+    }
+
+    /// The renderer can take samples: on visionOS only once a view holds its
+    /// component (see `pictureAttached`).
+    private var canEnqueue: Bool {
+        #if os(visionOS)
+        pictureAttached
+        #else
+        true
+        #endif
+    }
+
+    /// The picture's width over its height, from the format.
+    public var pictureAspect: Float? {
+        guard let format else { return nil }
+        let size = CMVideoFormatDescriptionGetPresentationDimensions(format, usePixelAspectRatio: true, useCleanAperture: true)
+        return size.width > 0 && size.height > 0 ? Float(size.width / size.height) : nil
     }
 
     public func seek(to seconds: Double, resume: Bool? = nil) {
@@ -462,7 +521,7 @@ public final class FilmVideoPlayer {
             for sample in segment.samples {
                 // A suspended renderer may never report ready, so check
                 // while waiting, not after.
-                while !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
+                while !canEnqueue || !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(5))
                 }
                 guard !Task.isCancelled else { return }
@@ -511,7 +570,7 @@ public final class FilmVideoPlayer {
                 while primed, !Task.isCancelled, queuedUntil - currentTime > pictureAheadSeconds {
                     try? await Task.sleep(for: .milliseconds(10))
                 }
-                while !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
+                while !canEnqueue || !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(5))
                 }
                 guard !Task.isCancelled else { return }

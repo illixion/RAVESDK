@@ -187,11 +187,8 @@ public final class Pseudo3DStereoEngine {
     /// square at its edges; so the plane overscans its view a little, enough
     /// for the edge to cut the rounding off (see `squareCornerOverscan`).
     @ObservationIgnored private var squareCorners = false
-    /// Extra plane on each side, as a fraction of the plane's height, when
-    /// `squareCorners` is set. A corner of radius r reads square once the
-    /// clip lies 0.29 r inside each edge; the mesh's radius is ~2.7 % of its
-    /// height (device, 2026-10-07), so this crops ~1 % per edge.
-    static let squareCornerOverscan: Float = 0.012
+    /// See `RAVEVideoPlane.squareCornerOverscan`.
+    static var squareCornerOverscan: Float { RAVEVideoPlane.squareCornerOverscan }
     /// While true, fade the video so an open menu/popover shows through it.
     @ObservationIgnored private var chromeOpen = false
     /// The open chrome is one the picture's tap target doesn't steal the gaze
@@ -216,10 +213,8 @@ public final class Pseudo3DStereoEngine {
     /// How long a menu may hold the picture's input off before a tap on the
     /// picture works again.
     static var chromeInputGrace: Double { 15 }
-    /// Metres the plane sits behind the centre of its view's depth. At the
-    /// centre it read ~5 cm in front of the window, and 5 cm back it still
-    /// covered the window's resize handles (device, 2026-10-07).
-    static var planeDepthTrim: Float { 0.12 }
+    /// See `RAVEVideoPlane.planeDepthTrim`.
+    static var planeDepthTrim: Float { RAVEVideoPlane.planeDepthTrim }
     /// Caller-driven opacity (slideshow crossfades), multiplied with the chrome
     /// dim. SwiftUI's `.opacity` doesn't reach RealityKit content on visionOS.
     @ObservationIgnored private var contentOpacity: Float = 1
@@ -278,7 +273,27 @@ public final class Pseudo3DStereoEngine {
     public init() {
         RAVEMediaLog.routeVergenceLogs()
         synchronizer.addRenderer(videoRenderer)
+        strengthObserver = NotificationCenter.default.addObserver(
+            forName: Self.strengthScaleDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.pump?.updateConfig(self.makePumpConfig())
+            }
+        }
     }
+
+    /// Debug: a multiplier on the fake-3D strength for every engine, applied
+    /// live, for finding by eye how much separation reads right. 1 is the
+    /// shipped strength.
+    public static var strengthScale: Float = 1 {
+        didSet { NotificationCenter.default.post(name: strengthScaleDidChange, object: nil) }
+    }
+    static let strengthScaleDidChange = Notification.Name("RAVEStereoStrengthScaleDidChange")
+    /// Debug: what the most recently configured engine warps with, for the
+    /// host's depth readout beside `StereoDepthMetrics`.
+    public private(set) static var lastConfigured: (planeWidthMeters: Float?, depthStrength: Float, convergence: Float)?
+    @ObservationIgnored private var strengthObserver: NSObjectProtocol?
 
     // MARK: Entity
 
@@ -392,9 +407,7 @@ public final class Pseudo3DStereoEngine {
         // under the picture the view is 40 mm above the window's centre, and
         // the plane landed 80 mm up: clipped flat at the top, a gap and its
         // own rounded corners at the bottom (device, 2026-10-07).
-        var center = bounds.center
-        center.z -= Self.planeDepthTrim
-        entity.setPosition(center, relativeTo: nil)
+        RAVEVideoPlane.place(entity, in: bounds)
 
         let extents = entity.visualBounds(relativeTo: nil).extents
         let scale = entity.scale.x
@@ -412,13 +425,14 @@ public final class Pseudo3DStereoEngine {
         // pump-reported video aspect instead — (a, 1) in mesh-local meters —
         // and only fall back to measured bounds before the size is known.
         var target: Float
-        if let size = knownVideoSize, size.width > 0, size.height > 0 {
-            let videoAspect = Float(size.width / size.height)
-            target = min(bounds.extents.x / videoAspect, bounds.extents.y)
+        if let size = knownVideoSize, size.width > 0, size.height > 0,
+           let fitted = RAVEVideoPlane.fittedHeight(in: bounds, aspect: Float(size.width / size.height),
+                                                     squareCorners: squareCorners) {
+            target = fitted
         } else {
             target = min(bounds.extents.x / unscaledX, bounds.extents.y / unscaledY)
+            if squareCorners { target *= 1 + 2 * Self.squareCornerOverscan }
         }
-        if squareCorners { target *= 1 + 2 * Self.squareCornerOverscan }
         // Track the plane's physical width (the mesh is videoAspect × 1 m
         // pre-scale) and re-normalize disparity when it changes meaningfully.
         // Before the |target − scale| guard: the width must be known even when
@@ -617,6 +631,8 @@ public final class Pseudo3DStereoEngine {
         if let planeWidth = planeWidthMeters, planeWidth > 0.05 {
             strength *= min(1, Self.referencePlaneWidthMeters / planeWidth)
         }
+        strength *= max(0, Self.strengthScale)
+        Self.lastConfigured = (planeWidthMeters, strength, Float(settings.convergence))
         return StereoPump.Config(
             brightness: Float(adjustments.brightness),
             contrast: Float(adjustments.contrast),

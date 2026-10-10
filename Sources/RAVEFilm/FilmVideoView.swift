@@ -1,15 +1,22 @@
 /*
- Hypnos - hosts a FilmVideoPlayer's display layer in SwiftUI.
+ Hypnos - hosts a FilmVideoPlayer's picture in SwiftUI.
 
- macOS makes the layer the view's backing layer, so AppKit sizes it. UIKit
- has no per-instance backing layer, so there it is a sublayer kept at the
- view's bounds.
+ macOS makes the display layer the view's backing layer, so AppKit sizes it.
+ UIKit has no per-instance backing layer, so on iOS and tvOS it is a
+ sublayer kept at the view's bounds.
+
+ visionOS shows the player's RealityKit video plane (`videoEntity`, placed
+ by RAVEMedia's `RAVEVideoPlaneView`) and states the picture's display
+ criteria to the window from an empty UIKit view behind it.
  */
 
 import AVFoundation
 import SwiftUI
 #if os(tvOS) || os(visionOS)
 import AVKit
+#endif
+#if os(visionOS)
+import RAVEMedia
 #endif
 
 #if os(macOS)
@@ -43,6 +50,67 @@ public struct FilmVideoView: NSViewRepresentable {
         }
     }
 }
+#elseif os(visionOS)
+public struct FilmVideoView: View {
+    let player: FilmVideoPlayer
+    var squareCorners: Bool
+    var opacity: Float
+    var takesInput: Bool
+    var onTap: () -> Void
+
+    /// - Parameters:
+    ///   - opacity: SwiftUI's `.opacity` doesn't reach the plane; 0 hides it
+    ///     (the renderer keeps being fed, so the picture is ready when it
+    ///     comes back), a little dims it under an open menu.
+    ///   - takesInput: the plane catches taps (`onTap`); off while a menu
+    ///     should keep the gaze.
+    public init(player: FilmVideoPlayer, squareCorners: Bool = false, opacity: Float = 1,
+                takesInput: Bool = true, onTap: @escaping () -> Void = {}) {
+        self.player = player
+        self.squareCorners = squareCorners
+        self.opacity = opacity
+        self.takesInput = takesInput
+        self.onTap = onTap
+    }
+
+    public var body: some View {
+        RAVEVideoPlaneView(entity: player.videoEntity, aspect: player.pictureAspect, squareCorners: squareCorners,
+                           opacity: opacity, takesInput: takesInput, onTap: onTap,
+                           onAttach: { player.pictureAttached = true })
+            .background { CriteriaHost(player: player) }
+    }
+
+    private struct CriteriaHost: UIViewRepresentable {
+        let player: FilmVideoPlayer
+
+        func makeUIView(context: Context) -> CriteriaView { CriteriaView() }
+
+        func updateUIView(_ view: CriteriaView, context: Context) {
+            view.displayCriteria = player.displayCriteria
+        }
+    }
+
+    final class CriteriaView: UIView {
+        /// Stated to the window's display manager while the view is in it.
+        var displayCriteria: AVDisplayCriteria? {
+            didSet { applyDisplayCriteria() }
+        }
+        private weak var criteriaWindow: UIWindow?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            applyDisplayCriteria()
+        }
+
+        private func applyDisplayCriteria() {
+            if let criteriaWindow, criteriaWindow !== window {
+                criteriaWindow.avDisplayManager.preferredDisplayCriteria = nil
+            }
+            criteriaWindow = window
+            window?.avDisplayManager.preferredDisplayCriteria = displayCriteria
+        }
+    }
+}
 #else
 public struct FilmVideoView: UIViewRepresentable {
     let player: FilmVideoPlayer
@@ -56,14 +124,14 @@ public struct FilmVideoView: UIViewRepresentable {
     }
 
     public func updateUIView(_ view: LayerHostView, context: Context) {
-        #if os(tvOS) || os(visionOS)
+        #if os(tvOS)
         view.displayCriteria = player.displayCriteria
         #endif
     }
 
     public final class LayerHostView: UIView {
         private let videoLayer: AVSampleBufferDisplayLayer
-        #if os(tvOS) || os(visionOS)
+        #if os(tvOS)
         /// Stated to the window's display manager while the view is in it.
         var displayCriteria: AVDisplayCriteria? {
             didSet { applyDisplayCriteria() }

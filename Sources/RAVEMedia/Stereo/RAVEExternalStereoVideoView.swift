@@ -63,9 +63,8 @@ public struct RAVEExternalStereoVideoView: View {
             .frame(depth: 0, alignment: .front)
             .gesture(SpatialTapGesture().targetedToAnyEntity().onEnded { _ in onToggleChrome() })
         }
-        // Device-measured in Hypnos and Raven: the front slab is ~9 cm proud
-        // of the ornament plane. Preserve this until a replacement is measured.
-        .offset(z: -90)
+        // See RAVEVideoPlane.viewRecess.
+        .offset(z: RAVEVideoPlane.viewRecess)
         .onChange(of: ObjectIdentifier(source)) { _, _ in engine.attach(frameSource: source, packedStereo: packedStereo) }
         .onChange(of: settings) { _, value in
             engine.configure(adjustments: .neutral, settings: value, isFlipped: false)

@@ -186,7 +186,7 @@ struct LabView: View {
                              now, player.isPlaying ? 1 : 0, player.video.pictureHeight.map(String.init) ?? "orig",
                              player.video.currentSegment, player.video.bufferedUntil - now,
                              player.video.lastSeekLatency * 1000, player.video.status,
-                             player.video.displayLayer.sampleBufferRenderer.status.rawValue,
+                             player.video.renderer.status.rawValue,
                              player.clockReport, player.outputLatency * 1000,
                              player.scheduledSkewMs.map { String(format: "%+.1fms", $0) } ?? "-")
                       + String(format: " | head %@ yaw=%+.0f", tracker.status, tracker.yawDegrees))
