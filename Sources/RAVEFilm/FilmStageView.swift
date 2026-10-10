@@ -8,6 +8,11 @@
  `AtmosObjectAudio`. The view draws nothing; it only decides where the
  listener is.
 
+ The room: each object's send to the system's acoustics is
+ `FilmPlayer.systemReverbDB`. With `roomSource == .virtual` that send is
+ off and `FilmRoomReverb`'s four outputs play as four more dry sources
+ around the listener (see that file for why a window needs this).
+
  - visionOS: the view fills the player window, whose origin is the
    window's centre with +z toward the viewer, and the listener is the
    wearer's head. The room is centred `listenerDistance` in front of the
@@ -38,6 +43,7 @@ public struct FilmStageView: View {
 
     @State private var room = Entity()
     @State private var entities: [Int: Entity] = [:]
+    @State private var roomEntities: [Entity] = []
     @State private var controllers: [AudioGeneratorController] = []
     @State private var appliedReverb: Float?
     @State private var builtFor: ObjectIdentifier?
@@ -83,6 +89,7 @@ public struct FilmStageView: View {
         controllers.removeAll()
         room.children.removeAll()
         entities.removeAll()
+        roomEntities.removeAll()
         builtFor = nil
     }
 
@@ -102,7 +109,7 @@ public struct FilmStageView: View {
                 entity.components.set(SpatialAudioComponent(
                     gain: 0,
                     directLevel: 0,
-                    reverbLevel: Audio.Decibel(player.reverbDB),
+                    reverbLevel: Audio.Decibel(player.systemReverbDB),
                     directivity: .beam(focus: 0),
                     distanceAttenuation: .rolloff(factor: 0)
                 ))
@@ -122,7 +129,33 @@ public struct FilmStageView: View {
                 logger.error("Generator for element \(element.id) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        appliedReverb = player.reverbDB
+        if let reverb = player.roomReverb {
+            for output in 0 ..< FilmRoomReverb.outputCount {
+                let entity = Entity()
+                entity.name = "film-room-\(output)"
+                // Already the room's sound: no second room on top of it.
+                entity.components.set(SpatialAudioComponent(
+                    gain: 0,
+                    directLevel: 0,
+                    reverbLevel: -120,
+                    directivity: .beam(focus: 0),
+                    distanceAttenuation: .rolloff(factor: 0)
+                ))
+                entity.position = player.listenerPosition(ofRoomPoint: FilmRoomReverb.outputPositions[output])
+                room.addChild(entity)
+                roomEntities.append(entity)
+                do {
+                    let controller = try entity.prepareAudio(
+                        configuration: AudioGeneratorConfiguration(layoutTag: kAudioChannelLayoutTag_Mono, mixGroupName: nil),
+                        reverb.renderHandler(output: output)
+                    )
+                    controllers.append(controller)
+                } catch {
+                    logger.error("Room output \(output) failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        appliedReverb = player.systemReverbDB
         // Start every generator in the same turn; they emit silence until the transport plays.
         for controller in controllers { controller.play() }
         logger.info("Built \(controllers.count) generators for \(player.elements.count) elements")
@@ -140,12 +173,16 @@ public struct FilmStageView: View {
         for element in player.elements where !element.isBed {
             entities[element.channel]?.position = player.listenerPosition(of: element, frame: frame)
         }
-        if appliedReverb != player.reverbDB {
-            appliedReverb = player.reverbDB
+        for (output, entity) in roomEntities.enumerated() {
+            entity.position = player.listenerPosition(ofRoomPoint: FilmRoomReverb.outputPositions[output])
+        }
+        let send = player.systemReverbDB
+        if appliedReverb != send {
+            appliedReverb = send
             for element in player.elements where !element.isBed {
                 guard let entity = entities[element.channel],
                       var spatial = entity.components[SpatialAudioComponent.self] else { continue }
-                spatial.reverbLevel = Audio.Decibel(player.reverbDB)
+                spatial.reverbLevel = Audio.Decibel(send)
                 entity.components.set(spatial)
             }
         }

@@ -37,6 +37,8 @@ public final class FilmPlayer {
     public let video = FilmVideoPlayer()
     public private(set) var scene: AtmosScene?
     @ObservationIgnored public private(set) var audio: AtmosObjectAudio?
+    /// The room `FilmStageView` plays when `roomSource` is `.virtual`; made with the audio.
+    @ObservationIgnored public private(set) var roomReverb: FilmRoomReverb?
     @ObservationIgnored public private(set) var streamer: AtmosSegmentStreamer?
     public private(set) var isPlaying = false
     public private(set) var status = "Idle"
@@ -60,9 +62,12 @@ public final class FilmPlayer {
     public var masterGainDB: Float = 0
     public var lfeGainDB: Float = 0
     public var reverbDB: Float = 0
-    /// The room's reverb character; used by `FilmPhaseStageView` (RealityKit's
-    /// stage has only a level).
+    /// The room's reverb character: PHASE's on tvOS, and on a RealityKit
+    /// stage `FilmRoomReverb`'s while `roomSource` is `.virtual`.
     public var reverbPreset: RAVEReverbPreset = .mediumRoom
+    /// RealityKit stages: the system's room acoustics (on visionOS, the
+    /// wearer's real room) or `FilmRoomReverb`. PHASE ignores it.
+    public var roomSource: FilmRoomSource = .system
     public var roomHalfWidth: Float = 2.0
     public var roomHalfDepth: Float = 2.5
     public var roomHeight: Float = 1.6
@@ -168,6 +173,7 @@ public final class FilmPlayer {
         streamer.focus(on: frame(for: seconds, in: scene))
         self.scene = scene
         self.audio = audio
+        roomReverb = FilmRoomReverb(audio: audio, elements: scene.elements)
         self.streamer = streamer
         levels = Array(repeating: 0, count: scene.elements.count)
         streamTask = Task.detached(priority: .userInitiated) { await streamer.run() }
@@ -210,6 +216,7 @@ public final class FilmPlayer {
         streamTask = nil
         audio?.pause()
         audio = nil
+        roomReverb = nil
         streamer = nil
         scene = nil
         lastState = [:]
@@ -266,6 +273,7 @@ public final class FilmPlayer {
         audio?.pause()
         video.stop()
         audio = nil
+        roomReverb = nil
         streamer = nil
         scene = nil
         lastState = [:]
@@ -349,7 +357,12 @@ public final class FilmPlayer {
     /// Position relative to the listener's ears in metres: −z forward
     /// (toward the screen), +y up.
     public func listenerPosition(of element: AtmosScene.Element, frame: Int) -> SIMD3<Float> {
-        let p = state(of: element, frame: frame).pos
+        listenerPosition(ofRoomPoint: state(of: element, frame: frame).pos)
+    }
+
+    /// A DAMF room position (x right, y front, z up, each −1…1) in the
+    /// listener's metres, as `listenerPosition(of:frame:)` places elements.
+    public func listenerPosition(ofRoomPoint p: SIMD3<Float>) -> SIMD3<Float> {
         let z = flattenHeights ? 0 : max(0, min(p.z, 1))
         var local = SIMD3<Float>(p.x * roomHalfWidth, z * roomHeight, -p.y * roomHalfDepth)
         // A source at the listener's head has no direction; keep a minimum radius.
@@ -361,9 +374,25 @@ public final class FilmPlayer {
         return local
     }
 
+    /// What a RealityKit stage sends each object to the system's room:
+    /// `reverbDB`, or nothing while `FilmRoomReverb` is the room.
+    public var systemReverbDB: Float { roomSource == .virtual ? -120 : reverbDB }
+
+    /// `FilmRoomReverb`'s output gain: off unless it is the room, and off at
+    /// the bottom of `reverbDB`'s range (−40 dB), as the system send is.
+    public var roomReverbGain: Float {
+        guard roomSource == .virtual, reverbPreset != .none, reverbDB > -40 else { return 0 }
+        return powf(10, reverbDB / 20)
+    }
+
     /// Pushes gains to the render side and refreshes telemetry. Called ~60 Hz.
     public func tick() {
         guard let audio, let scene else { return }
+        if let roomReverb {
+            // No tank unless it is heard (PHASE stages tick too).
+            roomReverb.setRoom(roomSource == .virtual ? reverbPreset : .none)
+            roomReverb.setLevel(roomReverbGain)
+        }
         let frame = currentFrame
         for element in scene.elements {
             let db = masterGainDB + state(of: element, frame: frame).gainDB + (element.isBed ? lfeGainDB : 0)

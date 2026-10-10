@@ -263,6 +263,18 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         }
     }
 
+    /// The host time `startFrame` plays at; the first render to ask, with
+    /// none chosen, makes its own the anchor.
+    @inline(__always)
+    func resolvedAnchor(hostTime: UInt64) -> UInt64 {
+        let anchor = anchorHostTime.load(ordering: .acquiring)
+        guard anchor == 0 else { return anchor }
+        let (exchanged, original) = anchorHostTime.compareExchange(
+            expected: 0, desired: hostTime, ordering: .acquiringAndReleasing
+        )
+        return exchanged ? hostTime : original
+    }
+
     func render(
         channel ch: Int,
         isSilence: UnsafeMutablePointer<ObjCBool>,
@@ -284,13 +296,7 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         if flags.contains(.sampleTimeValid), flags.contains(.hostTimeValid) {
             let sampleTime = Int64(timestamp.pointee.mSampleTime)
             let hostTime = timestamp.pointee.mHostTime
-            var anchor = anchorHostTime.load(ordering: .acquiring)
-            if anchor == 0 {
-                let (exchanged, original) = anchorHostTime.compareExchange(
-                    expected: 0, desired: hostTime, ordering: .acquiringAndReleasing
-                )
-                anchor = exchanged ? hostTime : original
-            }
+            let anchor = resolvedAnchor(hostTime: hostTime)
             let due = alignment.timelineFrame(hostTime: hostTime, anchorFrame: Int64(start), anchorHostTime: anchor)
             frame = Int(alignment.frame(channel: ch, sampleTime: sampleTime, timelineFrame: due))
         } else {
