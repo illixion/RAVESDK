@@ -58,7 +58,7 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
 public enum RAVEPlayerControlsLayout: Sendable {
     /// Timeline, transport and the accessory row stacked in three rows.
     case stacked
-    /// One row: transport, timeline, mute, then the accessories inline, or
+    /// One row: transport, timeline, volume (a popover), then the accessories inline, or
     /// behind a "More" menu (a popover outside tvOS) when they don't fit. For a bar hung under a
     /// window, where every row of height is window the picture doesn't get.
     case compact
@@ -80,6 +80,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     @State private var isScrubbing = false
     @State private var isAccessoryScrolling = false
     @State private var showsMore = false
+    @State private var showsVolume = false
 
     public init(state: RAVEPlayerControlState, togglePlayback: @escaping () -> Void,
                 seek: @escaping (Double) -> Void, toggleMute: @escaping () -> Void,
@@ -117,13 +118,17 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             RoundedRectangle(cornerRadius: 20).fill(.regularMaterial)
             #endif
         }
-        .onChange(of: showsMore) { _, shown in onMenuChanged(shown) }
-        // A host bumps `menuDismissal` to close "More" from outside, such as
-        // a tap on the picture behind it.
-        .onChange(of: menuDismissal) { _, _ in showsMore = false }
-        .onDisappear {
-            if showsMore { onMenuChanged(false) }
+        .onChange(of: showsMore || showsVolume) { _, shown in onMenuChanged(shown) }
+        // A host bumps `menuDismissal` to close "More" (and the volume
+        // popover) from outside, such as a tap on the picture behind it.
+        .onChange(of: menuDismissal) { _, _ in
             showsMore = false
+            showsVolume = false
+        }
+        .onDisappear {
+            if showsMore || showsVolume { onMenuChanged(false) }
+            showsMore = false
+            showsVolume = false
             if isScrubbing || isAccessoryScrolling { onScrubbingChanged(false) }
             isScrubbing = false
             isAccessoryScrolling = false
@@ -161,8 +166,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             .padding(.trailing, Self.transportSpacing - 6)
             timelineRow
                 .frame(minWidth: Self.compactTimelineMinWidth, maxWidth: .infinity)
-            muteControl
-            volumeSlider
+            compactVolume
             if Accessories.self != EmptyView.self {
                 if overflow {
                     #if os(tvOS)
@@ -203,6 +207,42 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 }
             }
         }
+    }
+
+    /// One speaker button where the slider would take 140 points of the
+    /// row: it opens a popover holding mute and the slider. Reported to the
+    /// host like "More", so the chrome stays up while it is open. Without a
+    /// host volume (and on tvOS) it is the mute button itself.
+    @ViewBuilder private var compactVolume: some View {
+        #if os(tvOS)
+        muteControl
+        #else
+        if state.volume != nil, setVolume != nil {
+            Button {
+                onInteraction()
+                showsVolume.toggle()
+            } label: {
+                Label("Volume", systemImage: Self.speakerSymbol(muted: state.isMuted, volume: state.volume))
+                    .labelStyle(.iconOnly).ravePlayerControlLabel()
+                    .font(.title2)
+            }
+            .ravePlayerButtonStyle()
+            .help("Volume")
+            .accessibilityLabel("Volume")
+            .popover(isPresented: $showsVolume, arrowEdge: .bottom) {
+                HStack(spacing: 12) {
+                    muteControl
+                    volumeSlider
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                // A tap on the picture must still reach it (see "More").
+                .presentationBackgroundInteraction(.enabled)
+            }
+        } else {
+            muteControl
+        }
+        #endif
     }
 
     private var muteControl: some View {
