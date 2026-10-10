@@ -42,6 +42,13 @@ public struct FilmVideoIndex: Decodable, Sendable {
     /// older than tiers, and for a download, which holds the original only.
     public var pictureHeights: [Int]
 
+    /// Dolby Vision profile 5: no HDR10 base, so only the system's renderer
+    /// shows the original right. A 3D picture comes from a lower tier, which
+    /// the plugin converts to HDR10 (it applies the RPU; the app never does).
+    public var needsSystemRenderer: Bool {
+        dvProfile == 5 || videoRange.caseInsensitiveCompare("DOVI") == .orderedSame
+    }
+
     private enum CodingKeys: String, CodingKey {
         case segmentStarts, durationSeconds, codec, videoRange, dvProfile, dolbyVision, pictureHeights
     }
@@ -178,6 +185,11 @@ public struct FilmServerClient: FilmStreamingAudioSource {
     /// How many bytes of segments may wait ahead of the streamer.
     static let prefetchBytes = 48 << 20
 
+    /// Jellyfin's `Authorization` header with only the token. Jellyfin 12
+    /// stopped reading the legacy `X-Emby-Token` header (401), and this form
+    /// works on 10.11 too.
+    static func authorization(_ token: String) -> String { "MediaBrowser Token=\"\(token)\"" }
+
     public init(baseURL: URL, token: String, itemID: String, audioStream: Int? = nil) {
         self.baseURL = baseURL
         self.token = token
@@ -229,7 +241,7 @@ public struct FilmServerClient: FilmStreamingAudioSource {
             URLQueryItem(name: "Limit", value: "25"),
         ])
         var request = URLRequest(url: url)
-        request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
+        request.setValue(Self.authorization(token), forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard code == 200 else { throw FilmServerError.http(path: "Items", status: code) }
@@ -461,7 +473,7 @@ public struct FilmServerClient: FilmStreamingAudioSource {
             return try await offline.data(path: path, query: query)
         }
         var request = URLRequest(url: requestURL(path, query: query))
-        request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
+        request.setValue(Self.authorization(token), forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
         let timing = TransferTiming()
         let (data, response) = try await (audio ? session : URLSession.shared).data(for: request, delegate: timing)

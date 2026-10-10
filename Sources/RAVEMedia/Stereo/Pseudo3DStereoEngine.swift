@@ -97,6 +97,15 @@ public struct RAVEColorAdjustments: Equatable, Sendable {
     public static let neutral = RAVEColorAdjustments()
 }
 
+/// Why the stereo engine gave up, where the host has something to tell the
+/// viewer beyond "it failed".
+public enum Pseudo3DFailure: Sendable, Equatable {
+    /// Dolby Vision profile 5: only the system's renderer shows it right (it
+    /// applies the RPU, which nothing here does), so it plays in 2D unless a
+    /// server converts it to HDR10 first.
+    case needsSystemRenderer
+}
+
 // MARK: - Engine (main-actor: SwiftUI + transport only)
 
 @MainActor
@@ -251,6 +260,9 @@ public final class Pseudo3DStereoEngine {
     // Callbacks
     @ObservationIgnored public var onVideoSizeKnown: ((CGSize) -> Void)?
     @ObservationIgnored public var onPlaybackError: (() -> Void)?
+    /// Why the last `onPlaybackError` came, when there is more to say than
+    /// "it failed": read it in the callback. Reset per load.
+    @ObservationIgnored public private(set) var failure: Pseudo3DFailure?
     /// Every couple of seconds of playback: whether the conversion keeps up
     /// with the source (`RAVEStereoPerformance.isOverloaded`). Main actor.
     @ObservationIgnored public var onPerformance: ((RAVEStereoPerformance) -> Void)?
@@ -558,6 +570,18 @@ public final class Pseudo3DStereoEngine {
         applyChromeOpacity()
     }
 
+    /// A Dolby Vision profile 5 picture, which only the system's renderer
+    /// shows right: back to the flat player, saying why.
+    private func unshowablePictureForwarder() -> @Sendable () -> Void {
+        { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.failure = .needsSystemRenderer
+                self.onPlaybackError?()
+            }
+        }
+    }
+
     private func performanceForwarder() -> @Sendable (RAVEStereoPerformance) -> Void {
         { [weak self] sample in
             Task { @MainActor in self?.onPerformance?(sample) }
@@ -649,6 +673,7 @@ public final class Pseudo3DStereoEngine {
         if let requestedMode { depthMode = requestedMode }
         if let httpHeaderFields { self.httpHeaderFields = httpHeaderFields }
         guard loadedURL != url || packedLayout != packedStereo else { return }
+        failure = nil
 
         // Cached mode plays back baked depth and needs no model; resolve its
         // entry up front (a missing/deleted cache falls back to realtime). A
@@ -825,6 +850,7 @@ public final class Pseudo3DStereoEngine {
             return
         }
         pump.onPerformance = performanceForwarder()
+        pump.onUnshowablePicture = unshowablePictureForwarder()
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump
@@ -867,6 +893,7 @@ public final class Pseudo3DStereoEngine {
     ///   handle by staying on the flat page.
     @discardableResult
     public func attach(frameSource: PumpFrameSource, packedStereo: PackedStereoLayout? = nil) -> Bool {
+        failure = nil
         // Fake-3D requires real depth; there is no heuristic fallback. Checked
         // before teardown so a failed attach leaves any current playback alone.
         guard Pseudo3DDiagnostics.useStaticTestPattern || packedStereo != nil
@@ -908,6 +935,7 @@ public final class Pseudo3DStereoEngine {
             return false
         }
         pump.onPerformance = performanceForwarder()
+        pump.onUnshowablePicture = unshowablePictureForwarder()
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump

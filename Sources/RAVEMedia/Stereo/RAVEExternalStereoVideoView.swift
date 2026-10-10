@@ -17,7 +17,7 @@ public struct RAVEExternalStereoVideoView: View {
     private let settings: Pseudo3DSettings
     private let chromeOpen: Bool
     private let chromeTakesInput: Bool
-    private let onUnavailable: () -> Void
+    private let onUnavailable: (Pseudo3DFailure?) -> Void
     private let onToggleChrome: () -> Void
     private let packedStereo: PackedStereoLayout?
     private let squareCorners: Bool
@@ -30,7 +30,7 @@ public struct RAVEExternalStereoVideoView: View {
                 packedStereo: PackedStereoLayout? = nil,
                 squareCorners: Bool = false,
                 subtitles: RAVEStereoSubtitleFrame? = nil,
-                onUnavailable: @escaping () -> Void,
+                onUnavailable: @escaping (Pseudo3DFailure?) -> Void,
                 onToggleChrome: @escaping () -> Void = {},
                 onPerformance: ((RAVEStereoPerformance) -> Void)? = nil) {
         self.onPerformance = onPerformance
@@ -51,7 +51,7 @@ public struct RAVEExternalStereoVideoView: View {
                 engine.configure(adjustments: .neutral, settings: settings, isFlipped: false)
                 engine.setChromeOpen(chromeOpen, takesInput: chromeTakesInput)
                 engine.setSquareCorners(squareCorners)
-                engine.onPlaybackError = onUnavailable
+                engine.onPlaybackError = { [engine] in onUnavailable(engine.failure) }
                 engine.onPerformance = onPerformance
                 engine.setSubtitles(subtitles)
                 content.add(engine.makeVideoEntity())

@@ -185,6 +185,8 @@ public final class FilmVideoPlayer {
     /// The lower tiers the loaded film offers, largest first; empty for a
     /// download, decoded pictures or a plugin older than tiers.
     public var offeredPictureHeights: [Int] { pictureSource == nil ? index?.pictureHeights ?? [] : [] }
+    /// Playing a download: no tiers, and nothing to convert a picture with.
+    public var isOffline: Bool { client?.offline != nil }
 
     /// Loads the plugin's picture of `client`'s film, at `pictureHeight`
     /// when the index offers that tier (else the original).
