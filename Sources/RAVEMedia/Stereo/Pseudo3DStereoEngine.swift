@@ -244,6 +244,7 @@ public final class Pseudo3DStereoEngine {
     @ObservationIgnored public var onPlaybackUpdate: ((RAVEPlaybackState) -> Void)?
 
     public init() {
+        RAVEMediaLog.routeVergenceLogs()
         synchronizer.addRenderer(videoRenderer)
     }
 

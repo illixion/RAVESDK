@@ -68,9 +68,9 @@ let package = Package(
         // SwiftPM CLI ignores `.metal` altogether — see RAVEMediaMetal.)
         .target(name: "RAVEMedia", dependencies: [
             .product(name: "DebugTrace", package: "DebugTrace"),
-            .product(name: "VergenceCore", package: "vergence"),
+            .product(name: "VergenceApple", package: "vergence"),
         ]),
-        .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"]),
         // The Persona camera as AVCapture delivers it, plus the realtime H.264
         // encoder and AVCC helpers every consumer of those frames needs. Its
         // own product, not a corner of RAVEMedia, because two of its consumers

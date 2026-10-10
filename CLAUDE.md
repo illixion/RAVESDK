@@ -91,7 +91,7 @@ is easy to skip.
 | `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality/stall rules, Up Next ordering and skip-segment models/policy. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
-| `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Moving into `~/Projects/vergence` (public, cross-platform): its Foundation-only half already lives in Vergence's `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there, on macOS, Linux and Android |
+| `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Now a thin RealityKit/SwiftUI player over `~/Projects/vergence` (public, cross-platform), which holds the pipeline: the Apple engine in `VergenceApple`, and the Foundation-only half in `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 | `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
@@ -402,6 +402,16 @@ as it does on the console.
 
 ### RAVEMedia — the pump pulls frames through a seam, not from AVPlayer
 
+**Where the code is now (2026-10-10):** the pipeline described below moved to
+`~/Projects/vergence` (`VergenceApple`: depth providers, converter, cache, model
+store, pump, frame sources, subtitles, Metal warp and shaders, decoder recovery;
+`VergenceCore`: the portable maths). RAVEMedia keeps the RealityKit/SwiftUI player
+(`Pseudo3DStereoEngine`, `RAVEExternalStereoVideoView`), the audio policy and EQ,
+and re-exports Vergence, so the type names below still resolve through
+`import RAVEMedia`. Vergence logs through `VergenceLog`; `RAVEMediaLog.routeVergenceLogs()`
+(called by the engine's init and by Hypnos at launch) sends those lines to DebugTrace
+with each value's privacy intact. The depth cache's cap is `VergencePolicy.depthCacheCap`.
+
 This is Spatial Stash's fake-3D pipeline, moved wholesale: monocular depth (Depth
 Anything V2) drives a per-eye warp that turns mono video into windowed stereo in an
 ordinary Shared-Space window. Unlike the other targets it is **not** a convergence of
@@ -502,13 +512,13 @@ main-queue AVPlayer prepare callbacks. The pump owns its own `MTLCommandQueue` f
 the same reason: warp work must never queue behind the host's image uploads.
 
 **The shaders are a target source, not a declared resource.** `RAVEStereoShaders.metal`
-sits under `Sources/RAVEMedia/Stereo/` so Xcode compiles it into the target's own
+sits under Vergence's `Sources/VergenceApple/Stereo/` so Xcode compiles it into the target's own
 `default.metallib`; nothing here ever calls a bare `device.makeDefaultLibrary()`,
 which would search the *app* bundle and silently find no kernels. Two consequences
 worth knowing before touching it:
 
 - The SwiftPM CLI ignores `.metal` entirely, so it synthesises no `Bundle.module`.
-  `RAVEMediaMetal` therefore locates `RAVESDK_RAVEMedia.bundle` by hand. Under
+  `RAVEMediaMetal` therefore locates `Vergence_VergenceApple.bundle` by hand. Under
   `swift build` it finds nothing and every caller degrades to "fake-3D unavailable",
   which on a Mac test host is the truth. Do not "fix" this by declaring the metal
   file as a resource — that copies it instead of compiling it.

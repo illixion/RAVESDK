@@ -1,4 +1,5 @@
-// The portable half of the stereo pipeline (layouts, warp settings, depth
-// maths) lives in Vergence's VergenceCore; apps keep reaching it through
-// `import RAVEMedia` while the rest of the pipeline moves there too.
-@_exported import VergenceCore
+// The stereo pipeline itself (depth providers, the converter and its cache,
+// the stereo pump, the Metal warp) lives in Vergence, the public package at
+// ../vergence. RAVEMedia keeps the RealityKit/SwiftUI player around it and
+// re-exports Vergence, so `import RAVEMedia` still reaches all of it.
+@_exported import VergenceApple
