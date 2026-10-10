@@ -18,6 +18,14 @@
  shown. Playback resumes at a host time slightly in the future so the
  decoder has caught up to the target by the time it is due.
 
+ A lower picture tier (`pictureHeight`, one of the index's
+ `pictureHeights`: the plugin's HEVC transcode cut on the same index) is
+ changed the way a seek feeds, without the seek: the next tier's segment at
+ the playhead and its init are fetched while the current picture plays on,
+ then the layer is flushed (the stereo tap's `onFlush` with it) and fed from
+ the keyframe interval containing the playhead, frames before it hidden.
+ The timebase keeps running, so the audio, which leads it, never notices.
+
  A `FilmPictureSource` (pictures the platform can't decode, decoded by the
  app) replaces the segments: its frames go to the same layer on the same
  timebase, so the transport and the audio clock are unchanged. They arrive
@@ -45,6 +53,11 @@ public final class FilmVideoPlayer {
     /// A picture is loaded, from either kind of source.
     public var isLoaded: Bool { index != nil || pictureSource != nil }
     public private(set) var track: FragmentedMP4Track?
+    /// The picture tier fed: nil for the film's own picture, else one of
+    /// `offeredPictureHeights`.
+    public private(set) var pictureHeight: Int?
+    /// A tier change is fetching its first segment.
+    public private(set) var isChangingPictureTier = false
     public private(set) var formatSummary = ""
     /// The picture's format as fed to the renderer, HDR static metadata included.
     public private(set) var format: CMVideoFormatDescription?
@@ -66,12 +79,22 @@ public final class FilmVideoPlayer {
     public var pictureAheadSeconds: Double = 0.75
     /// How far ahead of now a resume is scheduled, so the decoder can reach the target first.
     public var startDelay: Double = 0.2
+    /// How far past the playhead a tier change resumes the picture while
+    /// playing: the frames up to there are decoded, not shown, so the first
+    /// one shown is due after the decoder has reached it.
+    public var tierChangeLead: Double = 0.25
 
     private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "FilmVideo")
     private var client: FilmServerClient?
     private var feedTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     private var segments: [Int: Task<FragmentedMP4Segment, Error>] = [:]
+    /// Bumped by every load and stop, so a tier change finishing after one lets it be.
+    private var loadGeneration = 0
+    private var tierChangeGeneration = 0
+    /// The seek whose first frame isn't primed yet, which a tier change
+    /// landing meanwhile repeats in the new tier.
+    private var pendingSeek: (target: Double, resume: Bool)?
 
     /// Optional compressed-picture tap for a host-owned stereo display. The
     /// samples keep their original PTS/DTS and this timebase remains the clock.
@@ -152,40 +175,71 @@ public final class FilmVideoPlayer {
 
     /// Current film time.
     public var currentTime: Double { CMTimebaseGetTime(timebase).seconds }
+    /// The clock is running, whoever started it (the Atmos audio starts it
+    /// without `play`, so `isPlaying` doesn't say).
+    private var isClockRunning: Bool { CMTimebaseGetRate(timebase) != 0 }
     public var duration: Double { index?.durationSeconds ?? pictureSource?.durationSeconds ?? 0 }
 
     // MARK: Transport
 
-    public func load(_ client: FilmServerClient, startAt seconds: Double = 0) async {
+    /// The lower tiers the loaded film offers, largest first; empty for a
+    /// download, decoded pictures or a plugin older than tiers.
+    public var offeredPictureHeights: [Int] { pictureSource == nil ? index?.pictureHeights ?? [] : [] }
+
+    /// Loads the plugin's picture of `client`'s film, at `pictureHeight`
+    /// when the index offers that tier (else the original).
+    public func load(_ client: FilmServerClient, startAt seconds: Double = 0, pictureHeight: Int? = nil) async {
         stop()
+        let generation = loadGeneration
         self.client = client
         pictureSource = nil
         index = nil
         track = nil
         format = nil
         frameRate = nil
+        self.pictureHeight = nil
         formatSummary = ""
         status = "Loading…"
         do {
             let index = try await client.videoIndex()
-            let track = try FragmentedMP4Track(initSegment: await client.videoInit())
+            let height = pictureHeight.flatMap { index.pictureHeights.contains($0) ? $0 : nil }
+            let opening = index.segment(containing: seconds)
+            // A tier's segment first: its run then writes the init the next
+            // request waits for (an init asked for first makes one more
+            // segment, at the film's start). The original's init comes first
+            // as it always has.
+            let initSegment: Data
+            let firstData: Data?
+            if height != nil {
+                firstData = try await client.videoSegment(opening, height: height)
+                initSegment = try await client.videoInit(height: height)
+            } else {
+                initSegment = try await client.videoInit()
+                firstData = nil
+            }
+            guard generation == loadGeneration else { return }
+            let track = try FragmentedMP4Track(initSegment: initSegment)
             var format = try track.makeFormatDescription()
             self.index = index
             self.track = track
+            self.pictureHeight = height
+            if let firstData {
+                let segment = try FragmentedMP4Segment(data: firstData, track: track)
+                segments[opening] = Task { segment }
+            }
             // The HDR static metadata is only in the keyframes' SEI; see
             // HEVCStaticHDR. The segment request is the one the first feed
             // needs anyway, so it costs no extra round trip.
-            let first = try await load(segment: index.segment(containing: seconds))
-            if let keyframe = first.samples.first(where: \.isSync) {
-                format = HEVCStaticHDR.applying(HEVCStaticHDR.metadata(in: first.data.subdata(in: keyframe.range)), to: format)
-            }
+            let first = try await load(segment: opening)
+            guard generation == loadGeneration else { return }
+            format = Self.withStaticHDR(of: first, applyingTo: format)
             self.format = format
             // Averaged: a millisecond timescale (MKV-derived) alternates 41 and 42.
             let total = first.samples.reduce(Int64(0)) { $0 + $1.duration }
             if total > 0 {
                 frameRate = Double(first.samples.count) * Double(track.timescale) / Double(total)
             }
-            formatSummary = Self.summarize(format, track: track, index: index)
+            formatSummary = Self.summarize(format, track: track, index: index, height: height)
             logger.info("Loaded \(client.itemID, privacy: .public): \(self.formatSummary, privacy: .public)")
             status = "Ready"
             seek(to: seconds, resume: false)
@@ -195,12 +249,90 @@ public final class FilmVideoPlayer {
         }
     }
 
+    /// The format with the HDR static metadata from `segment`'s first keyframe.
+    private static func withStaticHDR(of segment: FragmentedMP4Segment, applyingTo format: CMVideoFormatDescription) -> CMVideoFormatDescription {
+        guard let keyframe = segment.samples.first(where: \.isSync) else { return format }
+        return HEVCStaticHDR.applying(HEVCStaticHDR.metadata(in: segment.data.subdata(in: keyframe.range)), to: format)
+    }
+
+    /// Feeds tier `height` (nil: the original) from the playhead on. The
+    /// current picture plays until the new tier's segment there and its
+    /// init are in, then the layer is flushed and fed from the keyframe
+    /// before the playhead, hiding what precedes it; the clock is left
+    /// running. False when nothing changed: not offered, already playing,
+    /// a newer change or load took over, or the fetch failed (the old tier
+    /// plays on).
+    @discardableResult
+    public func setPictureHeight(_ height: Int?) async -> Bool {
+        guard let client, let index, pictureSource == nil else { return false }
+        let height = height.flatMap { index.pictureHeights.contains($0) ? $0 : nil }
+        guard height != pictureHeight || isChangingPictureTier else { return false }
+        tierChangeGeneration += 1
+        let change = tierChangeGeneration
+        let generation = loadGeneration
+        let name = Self.tierName(height)
+        isChangingPictureTier = true
+        defer { if change == tierChangeGeneration { isChangingPictureTier = false } }
+        // Where the picture resumes if the fetch is quick. A slow one (a
+        // cold transcode) resumes further on, from the same server run.
+        let wanted = index.segment(containing: currentTime + (isClockRunning ? tierChangeLead : 0))
+        logger.info("Picture → \(name, privacy: .public) from segment \(wanted, privacy: .public)")
+        let started = ContinuousClock.now
+        let track: FragmentedMP4Track
+        let segment: FragmentedMP4Segment
+        var format: CMVideoFormatDescription
+        do {
+            // The segment first, as in `load`.
+            let data = try await client.videoSegment(wanted, height: height)
+            track = try FragmentedMP4Track(initSegment: await client.videoInit(height: height))
+            segment = try FragmentedMP4Segment(data: data, track: track)
+            format = Self.withStaticHDR(of: segment, applyingTo: try track.makeFormatDescription())
+        } catch {
+            guard change == tierChangeGeneration, generation == loadGeneration else { return false }
+            logger.error("Picture tier \(name, privacy: .public) unavailable: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        guard change == tierChangeGeneration, generation == loadGeneration, self.index != nil else { return false }
+
+        feedTask?.cancel()
+        segments.values.forEach { $0.cancel() }
+        segments = [wanted: Task { segment }]
+        self.track = track
+        self.format = format
+        pictureHeight = height
+        formatSummary = Self.summarize(format, track: track, index: index, height: height)
+        let took = ContinuousClock.now - started
+        logger.info("Picture now \(self.formatSummary, privacy: .public), fetched in \(Double(took.components.seconds) + Double(took.components.attoseconds) * 1e-18, format: .fixed(precision: 2), privacy: .public)s")
+
+        // A seek still priming, its clock parked, starts over in the new
+        // tier, so whoever waits on `isPrimed` to start the clock still gets it.
+        if let pendingSeek, !isPrimed, !isClockRunning {
+            seek(to: pendingSeek.target, resume: pendingSeek.resume)
+            return true
+        }
+        startTask?.cancel()
+        renderer.flush()
+        onFlush?()
+        let target = min(currentTime + (isClockRunning ? tierChangeLead : 0), max(0, duration - 0.5))
+        let first = index.segment(containing: target)
+        bufferedUntil = target
+        isPrimed = false
+        let requested = Date()
+        feedTask = Task { [weak self] in
+            await self?.feed(from: first, target: target, resume: false, keepsClock: true, requested: requested)
+        }
+        return true
+    }
+
+    static func tierName(_ height: Int?) -> String { height.map { "\($0)p" } ?? "original" }
+
     /// Loads pictures decoded by `source` instead of the plugin's segments.
     public func load(_ source: FilmPictureSource, startAt seconds: Double = 0) {
         stop()
         client = nil
         index = nil
         track = nil
+        pictureHeight = nil
         format = nil
         pictureSource = source
         frameRate = source.frameRate
@@ -224,6 +356,7 @@ public final class FilmVideoPlayer {
     /// Runs the timebase so `filmTime` is due at `hostTime`. This is the hook
     /// an external clock (the Atmos audio engine) uses to lead the picture.
     public func start(filmTime: Double, atHostTime hostTime: CMTime) {
+        pendingSeek = nil
         let time = CMTime(seconds: filmTime, preferredTimescale: 1_000_000_000)
         CMTimebaseSetRateAndAnchorTime(timebase, rate: 1, anchorTime: time, immediateSourceTime: hostTime)
     }
@@ -249,6 +382,7 @@ public final class FilmVideoPlayer {
         park(at: target)
         bufferedUntil = target
         isPrimed = false
+        pendingSeek = (target, resume)
         let requested = Date()
         if let pictureSource {
             let stereo = onSampleBuffer != nil
@@ -261,11 +395,15 @@ public final class FilmVideoPlayer {
         let first = index.segment(containing: target)
         segments = segments.filter { abs($0.key - first) <= 2 }
         feedTask = Task { [weak self] in
-            await self?.feed(from: first, target: target, resume: resume, requested: requested)
+            await self?.feed(from: first, target: target, resume: resume, keepsClock: false, requested: requested)
         }
     }
 
     public func stop() {
+        loadGeneration += 1
+        tierChangeGeneration += 1
+        isChangingPictureTier = false
+        pendingSeek = nil
         feedTask?.cancel()
         feedTask = nil
         startTask?.cancel()
@@ -279,7 +417,9 @@ public final class FilmVideoPlayer {
 
     // MARK: Feeding
 
-    private func feed(from first: Int, target: Double, resume: Bool, requested: Date) async {
+    /// `keepsClock`: a tier change under a running clock, which priming
+    /// must not restart or re-anchor.
+    private func feed(from first: Int, target: Double, resume: Bool, keepsClock: Bool, requested: Date) async {
         guard let index, let track, let format else { return }
         let timescale = track.timescale
         // Half a frame of slack so a keyframe exactly at the target is displayed.
@@ -340,8 +480,13 @@ public final class FilmVideoPlayer {
                 // never drains it.
                 if !primed, !hidden {
                     primed = true
-                    startTask = Task { [weak self] in
-                        await self?.startWhenPrimed(target: target, resume: resume, requested: requested)
+                    if keepsClock {
+                        isPrimed = true
+                        lastSeekLatency = Date().timeIntervalSince(requested)
+                    } else {
+                        startTask = Task { [weak self] in
+                            await self?.startWhenPrimed(target: target, resume: resume, requested: requested)
+                        }
                     }
                 }
             }
@@ -401,6 +546,7 @@ public final class FilmVideoPlayer {
         guard !Task.isCancelled else { return }
         lastSeekLatency = Date().timeIntervalSince(requested)
         isPrimed = true
+        pendingSeek = nil
         status = resume ? "Playing" : "Ready"
         if resume {
             let host = CMClockGetTime(CMClockGetHostTimeClock()) + CMTime(seconds: startDelay, preferredTimescale: 1_000_000_000)
@@ -421,8 +567,9 @@ public final class FilmVideoPlayer {
     private func segmentTask(_ n: Int) -> Task<FragmentedMP4Segment, Error> {
         if let existing = segments[n] { return existing }
         guard let client, let track else { return Task { throw CancellationError() } }
+        let height = pictureHeight
         let task = Task.detached(priority: .userInitiated) {
-            try FragmentedMP4Segment(data: try await client.videoSegment(n), track: track)
+            try FragmentedMP4Segment(data: try await client.videoSegment(n, height: height), track: track)
         }
         segments[n] = task
         return task
@@ -484,7 +631,8 @@ public final class FilmVideoPlayer {
     // MARK: Telemetry
 
     /// Codec, colour and HDR metadata as CoreMedia understood the sample entry.
-    nonisolated static func summarize(_ format: CMVideoFormatDescription, track: FragmentedMP4Track, index: FilmVideoIndex) -> String {
+    nonisolated static func summarize(_ format: CMVideoFormatDescription, track: FragmentedMP4Track, index: FilmVideoIndex,
+                                      height: Int? = nil) -> String {
         let dimensions = CMVideoFormatDescriptionGetDimensions(format)
         let extensions = CMFormatDescriptionGetExtensions(format) as? [String: Any] ?? [:]
         let atoms = (extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms as String] as? [String: Any])?
@@ -494,7 +642,8 @@ public final class FilmVideoPlayer {
         let mastering = extensions[kCMFormatDescriptionExtension_MasteringDisplayColorVolume as String] != nil ? " mdcv" : ""
         let lightLevel = extensions[kCMFormatDescriptionExtension_ContentLightLevelInfo as String] != nil ? " clli" : ""
         let profile = index.dvProfile.map { " P\($0)" } ?? ""
-        return "\(fourCC(CMFormatDescriptionGetMediaSubType(format))) \(dimensions.width)×\(dimensions.height) atoms \(atoms), "
+        let tier = height.map { " (\($0)p tier)" } ?? ""
+        return "\(fourCC(CMFormatDescriptionGetMediaSubType(format))) \(dimensions.width)×\(dimensions.height)\(tier) atoms \(atoms), "
             + "\(transfer) / \(primaries)\(mastering)\(lightLevel), server says \(index.videoRange)\(profile)"
     }
 

@@ -651,6 +651,18 @@ because `player.audio` changes). `FilmPictureFrame.stereo` carries the frame-pac
 for the stereo tap. `FilmVideoPlayer.isLoaded` replaces `index != nil` as the
 "a picture is loaded" test.
 
+**Picture tiers.** The plugin's index lists lower tiers by height
+(`FilmVideoIndex.pictureHeights`, e.g. `[1440, 1080]`; empty from an older
+plugin and always empty for a download, whose client never sends `height`).
+They are HEVC transcodes cut on the same index, so `FilmVideoPlayer` can change
+tier at any segment: `load(_:startAt:pictureHeight:)` opens at one, and
+`setPictureHeight(_:)` fetches the new tier's segment at the playhead and its
+init (segment first, so the plugin's run there writes the init) while the old
+picture plays, then flushes (`onFlush` too) and feeds from the playhead's
+keyframe interval with the frames before it hidden. It never parks or
+re-anchors the timebase, so the audio clock is untouched; a seek still priming
+is repeated in the new tier instead, so `FilmPlayer`'s wait on `isPrimed` holds.
+
 `RAVEExternalStereoVideoView` mounts a host-owned frame source in visionOS
 using the measured 90pt video recess. The host must reserve ornament space and
 keep its transport attached to its own clock. A compressed tap currently adds

@@ -1,9 +1,9 @@
 /*
  Hypnos - the Atmos Objects plugin's endpoints
 
-   GET /AtmosObjects/{itemId}/Video                 index (segment start times, range info)
-   GET /AtmosObjects/{itemId}/Video/Init            init segment
-   GET /AtmosObjects/{itemId}/Video/Segments/{n}    one keyframe interval, in film time
+   GET /AtmosObjects/{itemId}/Video                 index (segment start times, range info, picture tiers)
+   GET /AtmosObjects/{itemId}/Video/Init            init segment (?height= for a lower tier)
+   GET /AtmosObjects/{itemId}/Video/Segments/{n}    one keyframe interval, in film time (?height= likewise)
    GET /AtmosObjects/{itemId}/Scene?startSeconds=T  Atmos layout (422: no objects)
    GET /AtmosObjects/{itemId}/Segments/{n}/Events   positions and gains for audio segment n
    GET /AtmosObjects/{itemId}/Segments/{n}/{g}      FLAC channel group g of audio segment n
@@ -36,6 +36,37 @@ public struct FilmVideoIndex: Decodable, Sendable {
     public let videoRange: String
     public let dvProfile: Int?
     public let dolbyVision: Bool
+    /// The lower picture tiers the plugin offers, by height, largest first
+    /// (a 2160p film: [1440, 1080]). Each is HEVC cut on this same index, so
+    /// segment n of every tier covers the same film time. Empty from a plugin
+    /// older than tiers, and for a download, which holds the original only.
+    public var pictureHeights: [Int]
+
+    private enum CodingKeys: String, CodingKey {
+        case segmentStarts, durationSeconds, codec, videoRange, dvProfile, dolbyVision, pictureHeights
+    }
+
+    public init(segmentStarts: [Double], durationSeconds: Double, codec: String, videoRange: String, dvProfile: Int?,
+                dolbyVision: Bool, pictureHeights: [Int] = []) {
+        self.segmentStarts = segmentStarts
+        self.durationSeconds = durationSeconds
+        self.codec = codec
+        self.videoRange = videoRange
+        self.dvProfile = dvProfile
+        self.dolbyVision = dolbyVision
+        self.pictureHeights = pictureHeights
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        segmentStarts = try container.decode([Double].self, forKey: .segmentStarts)
+        durationSeconds = try container.decode(Double.self, forKey: .durationSeconds)
+        codec = try container.decode(String.self, forKey: .codec)
+        videoRange = try container.decode(String.self, forKey: .videoRange)
+        dvProfile = try container.decodeIfPresent(Int.self, forKey: .dvProfile)
+        dolbyVision = try container.decode(Bool.self, forKey: .dolbyVision)
+        pictureHeights = try container.decodeIfPresent([Int].self, forKey: .pictureHeights) ?? []
+    }
 
     /// The segment whose interval contains `seconds`.
     public func segment(containing seconds: Double) -> Int {
@@ -205,16 +236,30 @@ public struct FilmServerClient: FilmStreamingAudioSource {
         return try JSONDecoder().decode(Page.self, from: data).items
     }
 
+    /// The video index. A download's offers no lower tiers: it holds the
+    /// original picture only.
     public func videoIndex() async throws -> FilmVideoIndex {
-        try JSONDecoder().decode(FilmVideoIndex.self, from: await get("Video"))
+        var index = try JSONDecoder().decode(FilmVideoIndex.self, from: await get("Video"))
+        if offline != nil { index.pictureHeights = [] }
+        return index
     }
 
-    public func videoInit() async throws -> Data {
-        try await get("Video/Init")
+    /// The init segment of the original picture, or with `height` of that
+    /// lower tier (one of the index's `pictureHeights`).
+    public func videoInit(height: Int? = nil) async throws -> Data {
+        try await get("Video/Init", query: videoQuery(height: height))
     }
 
-    public func videoSegment(_ n: Int) async throws -> Data {
-        try await get("Video/Segments/\(n)")
+    /// Segment `n` of the original picture, or with `height` of that tier.
+    public func videoSegment(_ n: Int, height: Int? = nil) async throws -> Data {
+        try await get("Video/Segments/\(n)", query: videoQuery(height: height))
+    }
+
+    /// The tier's query. Never sent offline: a download answers for the
+    /// original only, which is what plays.
+    func videoQuery(height: Int?) -> [URLQueryItem] {
+        guard offline == nil, let height else { return [] }
+        return [URLQueryItem(name: "height", value: String(height))]
     }
 
     /// The item's object-audio tracks, the default for `languages` marked.
@@ -415,9 +460,7 @@ public struct FilmServerClient: FilmStreamingAudioSource {
         if let offline {
             return try await offline.data(path: path, query: query)
         }
-        var url = baseURL.appending(path: "AtmosObjects/\(itemID)/\(path)")
-        if !query.isEmpty { url.append(queryItems: query) }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: requestURL(path, query: query))
         request.setValue(token, forHTTPHeaderField: "X-Emby-Token")
         request.timeoutInterval = 60
         let timing = TransferTiming()
@@ -428,6 +471,15 @@ public struct FilmServerClient: FilmStreamingAudioSource {
         }
         if let seconds = timing.seconds { governor?.recordTransfer(bytes: data.count, seconds: seconds) }
         return data
+    }
+}
+
+extension FilmServerClient {
+    /// The plugin URL for `path` under the item, with `query`.
+    func requestURL(_ path: String, query: [URLQueryItem] = []) -> URL {
+        var url = baseURL.appending(path: "AtmosObjects/\(itemID)/\(path)")
+        if !query.isEmpty { url.append(queryItems: query) }
+        return url
     }
 }
 
