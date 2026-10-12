@@ -323,7 +323,16 @@ public actor RAVEWebSocketTransport {
         if session == nil { session = makeSession() }
         guard let session else { return }
 
+        #if canImport(Darwin)
         let task = session.webSocketTask(with: configuration.url)
+        #else
+        // FoundationNetworking's handshake sends `Connection: keep-alive`, not
+        // `Upgrade`, and a server that checks for the upgrade token (Node's
+        // http module does) answers it as a plain GET: a 404.
+        var request = URLRequest(url: configuration.url)
+        request.setValue("Upgrade", forHTTPHeaderField: "Connection")
+        let task = session.webSocketTask(with: request)
+        #endif
         webSocketTask = task
         task.resume()
         lastConnectAttemptAt = Date()

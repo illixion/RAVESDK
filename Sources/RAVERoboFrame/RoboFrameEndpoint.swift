@@ -95,6 +95,9 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
     public var bright: Bool
     /// Animated posts as GIF (the PSP).
     public var gif: Bool
+    /// Compose onto a width×height canvas (cover-crop near the aspect, fit
+    /// with fill otherwise) so every frame fills the screen.
+    public var wallpaper: Bool
     /// A video post's transcode: `h264` (a progressive mp4) or `hls`.
     public var vcodec: String?
     /// Caps for the H.264 output; 0 keeps the source's.
@@ -111,6 +114,7 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
         lowmem: Bool = false,
         bright: Bool = false,
         gif: Bool = false,
+        wallpaper: Bool = false,
         vcodec: String? = nil,
         videoMaxHeight: Int? = nil,
         videoMaxFPS: Int? = nil,
@@ -123,6 +127,7 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
         self.lowmem = lowmem
         self.bright = bright
         self.gif = gif
+        self.wallpaper = wallpaper
         self.vcodec = vcodec
         self.videoMaxHeight = videoMaxHeight
         self.videoMaxFPS = videoMaxFPS
@@ -139,6 +144,7 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
         flag("lowmem", lowmem)
         flag("bright", bright)
         flag("gif", gif)
+        flag("wallpaper", wallpaper)
         if let vcodec { items.append(URLQueryItem(name: "vcodec", value: vcodec)) }
         number("vmaxh", videoMaxHeight)
         number("vmaxfps", videoMaxFPS)

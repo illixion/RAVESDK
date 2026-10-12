@@ -163,6 +163,19 @@ struct RoboFrameSceneStateTests {
     }
 }
 
+@Suite("Slideshow items")
+struct RoboFrameSlideshowItemTests {
+
+    @Test("A post survives the round trip through a slideshow item")
+    func roundTrip() {
+        let video = RoboFramePost(id: 2192588, ext: "webm", durationMs: 122_000)
+        #expect(video.slideshowItem.mediaKind == .video)
+        #expect(video.slideshowItem.duration == 122)
+        #expect(RoboFramePost(slideshowItem: video.slideshowItem) == video)
+        #expect(RoboFramePost(id: 7, ext: "jpg").slideshowItem.mediaKind == .image)
+    }
+}
+
 @Suite("Endpoint URLs")
 struct RoboFrameEndpointTests {
 

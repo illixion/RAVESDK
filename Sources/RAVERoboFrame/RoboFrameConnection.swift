@@ -327,6 +327,11 @@ public final class RoboFrameConnection {
         send("displaySync", sessionId: sessionId, payload: ["enabled": enabled])
     }
 
+    /// Ask for `target`'s cached panel state; it comes back as `displayState`.
+    public func sendGetDisplayState(target: String) {
+        send("getDisplayState", payload: ["target": target])
+    }
+
     public func sendBlock(postId: Int) {
         send("block", payload: ["id": postId])
     }

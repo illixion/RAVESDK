@@ -11,7 +11,9 @@
  stand-in with the same interpolation spellings, so every call site compiles
  unchanged, and the default sink writes to stderr with every value that is not
  `.public` withheld: a kiosk's journal is forwarded off the box, so it gets the
- same treatment as an exported trace.
+ same treatment as an exported trace. `RAVE_LOG_PRIVATE=1` in the environment
+ shows `.private` values too, for debugging at the device (DebugTrace's
+ development mode); `.sensitive` values are never shown.
  */
 
 import Foundation
@@ -101,8 +103,15 @@ public struct RAVENetLogPrivacy: Sendable, Equatable {
     public static func sensitive(mask: Mask) -> RAVENetLogPrivacy { RAVENetLogPrivacy(level: .sensitive, mask: mask) }
 
     func isShown(scalar: Bool) -> Bool {
-        level == .public || (level == .auto && scalar)
+        switch level {
+        case .public: true
+        case .auto: scalar || Self.showsPrivate
+        case .private: Self.showsPrivate
+        case .sensitive: false
+        }
     }
+
+    static let showsPrivate = ProcessInfo.processInfo.environment["RAVE_LOG_PRIVATE"] == "1"
 }
 
 /// A log line whose non-public values are withheld when it is built. A hashed

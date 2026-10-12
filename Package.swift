@@ -112,7 +112,7 @@ let package = Package(
         // RoboFrame client: Hypnos's remote viewer, RoboFrame's NativeClient
         // and its Linux kiosk. Typed messages, session multiplexing, the
         // present/visibility replay and the media URLs; transport is RAVENet.
-        .target(name: "RAVERoboFrame", dependencies: ["RAVENet"]),
+        .target(name: "RAVERoboFrame", dependencies: ["RAVENet", "RAVESlideshowCore"]),
         .testTarget(name: "RAVERoboFrameTests", dependencies: ["RAVERoboFrame", "RAVENet"]),
         // The film player: a film's picture through AVSampleBufferDisplayLayer
         // on a host-clock timebase, and its Atmos objects rendered as spatial
