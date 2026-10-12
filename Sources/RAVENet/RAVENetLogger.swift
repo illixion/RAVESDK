@@ -13,7 +13,9 @@
  `.public` withheld: a kiosk's journal is forwarded off the box, so it gets the
  same treatment as an exported trace. `RAVE_LOG_PRIVATE=1` in the environment
  shows `.private` values too, for debugging at the device (DebugTrace's
- development mode); `.sensitive` values are never shown.
+ development mode); `.sensitive` values are never shown. Debug lines are
+ dropped unless `RAVE_LOG_DEBUG=1`, as the unified log doesn't keep them
+ either: a socket's per-frame lines would otherwise fill the journal.
  */
 
 import Foundation
@@ -194,7 +196,10 @@ public struct RAVENetOSLogger: RAVENetLogger {
         self.prefix = "[\(subsystem):\(category)]"
     }
 
+    static let minimumLevel: RAVENetLogLevel = ProcessInfo.processInfo.environment["RAVE_LOG_DEBUG"] == "1" ? .debug : .info
+
     public func log(_ level: RAVENetLogLevel, _ message: RAVENetLogMessage) {
+        guard level >= Self.minimumLevel else { return }
         let label = switch level {
         case .debug: "debug"
         case .info: "info"

@@ -105,6 +105,9 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
     public var videoMaxFPS: Int?
     /// The untouched source, for a client that decodes animated formats itself.
     public var rawAnimated: Bool
+    /// A video post's first frame as a JPEG (sized by width/height), never
+    /// recorded as a view. Only video posts have one.
+    public var poster: Bool
 
     public init(
         record: Bool = false,
@@ -118,7 +121,8 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
         vcodec: String? = nil,
         videoMaxHeight: Int? = nil,
         videoMaxFPS: Int? = nil,
-        rawAnimated: Bool = false
+        rawAnimated: Bool = false,
+        poster: Bool = false
     ) {
         self.record = record
         self.width = width
@@ -132,6 +136,7 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
         self.videoMaxHeight = videoMaxHeight
         self.videoMaxFPS = videoMaxFPS
         self.rawAnimated = rawAnimated
+        self.poster = poster
     }
 
     var queryItems: [URLQueryItem] {
@@ -149,6 +154,7 @@ public struct RoboFrameMediaOptions: Hashable, Sendable {
         number("vmaxh", videoMaxHeight)
         number("vmaxfps", videoMaxFPS)
         flag("rawanimated", rawAnimated)
+        flag("poster", poster)
         return items
     }
 }

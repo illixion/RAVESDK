@@ -113,7 +113,8 @@ manifest is evaluated on Linux it drops every other target and product (the
 - DebugTrace is Apple-only, so `RAVENet` links it on Apple platforms only.
   `RAVENetLogMessage` is `DebugLogMessage` there; on Linux it is a stand-in
   with the same interpolation spellings that withholds every non-`.public`
-  value, and `RAVENetOSLogger` writes to stderr.
+  value, and `RAVENetOSLogger` writes to stderr, info and up unless
+  `RAVE_LOG_DEBUG=1`.
 - `ws://` on Linux goes through `RAVEPOSIXWebSocket`, RAVENet's own RFC 6455
   client on a plain TCP socket: FoundationNetworking's `URLSessionWebSocketTask`
   (libcurl) keeps most of a core busy while a socket is open, even an idle

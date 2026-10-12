@@ -79,6 +79,38 @@ public struct RoboFramePlayback: Equatable, Sendable {
     }
 }
 
+/// `/history.json`: the posts the server served recently, newest first.
+/// `history` is deduped across every display; `groups` is per display, so a
+/// post two displays showed appears in both.
+public struct RoboFrameHistory: Decodable, Equatable, Sendable {
+    public struct Group: Decodable, Identifiable, Equatable, Sendable {
+        public let deviceId: String
+        public let posts: [RoboFramePost]
+        public var id: String { deviceId }
+
+        public init(deviceId: String, posts: [RoboFramePost]) {
+            self.deviceId = deviceId
+            self.posts = posts
+        }
+    }
+
+    public let history: [RoboFramePost]
+    public let groups: [Group]
+
+    public init(history: [RoboFramePost], groups: [Group] = []) {
+        self.history = history
+        self.groups = groups
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        history = try values.decodeIfPresent([RoboFramePost].self, forKey: .history) ?? []
+        groups = try values.decodeIfPresent([Group].self, forKey: .groups) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey { case history, groups }
+}
+
 /// A Home Assistant sensor reading forwarded by the server (`update`).
 public struct RoboFrameSensorReading: Identifiable, Equatable, Sendable {
     public let entityId: String

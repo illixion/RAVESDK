@@ -200,5 +200,16 @@ struct RoboFrameEndpointTests {
         let url = endpoint.mediaURL(postID: 42, options: RoboFrameMediaOptions(width: 1920, height: 1080, lowmem: true, vcodec: "h264"))
         #expect(url?.absoluteString == "http://frame.local:3123/get?id=42&record=0&width=1920&height=1080&lowmem=1&vcodec=h264&deviceId=d&token=t")
         #expect(endpoint.url(path: "history.json")?.absoluteString == "http://frame.local:3123/history.json?deviceId=d&token=t")
+        let poster = endpoint.mediaURL(postID: 7, options: RoboFrameMediaOptions(width: 72, height: 72, poster: true))
+        #expect(poster?.absoluteString == "http://frame.local:3123/get?id=7&record=0&width=72&height=72&poster=1&deviceId=d&token=t")
+    }
+
+    @Test("/history.json decodes newest first, and a missing list is empty")
+    func history() throws {
+        let json = #"{"history":[{"id":3,"ext":"mp4"},{"id":1,"ext":"jpg"}],"groups":[{"deviceId":"a","posts":[{"id":3,"ext":"mp4"}]}]}"#
+        let history = try JSONDecoder().decode(RoboFrameHistory.self, from: Data(json.utf8))
+        #expect(history.history.map(\.id) == [3, 1] && history.history[0].isVideo)
+        #expect(history.groups.map(\.id) == ["a"])
+        #expect(try JSONDecoder().decode(RoboFrameHistory.self, from: Data("{}".utf8)) == RoboFrameHistory(history: []))
     }
 }
