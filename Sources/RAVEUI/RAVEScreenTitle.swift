@@ -38,14 +38,9 @@ public extension View {
 /// navigation bar shows it, and this draws nothing). Pair with `raveScreenTitle(_:)`.
 public struct RAVEScreenHeading: View {
     private let title: String
-    private let takesFocus: Bool
 
-    /// `takesFocus`: whether the heading can be focused on tvOS. A Form or List needs it, or
-    /// moving up from its first control gets stuck below the heading. A ScrollView of cards
-    /// reaches the tab bar without it, and there it would only cost an extra click each way.
-    public init(_ title: String, takesFocus: Bool = true) {
+    public init(_ title: String) {
         self.title = title
-        self.takesFocus = takesFocus
     }
 
     public var body: some View {
@@ -58,8 +53,10 @@ public struct RAVEScreenHeading: View {
             .listRowBackground(Color.clear)
             // Focusable so that moving up from the first control scrolls back to the top
             // (tvOS scrolls only to what takes focus); from here, up reaches the tab bar.
-            // Without it, a Form whose first control sits below the heading got stuck there.
-            .focusable(takesFocus)
+            // Without it, focus got stuck on the first control, in a Form and in a ScrollView
+            // alike (tried both on an Apple TV): it costs a click each way, which reaching the
+            // tab bar from a scrolled page would need anyway.
+            .focusable()
             .accessibilityAddTraits(.isHeader)
         #else
         EmptyView()
