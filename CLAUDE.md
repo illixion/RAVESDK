@@ -114,8 +114,12 @@ manifest is evaluated on Linux it drops every other target and product (the
   `RAVENetLogMessage` is `DebugLogMessage` there; on Linux it is a stand-in
   with the same interpolation spellings that withholds every non-`.public`
   value, and `RAVENetOSLogger` writes to stderr.
-- `URLSessionWebSocketTask` comes from FoundationNetworking (libcurl). There is
-  no `NWPathMonitor`, so the path counts as always satisfied.
+- `ws://` on Linux goes through `RAVEPOSIXWebSocket`, RAVENet's own RFC 6455
+  client on a plain TCP socket: FoundationNetworking's `URLSessionWebSocketTask`
+  (libcurl) keeps most of a core busy while a socket is open, even an idle
+  one. `wss://` still uses the task (no TLS in the POSIX client).
+  `RAVEWebSocketConnection` picks one; the transport sees the same shape either
+  way. There is no `NWPathMonitor`, so the path counts as always satisfied.
 - Test with the `swift:6.2.4-noble` Docker image (arm64, matching the Pi). The
   RoboFrame worktree's packages have to be copied under `~` first: Colima
   doesn't share `/private/tmp`.

@@ -18,10 +18,11 @@
  readiness is declared by the app via `markReady()`, and fatal-vs-retryable is
  decided by the app's `failurePolicy`.
 
- On Linux (RoboFrame's Pi kiosk) the socket comes from FoundationNetworking's
- libcurl-backed `URLSessionWebSocketTask`. There is no `NWPathMonitor` there,
- so the path is treated as always satisfied: reconnects ride the backoff, and
- a kiosk's network doesn't flap the way a headset's does across sleep/wake.
+ On Linux (RoboFrame's Pi kiosk) a `ws://` socket is RAVENet's own POSIX
+ client and `wss://` is FoundationNetworking's libcurl-backed task (see
+ `RAVEWebSocketConnection`). There is no `NWPathMonitor` there, so the path is
+ treated as always satisfied: reconnects ride the backoff, and a kiosk's
+ network doesn't flap the way a headset's does across sleep/wake.
 
  Protocol framing lives entirely above this type. It moves `String` frames and
  nothing else — even the keepalive ping is app-supplied, because Stash pings
@@ -47,7 +48,7 @@ public enum RAVENetEvent: Sendable {
     case failure(RAVETransportFailure)
 }
 
-/// Drives one `URLSessionWebSocketTask` with reconnect, keepalive, network-path
+/// Drives one WebSocket with reconnect, keepalive, network-path
 /// gating and wake probing.
 ///
 /// Isolation: an `actor`, so it serves consumers in either of the codebase's
@@ -101,7 +102,7 @@ public actor RAVEWebSocketTransport {
     private let failurePolicy: @Sendable (RAVETransportFailure) -> RAVEFailureDecision
 
     private var session: URLSession?
-    private var webSocketTask: URLSessionWebSocketTask?
+    private var webSocketTask: RAVEWebSocketConnection?
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -184,7 +185,7 @@ public actor RAVEWebSocketTransport {
     /// always followed by a receive error that drives the real recovery.
     public func send(_ text: String) {
         guard let task = webSocketTask else { return }
-        task.send(.string(text)) { [logger] error in
+        task.send(text) { [logger] error in
             if let error {
                 logger.log(.warning, "send error: \(error)")
             }
@@ -277,7 +278,7 @@ public actor RAVEWebSocketTransport {
         guard let task = webSocketTask else { return }
         if let frame = await pingFrameProvider() {
             await withCheckedContinuation { continuation in
-                task.send(.string(frame)) { _ in continuation.resume() }
+                task.send(frame) { _ in continuation.resume() }
             }
         }
         guard await shouldSuspend(), task === webSocketTask else { return }
@@ -323,16 +324,7 @@ public actor RAVEWebSocketTransport {
         if session == nil { session = makeSession() }
         guard let session else { return }
 
-        #if canImport(Darwin)
-        let task = session.webSocketTask(with: configuration.url)
-        #else
-        // FoundationNetworking's handshake sends `Connection: keep-alive`, not
-        // `Upgrade`, and a server that checks for the upgrade token (Node's
-        // http module does) answers it as a plain GET: a 404.
-        var request = URLRequest(url: configuration.url)
-        request.setValue("Upgrade", forHTTPHeaderField: "Connection")
-        let task = session.webSocketTask(with: request)
-        #endif
+        let task = RAVEWebSocketConnection(session: session, url: configuration.url, timeout: configuration.requestTimeout)
         webSocketTask = task
         task.resume()
         lastConnectAttemptAt = Date()
@@ -346,7 +338,7 @@ public actor RAVEWebSocketTransport {
         }
     }
 
-    private func receiveLoop(task: URLSessionWebSocketTask) async {
+    private func receiveLoop(task: RAVEWebSocketConnection) async {
         logger.log(.info, "receive loop entered")
         defer { logger.log(.info, "receive loop exited") }
 
@@ -392,7 +384,7 @@ public actor RAVEWebSocketTransport {
         }
     }
 
-    private func handleReceiveFailure(_ error: any Error, task: URLSessionWebSocketTask) {
+    private func handleReceiveFailure(_ error: any Error, task: RAVEWebSocketConnection) {
         let failure = Self.describeFailure(error, task: task)
         logger.log(.warning, "receive error: \(failure.errorDomain, privacy: .public) \(failure.errorCode) closeCode=\(failure.closeCode.rawValue) — \(failure.diagnostic)")
 
@@ -414,7 +406,7 @@ public actor RAVEWebSocketTransport {
 
     /// Dump enough detail that a failed receive can be told apart: a proxy
     /// returning 4xx/5xx, a non-Upgrade response, or an unhappy TLS layer.
-    private static func describeFailure(_ error: any Error, task: URLSessionWebSocketTask) -> RAVETransportFailure {
+    private static func describeFailure(_ error: any Error, task: RAVEWebSocketConnection) -> RAVETransportFailure {
         let nsError = error as NSError
         var detail = "domain=\(nsError.domain) code=\(nsError.code) desc=\(error.localizedDescription)"
         if let urlError = error as? URLError {
@@ -587,7 +579,7 @@ public actor RAVEWebSocketTransport {
         receiveTask = nil
         keepaliveTask?.cancel()
         keepaliveTask = nil
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask?.cancel()
         webSocketTask = nil
     }
 
