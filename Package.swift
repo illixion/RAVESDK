@@ -11,6 +11,7 @@ let needsVergence: Set<String> = [
     "RAVEMedia", "RAVEMediaTests", "RAVESlideshow", "RAVESlideshowTests", "RAVEFilm", "RAVEFilmTests", "RAVEFilmLab",
 ]
 
+let applePlatforms: [Platform] = [.macOS, .iOS, .tvOS, .visionOS]
 
 let package = Package(
     name: "RAVESDK",
@@ -35,7 +36,9 @@ let package = Package(
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
+        .library(name: "RAVESlideshowCore", targets: ["RAVESlideshowCore"]),
         .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
+        .library(name: "RAVERoboFrame", targets: ["RAVERoboFrame"]),
         .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
         .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
@@ -50,8 +53,11 @@ let package = Package(
     // public stereo 3D pipeline RAVEMedia is moving into.
     dependencies: [.package(path: "../DebugTrace")] + (hasVergence ? [.package(path: "../vergence")] : []),
     targets: [
-        .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
-        .testTarget(name: "RAVENetTests", dependencies: ["RAVENet", .product(name: "DebugTrace", package: "DebugTrace")]),
+        // DebugTrace only where it builds (Apple platforms): RAVENet and the
+        // targets above it also build on Linux for RoboFrame's Pi kiosk, and
+        // log there through RAVENet's stderr stand-in.
+        .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace", condition: .when(platforms: applePlatforms))]),
+        .testTarget(name: "RAVENetTests", dependencies: ["RAVENet", .product(name: "DebugTrace", package: "DebugTrace", condition: .when(platforms: applePlatforms))]),
         .target(name: "RAVEUI", dependencies: ["RAVEMediaCore"]),
         .target(name: "RAVEMediaCore"),
         .target(name: "RAVEQuestCore", dependencies: ["RAVEMediaCore"]),
@@ -96,8 +102,18 @@ let package = Package(
         // Source-agnostic slideshow lifecycle, local sync payloads, display
         // settings, and render hooks. Apps provide their own data adapters and
         // chrome; depth/stereo stays in RAVEMedia and transport in RAVENet.
-        .target(name: "RAVESlideshow", dependencies: ["RAVEMedia"]),
-        .testTarget(name: "RAVESlideshowTests", dependencies: ["RAVESlideshow"]),
+        // The engine and models are RAVESlideshowCore, Foundation-only so the
+        // Pi kiosk builds them on Linux; RAVESlideshow adds the SwiftUI
+        // surfaces and re-exports the core.
+        .target(name: "RAVESlideshowCore"),
+        .testTarget(name: "RAVESlideshowCoreTests", dependencies: ["RAVESlideshowCore"]),
+        .target(name: "RAVESlideshow", dependencies: ["RAVESlideshowCore", "RAVEMedia"]),
+        // RoboFrame's WebSocket protocol client, shared by every Swift
+        // RoboFrame client: Hypnos's remote viewer, RoboFrame's NativeClient
+        // and its Linux kiosk. Typed messages, session multiplexing, the
+        // present/visibility replay and the media URLs; transport is RAVENet.
+        .target(name: "RAVERoboFrame", dependencies: ["RAVENet"]),
+        .testTarget(name: "RAVERoboFrameTests", dependencies: ["RAVERoboFrame", "RAVENet"]),
         // The film player: a film's picture through AVSampleBufferDisplayLayer
         // on a host-clock timebase, and its Atmos objects rendered as spatial
         // sources on the same clock, both served by Hypnos's Jellyfin Atmos
@@ -170,3 +186,18 @@ if !hasVergence {
     package.products.removeAll { needsVergence.contains($0.name) }
     package.targets.removeAll { needsVergence.contains($0.name) }
 }
+
+// Evaluated on Linux (RoboFrame's Pi kiosk, its Docker builds), the package
+// offers only the targets that build there, so `swift build` and `swift test`
+// don't trip over the Apple-only ones. RAVEQuestCore is left out too: its
+// Android builds cross-compile from macOS with their own pinned toolchain.
+#if os(Linux)
+let portableTargets: Set<String> = [
+    "RAVENet", "RAVENetTests",
+    "RAVEMediaCore",
+    "RAVESlideshowCore", "RAVESlideshowCoreTests",
+    "RAVERoboFrame", "RAVERoboFrameTests",
+]
+package.targets.removeAll { !portableTargets.contains($0.name) }
+package.products.removeAll { !portableTargets.contains($0.name) }
+#endif

@@ -18,13 +18,23 @@
  readiness is declared by the app via `markReady()`, and fatal-vs-retryable is
  decided by the app's `failurePolicy`.
 
+ On Linux (RoboFrame's Pi kiosk) the socket comes from FoundationNetworking's
+ libcurl-backed `URLSessionWebSocketTask`. There is no `NWPathMonitor` there,
+ so the path is treated as always satisfied: reconnects ride the backoff, and
+ a kiosk's network doesn't flap the way a headset's does across sleep/wake.
+
  Protocol framing lives entirely above this type. It moves `String` frames and
  nothing else — even the keepalive ping is app-supplied, because Stash pings
  with `{"action":"ping"}` and Home with `{"id":N,"type":"ping"}`.
  */
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+#if canImport(Network)
 import Network
+#endif
 
 /// Events emitted to the app. Consume via `for await event in transport.events`.
 public enum RAVENetEvent: Sendable {
@@ -108,7 +118,9 @@ public actor RAVEWebSocketTransport {
     /// reconnect path until the next explicit `start()`.
     private var halted: Bool = false
 
+    #if canImport(Network)
     private var pathMonitor: NWPathMonitor?
+    #endif
     private var lastPathSatisfied: Bool = true
 
     private let eventContinuation: AsyncStream<RAVENetEvent>.Continuation
@@ -299,7 +311,9 @@ public actor RAVEWebSocketTransport {
     /// HTTP/1.1, so there is no multiplex state to clear in the first place.
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
+        #if canImport(Darwin)
         configuration.waitsForConnectivity = true
+        #endif
         configuration.timeoutIntervalForRequest = self.configuration.requestTimeout
         configuration.timeoutIntervalForResource = self.configuration.resourceTimeout
         return URLSession(configuration: configuration)
@@ -396,9 +410,11 @@ public actor RAVEWebSocketTransport {
         var detail = "domain=\(nsError.domain) code=\(nsError.code) desc=\(error.localizedDescription)"
         if let urlError = error as? URLError {
             detail += " urlErrorCode=\(urlError.code.rawValue)"
+            #if canImport(Darwin)
             if let peerTrust = urlError.userInfo[NSURLErrorFailingURLPeerTrustErrorKey] {
                 detail += " peerTrust=\(peerTrust)"
             }
+            #endif
             // Endpoint only: the query can hold a token, and this string
             // ends up in logs and in the connection state.
             if let failing = urlError.failingURL {
@@ -522,6 +538,7 @@ public actor RAVEWebSocketTransport {
     // MARK: - Network path
 
     private func startPathMonitor() {
+        #if canImport(Network)
         if pathMonitor != nil { return }
         let monitor = NWPathMonitor()
         pathMonitor = monitor
@@ -532,6 +549,7 @@ public actor RAVEWebSocketTransport {
             }
         }
         monitor.start(queue: DispatchQueue(label: "pro.rave.net.path"))
+        #endif
     }
 
     private func handlePathUpdate(satisfied: Bool) {
@@ -545,8 +563,10 @@ public actor RAVEWebSocketTransport {
     }
 
     private func stopPathMonitor() {
+        #if canImport(Network)
         pathMonitor?.cancel()
         pathMonitor = nil
+        #endif
     }
 
     // MARK: - Helpers

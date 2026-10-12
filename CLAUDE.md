@@ -86,19 +86,39 @@ is easy to skip.
 
 | Target | Purpose |
 |---|---|
-| `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing |
+| `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing. Also builds on Linux (see below) |
 | `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager, shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), `raveScreenTitle(_:)` + `RAVEScreenHeading` (a screen title that scrolls with the content on tvOS, where the bar's large title stays put over it; use them instead of a bare `navigationTitle` on any screen tvOS shows), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
 | `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality/stall rules, Up Next ordering and skip-segment models/policy. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Now a thin RealityKit/SwiftUI player over `~/Projects/vergence` (public, cross-platform), which holds the pipeline: the Apple engine in `VergenceApple`, and the Foundation-only half in `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there. Vergence is optional for the package: without a `../vergence` checkout, Package.swift leaves out RAVEMedia, RAVESlideshow, RAVEFilm and RAVEFilmLab (`needsVergence`), so apps that use none of them resolve without it; add a target that imports RAVEMedia to that set |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
-| `RAVESlideshow` | Source-agnostic slideshow lifecycle, local sync payloads, display settings, render hooks |
+| `RAVESlideshowCore` | Source-agnostic slideshow lifecycle (`RAVESlideshowEngine`), local sync payloads, display settings. Foundation + Observation only, builds on Linux |
+| `RAVESlideshow` | The SwiftUI render surfaces and RAVEMedia adapters over `RAVESlideshowCore`, which it re-exports so `import RAVESlideshow` reaches the engine |
+| `RAVERoboFrame` | RoboFrame's WebSocket protocol client, shared by every Swift RoboFrame client (Hypnos's remote viewer, RoboFrame's NativeClient and its Linux kiosk): typed frames (`RoboFrameFrames`), session multiplexing and the post-reconnect replay (`RoboFrameConnection`), present/visibility edges (`RoboFrameSceneState`), server URLs (`RoboFrameEndpoint`). The wire contract is `RoboFrame/docs/protocol.md`; change both together. Builds on Linux |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
 | `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
+
+### Linux: the portable targets
+
+`RAVENet`, `RAVEMediaCore`, `RAVESlideshowCore` and `RAVERoboFrame` build and
+test on Linux, for RoboFrame's Pi kiosk (`RoboFrame/swift-kiosk`). When the
+manifest is evaluated on Linux it drops every other target and product (the
+`#if os(Linux)` block at the end of `Package.swift`), so a plain `swift build` /
+`swift test` there works; add a target to that list only once it builds there.
+
+- DebugTrace is Apple-only, so `RAVENet` links it on Apple platforms only.
+  `RAVENetLogMessage` is `DebugLogMessage` there; on Linux it is a stand-in
+  with the same interpolation spellings that withholds every non-`.public`
+  value, and `RAVENetOSLogger` writes to stderr.
+- `URLSessionWebSocketTask` comes from FoundationNetworking (libcurl). There is
+  no `NWPathMonitor`, so the path counts as always satisfied.
+- Test with the `swift:6.2.4-noble` Docker image (arm64, matching the Pi). The
+  RoboFrame worktree's packages have to be copied under `~` first: Colima
+  doesn't share `/private/tmp`.
 
 ### Quest portable-core handoff (2026-10-08)
 

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import RAVESlideshow
+@testable import RAVESlideshowCore
 
 @MainActor
 @Suite("RAVESlideshowEngine", .serialized)

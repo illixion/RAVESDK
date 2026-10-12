@@ -7,7 +7,9 @@
  authentication, and persistence.
  */
 
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 public struct RAVESlideshowColorAdjustments: Codable, Hashable, Sendable {

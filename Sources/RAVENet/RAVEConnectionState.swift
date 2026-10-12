@@ -8,6 +8,9 @@
  */
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Lifecycle of a `RAVEWebSocketTransport`.
 ///
