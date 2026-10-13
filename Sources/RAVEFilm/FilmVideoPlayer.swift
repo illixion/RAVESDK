@@ -138,7 +138,7 @@ public final class FilmVideoPlayer {
     /// every sample until flushed, which froze the picture on its last frame
     /// with the audio playing on (device, 2026-10-07). It watches the
     /// renderer itself, as the feed loop sleeps while buffered or paused.
-    @ObservationIgnored private var decoderRecovery: RAVEDecoderRecovery?
+    @ObservationIgnored private var decoderRecovery: DecoderRecovery?
 
 
     public init() {
@@ -163,7 +163,7 @@ public final class FilmVideoPlayer {
         }
         displayLayer.preventsDisplaySleepDuringVideoPlayback = true
         #endif
-        decoderRecovery = RAVEDecoderRecovery(
+        decoderRecovery = DecoderRecovery(
             renderer: renderer,
             maximumAttempts: 40,
             onGiveUp: { [weak self] _ in

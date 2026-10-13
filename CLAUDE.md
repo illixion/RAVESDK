@@ -453,7 +453,7 @@ the old one). This is the portfolio's live 3D path, Hypnos's video window first.
 **Subtitles are drawn into the eyes, not over the plane** (`StereoSubtitles.swift`).
 SwiftUI over the stereo plane never shows in front of it, and a panel beside it sits at
 the window's depth while the content reads nearer. The host hands the engine a
-`RAVEStereoSubtitleFrame` (`setSubtitles`, or `subtitles:` on
+`StereoSubtitleFrame` (`setSubtitles`, or `subtitles:` on
 `RAVEExternalStereoVideoView`) whose `render` closure returns images sized for the eye;
 the pump draws them into both eyes with crossed disparity after the warp/crop. Depth:
 fake-3D's warp bounds every pixel's shift at `(1 - convergence) × strength`, so the text
@@ -468,7 +468,7 @@ decoding: `AVSampleBufferVideoRenderer` goes `.failed` with
 `requiresFlushToResumeDecoding`, and a `VTDecompressionSession` returns
 `kVTInvalidSessionErr`. Neither recovers on its own; unflushed, the picture froze on its
 last frame for good with audio and transport running (device, 2026-10-07).
-**`RAVEDecoderRecovery`** (RAVEMedia) is the shared answer, also used by Longwave's
+**`DecoderRecovery`** (RAVEMedia) is the shared answer, also used by Longwave's
 desktop stream. The client supplies only `recover` (flush or drop its session, then get a
 key frame: re-seek, re-show, or ask the sender). The helper owns everything else:
 - noticing the loss even with no frames flowing: the renderer's
@@ -501,7 +501,7 @@ pump never revealed this, because backgrounding pauses the player and a paused p
 yields no new frames — the failure needs a source that keeps producing while the app is
 away, which is exactly what a web page's `<video>` does (it keeps decoding and playing
 audio). Measured on device before the guard: ~6,800 aborted command buffers in 20 seconds,
-each preceded by a depth inference. `StereoPump` watches `RAVEAppLifecycle`'s two
+each preceded by a depth inference. `StereoPump` watches `VergenceAppLifecycle`'s two
 notifications and returns early from `tick()`; the timer keeps running rather than being
 cancelled, so `stop()` never has to be ordered against a notification.
 
@@ -511,14 +511,14 @@ which starved Core Animation commits (backboardd render-watchdog SIGKILL) and th
 main-queue AVPlayer prepare callbacks. The pump owns its own `MTLCommandQueue` for
 the same reason: warp work must never queue behind the host's image uploads.
 
-**The shaders are a target source, not a declared resource.** `RAVEStereoShaders.metal`
+**The shaders are a target source, not a declared resource.** `StereoShaders.metal`
 sits under Vergence's `Sources/VergenceApple/Stereo/` so Xcode compiles it into the target's own
 `default.metallib`; nothing here ever calls a bare `device.makeDefaultLibrary()`,
 which would search the *app* bundle and silently find no kernels. Two consequences
 worth knowing before touching it:
 
 - The SwiftPM CLI ignores `.metal` entirely, so it synthesises no `Bundle.module`.
-  `RAVEMediaMetal` therefore locates `Vergence_VergenceApple.bundle` by hand. Under
+  `VergenceMetal` therefore locates `Vergence_VergenceApple.bundle` by hand. Under
   `swift build` it finds nothing and every caller degrades to "fake-3D unavailable",
   which on a Mac test host is the truth. Do not "fix" this by declaring the metal
   file as a resource — that copies it instead of compiling it.

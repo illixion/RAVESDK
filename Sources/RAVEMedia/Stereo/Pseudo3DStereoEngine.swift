@@ -238,7 +238,7 @@ public final class Pseudo3DStereoEngine {
 
     /// What the host wants drawn into the picture; kept so a rebuilt pump
     /// and a new eye size get it again. See `setSubtitles`.
-    @ObservationIgnored private var subtitleFrame: RAVEStereoSubtitleFrame?
+    @ObservationIgnored private var subtitleFrame: StereoSubtitleFrame?
     @ObservationIgnored private var subtitleGeneration = 0
 
     // A-B loop
@@ -259,8 +259,8 @@ public final class Pseudo3DStereoEngine {
     /// "it failed": read it in the callback. Reset per load.
     @ObservationIgnored public private(set) var failure: Pseudo3DFailure?
     /// Every couple of seconds of playback: whether the conversion keeps up
-    /// with the source (`RAVEStereoPerformance.isOverloaded`). Main actor.
-    @ObservationIgnored public var onPerformance: ((RAVEStereoPerformance) -> Void)?
+    /// with the source (`StereoPerformance.isOverloaded`). Main actor.
+    @ObservationIgnored public var onPerformance: ((StereoPerformance) -> Void)?
     @ObservationIgnored public var onDurationKnown: ((Double) -> Void)?
     /// One-shot latch for `onDurationKnown` (duration is polled from the
     /// periodic time observer, which fires ~30×/s). Reset per loaded item.
@@ -490,7 +490,7 @@ public final class Pseudo3DStereoEngine {
     /// Subtitles drawn into both eyes at a depth in front of the picture's
     /// content (see StereoSubtitles.swift). Nil turns them off. The frame's
     /// `render` runs now and again whenever the eye size changes.
-    public func setSubtitles(_ frame: RAVEStereoSubtitleFrame?) {
+    public func setSubtitles(_ frame: StereoSubtitleFrame?) {
         guard frame != subtitleFrame else { return }
         subtitleFrame = frame
         pushSubtitles()
@@ -498,7 +498,7 @@ public final class Pseudo3DStereoEngine {
 
     private func pushSubtitles() {
         guard let pump else { return }
-        guard let frame = subtitleFrame, let device = RAVEMediaMetal.shared?.device else {
+        guard let frame = subtitleFrame, let device = VergenceMetal.shared?.device else {
             pump.setSubtitles(nil)
             return
         }
@@ -596,7 +596,7 @@ public final class Pseudo3DStereoEngine {
         }
     }
 
-    private func performanceForwarder() -> @Sendable (RAVEStereoPerformance) -> Void {
+    private func performanceForwarder() -> @Sendable (StereoPerformance) -> Void {
         { [weak self] sample in
             Task { @MainActor in self?.onPerformance?(sample) }
         }
@@ -743,7 +743,7 @@ public final class Pseudo3DStereoEngine {
         // No Metal / no shader library means no warp at all — report the same
         // failure the caller already handles by dropping to the flat player,
         // rather than opening a player whose frames can never be presented.
-        guard let warp = RAVEStereoWarpResources.shared else {
+        guard let warp = StereoWarpResources.shared else {
             Task { @MainActor in self.onPlaybackError?() }
             return
         }
@@ -914,7 +914,7 @@ public final class Pseudo3DStereoEngine {
         // before teardown so a failed attach leaves any current playback alone.
         guard Pseudo3DDiagnostics.useStaticTestPattern || packedStereo != nil
                 || CoreMLDepthProvider.hasAvailableModel(role: .realtime),
-              let warp = RAVEStereoWarpResources.shared else {
+              let warp = StereoWarpResources.shared else {
             Task { @MainActor in self.onPlaybackError?() }
             return false
         }

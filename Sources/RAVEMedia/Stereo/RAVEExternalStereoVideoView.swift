@@ -11,7 +11,7 @@ import SwiftUI
 /// source attaches, so changing it needs a new source: re-attaching invalidates
 /// the old one (a `SampleBufferFrameSource` drops its decoder).
 ///
-/// `subtitles` are drawn into the picture itself (see `RAVEStereoSubtitleFrame`).
+/// `subtitles` are drawn into the picture itself (see `StereoSubtitleFrame`).
 public struct RAVEExternalStereoVideoView: View {
     private let source: any PumpFrameSource
     private let settings: Pseudo3DSettings
@@ -21,18 +21,18 @@ public struct RAVEExternalStereoVideoView: View {
     private let onToggleChrome: () -> Void
     private let packedStereo: PackedStereoLayout?
     private let squareCorners: Bool
-    private let subtitles: RAVEStereoSubtitleFrame?
-    private let onPerformance: ((RAVEStereoPerformance) -> Void)?
+    private let subtitles: StereoSubtitleFrame?
+    private let onPerformance: ((StereoPerformance) -> Void)?
     @State private var engine = Pseudo3DStereoEngine()
 
     public init(source: any PumpFrameSource, settings: Pseudo3DSettings = .default,
                 chromeOpen: Bool = false, chromeTakesInput: Bool = false,
                 packedStereo: PackedStereoLayout? = nil,
                 squareCorners: Bool = false,
-                subtitles: RAVEStereoSubtitleFrame? = nil,
+                subtitles: StereoSubtitleFrame? = nil,
                 onUnavailable: @escaping (Pseudo3DFailure?) -> Void,
                 onToggleChrome: @escaping () -> Void = {},
-                onPerformance: ((RAVEStereoPerformance) -> Void)? = nil) {
+                onPerformance: ((StereoPerformance) -> Void)? = nil) {
         self.onPerformance = onPerformance
         self.packedStereo = packedStereo
         self.squareCorners = squareCorners

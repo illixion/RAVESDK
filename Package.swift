@@ -73,10 +73,10 @@ let package = Package(
         .testTarget(name: "RAVEConsoleTests", dependencies: ["RAVEConsole"]),
         // Core ML depth + the windowed-stereo warp. visionOS is the product;
         // the depth half also builds on macOS so `swift test` can reach the
-        // conversion arithmetic. `RAVEStereoShaders.metal` is a plain target
+        // conversion arithmetic. `StereoShaders.metal` is a plain target
         // source: Xcode compiles it into the target's own `default.metallib`,
         // which is why nothing here reads the app's default library. (The
-        // SwiftPM CLI ignores `.metal` altogether — see RAVEMediaMetal.)
+        // SwiftPM CLI ignores `.metal` altogether — see VergenceMetal.)
         .target(name: "RAVEMedia", dependencies: [
             .product(name: "DebugTrace", package: "DebugTrace"),
             .product(name: "VergenceApple", package: "vergence"),

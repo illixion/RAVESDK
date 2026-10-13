@@ -6,7 +6,7 @@ hardware changes.
 
 ## Depth pipeline — lookahead realtime fake-3D (2026-09-13)
 
-Measured on Apple Vision Pro, visionOS 27, with `DepthPipelineSpike`
+Measured on Apple Vision Pro, visionOS 27, with `DepthPipelineBenchmark`
 (RAVEMedia; run from Hypnos → Settings → Developer → Depth Pipeline Spike).
 Source: Raven's 1080p60 H.264 test clip. Model: Apple's Depth Anything V2
 Small F16 (518×392 input), the only one installed at the time.
