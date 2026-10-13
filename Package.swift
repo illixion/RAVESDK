@@ -1,5 +1,16 @@
 // swift-tools-version: 6.2
+import Foundation
 import PackageDescription
+
+// Vergence (the public stereo 3D pipeline, ../vergence) is only needed by RAVEMedia and what builds
+// on it. Without a vergence checkout beside this one, those targets and products are left out, so
+// an app that uses none of them (Apparition, LambdaVision) resolves without it. An app that does
+// use them needs the checkout, and gets "no such product" without it.
+let hasVergence = FileManager.default.fileExists(atPath: Context.packageDirectory + "/../vergence/Package.swift")
+let needsVergence: Set<String> = [
+    "RAVEMedia", "RAVEMediaTests", "RAVESlideshow", "RAVESlideshowTests", "RAVEFilm", "RAVEFilmTests", "RAVEFilmLab",
+]
+
 
 let package = Package(
     name: "RAVESDK",
@@ -36,10 +47,7 @@ let package = Package(
     // `DebugLogger`, so their lines reach the in-app console and debug
     // traces; the console also hosts its capture button. Vergence is the
     // public stereo 3D pipeline RAVEMedia is moving into.
-    dependencies: [
-        .package(path: "../DebugTrace"),
-        .package(path: "../vergence"),
-    ],
+    dependencies: [.package(path: "../DebugTrace")] + (hasVergence ? [.package(path: "../vergence")] : []),
     targets: [
         .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
         .testTarget(name: "RAVENetTests", dependencies: ["RAVENet", .product(name: "DebugTrace", package: "DebugTrace")]),
@@ -149,3 +157,8 @@ let package = Package(
         ),
     ]
 )
+
+if !hasVergence {
+    package.products.removeAll { needsVergence.contains($0.name) }
+    package.targets.removeAll { needsVergence.contains($0.name) }
+}
