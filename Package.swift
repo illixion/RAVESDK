@@ -40,6 +40,7 @@ let package = Package(
         .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
+        .library(name: "RAVELLM", targets: ["RAVELLM"]),
     ],
     // The two sibling packages, neither depending on a RAVE package, so
     // neither adds a cycle or a RAVESDK <-> RAVEEngine edge (see
@@ -132,15 +133,22 @@ let package = Package(
         // with nothing site-specific. First consumer is spatial-ai-character's
         // ambient browsing; Raven's assistant is the planned second. The
         // driver needs WebKit, so on tvOS only the model types build.
+        // A language model as the apps use one (messages in, text out, a JSON
+        // schema, streaming) and Ollama behind it. Foundation only, so it
+        // builds everywhere; PCC or the on-device model become further
+        // implementations of the same protocol.
+        .target(name: "RAVELLM"),
+        .testTarget(name: "RAVELLMTests", dependencies: ["RAVELLM"]),
         .target(
             name: "RAVEBrowser",
+            dependencies: ["RAVELLM"],
             resources: [.copy("Resources/Readability.js"), .copy("Resources/Readability-LICENSE.md")]
         ),
         .testTarget(name: "RAVEBrowserTests", dependencies: ["RAVEBrowser"]),
         // Mac bench for RAVEBrowser's agent loop against a model on Ollama
         // (`swift run RAVEBrowserLab --model …`). Not a product, like
         // RAVEFilmLab: no app builds it.
-        .executableTarget(name: "RAVEBrowserLab", dependencies: ["RAVEBrowser"]),
+        .executableTarget(name: "RAVEBrowserLab", dependencies: ["RAVEBrowser", "RAVELLM"]),
         // Mac bench for RAVEFilm (scripts/run-film-lab.sh). Not a product, so
         // no app builds it. Reads the server and token from the environment so
         // none are committed. An unbundled executable has no Info.plist, so

@@ -98,7 +98,7 @@ public final class RAVEPageDriver {
     // MARK: - Reading
 
     public func read(mode: RAVEPageReading.Mode = .auto, maxCharacters: Int = 20_000) async throws -> RAVEPageReading {
-        if mode != .page { try await loadReadability() }
+        if mode != .page, mode != .main { try await loadReadability() }
         return try await run(RAVEPageScripts.read, ["mode": mode.rawValue, "maxCharacters": maxCharacters])
     }
 
@@ -204,14 +204,61 @@ public final class RAVEPageDriver {
 
     private func act(_ script: String, _ arguments: [String: Any]) async throws -> RAVEPageAction {
         var action: RAVEPageAction = try await run(script, arguments)
-        action.info = try await settle(expectingNavigation: action.followed != nil, timeout: .seconds(20))
+        var navigated = try await waitForLoad(expectingNavigation: action.followed != nil, timeout: .seconds(20))
+            || action.followed != nil
+        var quiet = try? await quiet()
+        // A click's script can start a navigation after the grace for one
+        // has passed (a search result going through a redirect does): the
+        // wait sees the page leave, and then waits for the next one.
+        let loading = try view().isLoading
+        if quiet?.leaving == true || loading {
+            navigated = true
+            try await waitForLoad(expectingNavigation: true, timeout: .seconds(20))
+            quiet = try? await self.quiet()
+        }
+        // After a navigation the changes counted are the new document's own
+        // rendering, which says nothing about the click; the load does.
+        if !navigated { action.changes = quiet?.changes }
+        action.info = try await info()
         return action
+    }
+
+    /// How long the document must go unchanged to count as settled, and the
+    /// most an action or a load waits for it. A second, because the page
+    /// can go still while its fetch is out: a click marks a button expanded
+    /// at once and the content follows when the server answers. A model's
+    /// turn takes several seconds anyway, so waiting costs little.
+    public var quietPeriod: Duration = .milliseconds(1000)
+    public var quietLimit: Duration = .milliseconds(3000)
+
+    /// Waits for the document to stop changing: an app-like page fetches and
+    /// renders after its load has finished, and after a click that loads
+    /// nothing at all.
+    @discardableResult
+    public func quiet() async throws -> RAVEPageQuiet {
+        try await run(RAVEPageScripts.quiet, ["quietMs": Self.milliseconds(quietPeriod),
+                                              "maxMs": Self.milliseconds(quietLimit)],
+                      deadline: quietLimit + .seconds(2))
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    /// Waits for a navigation to finish, if one starts, then for the page to
+    /// go quiet.
+    private func settle(expectingNavigation: Bool, timeout: Duration) async throws -> RAVEPageInfo {
+        try await waitForLoad(expectingNavigation: expectingNavigation, timeout: timeout)
+        _ = try? await quiet()
+        return try await info()
     }
 
     /// Waits for a navigation to finish, if one starts. With
     /// `expectingNavigation` a load gets a second to begin; otherwise a
     /// short grace catches the one a click may have triggered.
-    private func settle(expectingNavigation: Bool, timeout: Duration) async throws -> RAVEPageInfo {
+    /// Returns whether a load happened.
+    @discardableResult
+    private func waitForLoad(expectingNavigation: Bool, timeout: Duration) async throws -> Bool {
         let view = try view()
         let clock = ContinuousClock()
         let start = clock.now
@@ -223,7 +270,7 @@ public final class RAVEPageDriver {
             if sawLoading || clock.now - start >= grace { break }
         }
         if view.isLoading { throw RAVEPageError.timeout("page still loading after \(timeout)") }
-        return try await info()
+        return sawLoading
     }
 
     private static let readabilitySource: String? = Bundle.module
@@ -231,34 +278,73 @@ public final class RAVEPageDriver {
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
 
     private func loadReadability() async throws {
-        let loaded = try await view().callAsyncJavaScript(
-            RAVEPageScripts.hasReadability, arguments: [:], in: nil, contentWorld: world) as? Bool
+        let view = try view()
+        let loaded = try await Self.withDeadline(scriptDeadline) { [world] in
+            try await view.callAsyncJavaScript(
+                RAVEPageScripts.hasReadability, arguments: [:], in: nil, contentWorld: world) as? Bool
+        }
         guard loaded != true else { return }
         guard let source = Self.readabilitySource else { throw RAVEPageError.script("Readability.js is not in the bundle") }
         // A script, not a function body, so its `function Readability` lands
         // on the world's global. The trailing `true` gives WebKit a value it
         // can hand back.
         do {
-            _ = try await view().evaluateJavaScript(source + "\n;true;", in: nil, contentWorld: world)
+            try await Self.withDeadline(scriptDeadline) { [world] in
+                _ = try await view.evaluateJavaScript(source + "\n;true;", in: nil, contentWorld: world)
+            }
         } catch {
             throw Self.pageError(error)
         }
     }
 
-    private func run<T: Decodable>(_ script: String, _ arguments: [String: Any] = [:]) async throws -> T {
-        let result: Any?
-        do {
-            result = try await view().callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: world)
-        } catch {
-            throw Self.pageError(error)
+    /// The longest any one script may take, past which the driver stops
+    /// waiting for it. WebKit can leave a call unanswered for good, seen on
+    /// visionOS when the page navigated while the call was out, and an agent
+    /// waiting on it would hang forever.
+    public var scriptDeadline: Duration = .seconds(10)
+
+    private func run<T: Decodable>(_ script: String, _ arguments: [String: Any] = [:],
+                                   deadline: Duration? = nil) async throws -> T {
+        let view = try view()
+        let json = try await Self.withDeadline(deadline ?? scriptDeadline) { [world] in
+            let result: Any?
+            do {
+                result = try await view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: world)
+            } catch {
+                throw Self.pageError(error)
+            }
+            guard let json = result as? String else { throw RAVEPageError.badResult(String(describing: result)) }
+            return json
         }
-        guard let json = result as? String, let data = json.data(using: .utf8) else {
-            throw RAVEPageError.badResult(String(describing: result))
+        guard let data = json.data(using: .utf8) else {
+            throw RAVEPageError.badResult(json)
         }
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
             throw RAVEPageError.badResult("\(error) in \(json.prefix(300))")
+        }
+    }
+
+    /// Whichever comes first: `body`'s result or a timeout. Unstructured on
+    /// purpose: a task group would wait for the abandoned call on its way
+    /// out, and WebKit's calls don't answer cancellation.
+    private static func withDeadline<T: Sendable>(_ limit: Duration,
+                                                  _ body: @escaping @MainActor () async throws -> T) async throws -> T {
+        let once = RAVEOnce()
+        return try await withCheckedThrowingContinuation { continuation in
+            Task { @MainActor in
+                do {
+                    let value = try await body()
+                    if once.claim() { continuation.resume(returning: value) }
+                } catch {
+                    if once.claim() { continuation.resume(throwing: error) }
+                }
+            }
+            Task {
+                try? await Task.sleep(for: limit)
+                if once.claim() { continuation.resume(throwing: RAVEPageError.timeout("the page did not answer within \(limit)")) }
+            }
         }
     }
 
@@ -269,5 +355,12 @@ public final class RAVEPageDriver {
         }
         return .script(error.localizedDescription)
     }
+}
+
+/// True for the first caller only.
+private final class RAVEOnce: @unchecked Sendable {
+    private var done = false
+    private let lock = NSLock()
+    func claim() -> Bool { lock.withLock { defer { done = true }; return !done } }
 }
 #endif

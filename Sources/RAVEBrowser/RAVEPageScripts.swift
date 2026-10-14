@@ -124,6 +124,21 @@ enum RAVEPageScripts {
             const name = nameOf(el);
             return roleOf(el) + (name ? ' "' + name + '"' : ' <' + el.tagName.toLowerCase() + '>');
         };
+        // Counts what changes in the document from now on, for `quiet`: an
+        // app-like page answers a click by rewriting itself rather than by
+        // loading, so a change in the DOM is how an action is seen to work.
+        // Attributes count only where they mean something opened, closed or
+        // was picked; class and style churn all the time.
+        const watch = () => {
+            if (R.watch) R.watch.observer.disconnect();
+            const w = { changes: 0, last: performance.now(), observer: null };
+            w.observer = new MutationObserver(list => { w.changes += list.length; w.last = performance.now(); });
+            w.observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true,
+                attributeFilter: ['aria-expanded', 'aria-selected', 'aria-checked', 'aria-hidden', 'aria-busy',
+                                  'open', 'hidden', 'disabled'] });
+            R.watch = w;
+            return w;
+        };
         """#
 
     /// Arguments: `scope` ("viewport" | "page"), `limit`.
@@ -194,6 +209,7 @@ enum RAVEPageScripts {
 
     /// Arguments: `ref`, or `x` and `y` in viewport CSS pixels.
     static let click = prelude + #"""
+        watch();
         let el = ref !== null ? refElement(ref) : deepElementFromPoint(x, y);
         if (!el) throw new Error('nothing at ' + x + ',' + y);
         el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -221,6 +237,7 @@ enum RAVEPageScripts {
     /// Arguments: `ref`, `text`, `append`, `submit`.
     static let type = prelude + #"""
         const el = refElement(ref);
+        watch();
         el.scrollIntoView({ block: 'center', behavior: 'instant' });
         if (el.focus) el.focus({ preventScroll: true });
         const tag = el.tagName;
@@ -374,6 +391,38 @@ enum RAVEPageScripts {
         return JSON.stringify({ hidden, unlockedScroll, declined });
         """#
 
+    /// Arguments: `quietMs`, `maxMs`. Waits until the document has gone
+    /// `quietMs` without a change, or `maxMs` have passed, counting changes
+    /// since the last action's `watch()` (or from now, on a fresh document).
+    /// Pages that never stop changing (a ticker, a playing video's clock)
+    /// cost the whole `maxMs`, which is why it is short.
+    static let quiet = prelude + #"""
+        const w = R.watch || watch();
+        const start = performance.now();
+        return await new Promise(resolve => {
+            let done = false;
+            const finish = (settled, leaving) => {
+                if (done) return;
+                done = true;
+                w.observer.disconnect();
+                R.watch = null;
+                resolve(JSON.stringify({ changes: w.changes, waited: Math.round(performance.now() - start), settled, leaving }));
+            };
+            // A page that starts leaving answers now: once it is gone, nothing
+            // would ever answer this call.
+            addEventListener('pagehide', () => finish(false, true), { once: true });
+            addEventListener('beforeunload', () => finish(false, true), { once: true });
+            const tick = () => {
+                if (done) return;
+                const now = performance.now();
+                if (now - w.last >= quietMs) finish(true, false);
+                else if (now - start >= maxMs) finish(false, false);
+                else setTimeout(tick, 50);
+            };
+            setTimeout(tick, 50);
+        });
+        """#
+
     /// No arguments.
     static let info = prelude + #"""
         return JSON.stringify({ title: document.title, url: location.href, readyState: document.readyState,
@@ -383,8 +432,9 @@ enum RAVEPageScripts {
     /// Whether Readability is loaded into the world yet.
     static let hasReadability = "return typeof Readability === 'function';"
 
-    /// Arguments: `mode` ("auto" | "reader" | "page"), `maxCharacters`.
-    /// Needs Readability loaded first.
+    /// Arguments: `mode` ("auto" | "reader" | "page" | "main" | "content"),
+    /// `maxCharacters`. Needs Readability loaded first, except for "page"
+    /// and "main".
     static let read = prelude + #"""
         // Block structure as blank lines, headings as '#', list items as '- ':
         // enough shape for a model, none of the markup.
@@ -410,9 +460,65 @@ enum RAVEPageScripts {
         };
         const tidy = s => s.split('\n').map(l => l.replace(/[ \t ]+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 
+        // The main content as rendered: the main landmark when there is one
+        // (the biggest, if a page has several), else the body, without
+        // navigation, banners, sidebars, footers or anything not shown.
+        // What an app-like page that Readability finds no article in is
+        // about.
+        const SKIP = 'nav, aside, footer, header, [role=navigation], [role=banner], [role=complementary], '
+            + '[role=contentinfo], [aria-hidden=true], [hidden], dialog:not([open])';
+        const mainText = () => {
+            const mains = Array.from(document.querySelectorAll('main, [role=main]'))
+                .filter(m => !(m.checkVisibility && !m.checkVisibility()));
+            const root = mains.sort((a, b) => (b.innerText || '').length - (a.innerText || '').length)[0] || document.body;
+            if (!root) return '';
+            const out = [];
+            (function walk(n) {
+                if (n.nodeType === 3) { out.push(n.nodeValue); return; }
+                if (n.nodeType !== 1) return;
+                // Upper case: an SVG element's tagName keeps its own case.
+                const tag = n.tagName.toUpperCase();
+                if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE' || tag === 'SVG') return;
+                if (n !== root && n.matches(SKIP)) return;
+                if (n.checkVisibility && !n.checkVisibility()) return;
+                if (tag === 'BR') { out.push('\n'); return; }
+                if (tag === 'IMG') { if (n.alt) out.push('[image: ' + n.alt + ']'); return; }
+                const block = BLOCK.test(tag) || tag === 'LI';
+                if (block) out.push('\n\n');
+                if (tag === 'LI') out.push('- ');
+                if (/^H[1-6]$/.test(tag)) out.push('#'.repeat(+tag[1]) + ' ');
+                const kids = n.shadowRoot ? n.shadowRoot.childNodes : n.childNodes;
+                for (const c of kids) walk(c);
+                if (block) out.push('\n\n');
+                else if (/^(TD|TH)$/.test(tag)) out.push(' | ');
+            })(root);
+            return tidy(out.join(''));
+        };
+
         let result = { mode: 'page', title: document.title, url: location.href, lang: document.documentElement.lang || null };
         let text = '';
-        if (mode !== 'page') {
+        if (mode === 'main') {
+            text = mainText();
+            result.mode = 'main';
+        } else if (mode === 'content') {
+            // Readability's article when it is most of what the main content
+            // says, the main content otherwise: an article keeps its reader
+            // view, while a feed, a thread or an app's screen, where
+            // Readability picks one card or a sidebar, is read whole.
+            const main = mainText();
+            let article = null;
+            try { article = new Readability(document.cloneNode(true)).parse(); } catch (e) {}
+            const articleText = article && article.content
+                ? toText(new DOMParser().parseFromString(article.content, 'text/html').body) : '';
+            if (articleText.length > 250 && articleText.length >= main.length * 0.4) {
+                text = articleText;
+                result = Object.assign(result, { mode: 'reader', title: article.title || document.title,
+                    byline: article.byline || null, excerpt: article.excerpt || null, siteName: article.siteName || null });
+            } else {
+                text = main;
+                result.mode = 'main';
+            }
+        } else if (mode !== 'page') {
             try {
                 // Readability rewrites the document it is given; hand it a copy.
                 const article = new Readability(document.cloneNode(true)).parse();

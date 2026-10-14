@@ -49,6 +49,7 @@ import WebKit
         ("info", RAVEPageScripts.info, []),
         ("read", RAVEPageScripts.read, ["mode", "maxCharacters"]),
         ("hasReadability", RAVEPageScripts.hasReadability, []),
+        ("quiet", RAVEPageScripts.quiet, ["quietMs", "maxMs"]),
     ]
 
     @Test(arguments: scripts.map(\.0))
@@ -150,6 +151,94 @@ import WebKit
             "document.getElementById('feed').innerHTML = '<a href=\"#post-1\" onclick=\"document.title=\\'opened\\'\">First post</a>'")
         try await driver.click(ref: link.ref)
         #expect(try await driver.info().title == "opened")
+    }
+
+    /// An app-like page: a click fetches and renders after a delay, with no
+    /// navigation, no new title and no scroll. The action waits for the
+    /// render and says the page changed.
+    @Test func waitsForAnAppToRenderAfterAClick() async throws {
+        let driver = driver
+        try await driver.load(html: """
+            <!doctype html><html><head><title>Inbox</title></head><body>
+            <main id="app"><button aria-expanded="false" onclick="
+              this.setAttribute('aria-expanded', 'true');
+              setTimeout(() => { const b = document.createElement('button'); b.textContent = 'Archive';
+                                 document.getElementById('app').append(b); }, 600);">Open message</button></main>
+            <button onclick="0">Does nothing</button>
+            </body></html>
+            """)
+        let list = try await driver.elements()
+        let open = try #require(list.elements.first { $0.name == "Open message" })
+        let action = try await driver.click(ref: open.ref)
+        #expect((action.changes ?? 0) > 0)
+        #expect(action.info?.title == "Inbox")
+        #expect(try await driver.elements().elements.map(\.name).contains("Archive"))
+
+        let idle = try #require(try await driver.elements().elements.first { $0.name == "Does nothing" })
+        #expect(try await driver.click(ref: idle.ref).changes == 0)
+    }
+
+    @Test func aPageThatNeverStopsChangingCostsOnlyTheLimit() async throws {
+        // In a shown window: WebKit throttles a windowless page's timers as
+        // hidden, which would make the ticker look quiet.
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let driver = driver
+        driver.quietLimit = .milliseconds(1500)
+        try await driver.load(html: """
+            <!doctype html><html><head><title>Ticker</title></head><body><span id="t"></span>
+            <script>setInterval(() => document.getElementById('t').textContent = Date.now(), 100)</script></body></html>
+            """)
+        let quiet = try await driver.quiet()
+        #expect(!quiet.settled)
+        #expect(quiet.waited < 2500)
+    }
+
+    /// A feed or an app's screen: Readability picks one card, which is not
+    /// what the page is about. `content` reads the main landmark instead,
+    /// without the navigation and sidebars around it.
+    @Test func readsAnAppsMainContentWhole() async throws {
+        let driver = driver
+        let post = String(repeating: "A long post about otters and the rivers they live in. ", count: 8)
+        let cards = (1...12).map { "<div class=\"card\"><h3>Card \($0)</h3><p>Short note number \($0).</p></div>" }.joined()
+        try await driver.load(html: """
+            <!doctype html><html><head><title>Feed</title></head><body>
+            <nav><a href="/">Home</a> <a href="/settings">Settings</a></nav>
+            <aside>Trending: nothing</aside>
+            <main><article><p>\(post)</p></article>\(cards)\(cards)\(cards)
+            <div hidden>Secret template</div></main>
+            <footer>Copyright</footer>
+            </body></html>
+            """)
+        let main = try await driver.read(mode: .main)
+        #expect(main.mode == .main)
+        #expect(main.text.contains("Card 12"))
+        #expect(main.text.contains("otters"))
+        #expect(!main.text.contains("Settings"))
+        #expect(!main.text.contains("Trending"))
+        #expect(!main.text.contains("Copyright"))
+        #expect(!main.text.contains("Secret template"))
+
+        let content = try await driver.read(mode: .content)
+        #expect(content.mode == .main)
+        #expect(content.text.contains("Card 12"))
+    }
+
+    @Test func contentKeepsTheReaderViewForAnArticle() async throws {
+        let driver = driver
+        let paragraph = String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 12)
+        try await driver.load(html: """
+            <!doctype html><html><head><title>Fox news</title></head><body>
+            <main><article><h1>Foxes jump</h1><p>\(paragraph)</p><p>\(paragraph)</p></article>
+            <div class="related"><a href="/a">More foxes</a></div></main>
+            </body></html>
+            """)
+        let content = try await driver.read(mode: .content)
+        #expect(content.mode == .reader)
+        #expect(content.text.contains("quick brown fox"))
     }
 
     @Test func refsGoStaleWithTheDocument() async throws {

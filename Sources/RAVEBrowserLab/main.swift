@@ -22,6 +22,7 @@
 import AppKit
 import Foundation
 import RAVEBrowser
+import RAVELLM
 import WebKit
 
 struct LabTask {
@@ -51,41 +52,18 @@ let tasks: [LabTask] = [
     LabTask(id: "reddit-other-sub", start: "https://www.reddit.com/r/visionosdev/",
             goal: "Go to the r/VisionPro subreddit and open its first post.",
             passes: { url, _ in url.lowercased().contains("/r/visionpro/comments/") }),
+    // Client-rendered sites: a click rewrites the page instead of loading
+    // one, so these lean on the driver waiting for the page to go quiet.
+    LabTask(id: "github-issues", start: "https://github.com/ollama/ollama",
+            goal: "Open this repository's list of open issues.",
+            passes: { url, _ in url.contains("/ollama/ollama/issues") }),
+    LabTask(id: "mdn-search", start: "https://developer.mozilla.org/en-US/",
+            goal: "Use the site's search to find the page about JavaScript's Array.prototype.flat() method, and open it.",
+            passes: { url, _ in url.contains("/Array/flat") }),
+    LabTask(id: "npm-search", start: "https://www.npmjs.com/",
+            goal: "Search for the package \"left-pad\" and open its package page.",
+            passes: { url, _ in url.hasSuffix("/package/left-pad") }),
 ]
-
-/// One turn per request: the turn carries its own bounded history, so the
-/// model is asked afresh each time rather than fed a growing conversation.
-struct OllamaStepModel: RAVEPageAgentModel {
-    let base: URL
-    let model: String
-
-    struct Failure: LocalizedError {
-        let errorDescription: String?
-    }
-
-    func step(for turn: RAVEPageAgentTurn) async throws -> RAVEPageAgentStep {
-        var user: [String: Any] = ["role": "user", "content": turn.prompt]
-        if let snapshot = turn.snapshot { user["images"] = [snapshot.base64EncodedString()] }
-        let body: [String: Any] = [
-            "model": model, "stream": false, "think": false,
-            "format": RAVEPageAgent.stepSchema,
-            "options": ["temperature": 0],
-            "messages": [["role": "system", "content": RAVEPageAgent.instructions], user],
-        ]
-        var request = URLRequest(url: base.appending(path: "api/chat"), timeoutInterval: 300)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let message = object["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw Failure(errorDescription: "Ollama: " + String(decoding: data.prefix(200), as: UTF8.self))
-        }
-        return try JSONDecoder().decode(RAVEPageAgentStep.self, from: Data(content.utf8))
-    }
-}
 
 struct Options {
     var model = ""
@@ -153,7 +131,9 @@ func runLab(_ options: Options) async -> Int32 {
             stderr(String(format: "    %2d  %5.1f s  %@  →  %@", index, record.modelSeconds, step, String(outcome.prefix(100))))
         }
     }
-    let model = OllamaStepModel(base: options.ollama, model: options.model)
+    // The adapter the apps use, so the bench measures what ships. Each turn
+    // is one self-contained request carrying its own bounded history.
+    let model = RAVEChatPageModel(model: RAVEOllama(baseURL: options.ollama, model: options.model))
 
     let chosen = tasks.filter { options.tasks.isEmpty || options.tasks.contains($0.id) }
     var passed = 0, totalSeconds = 0.0, totalSteps = 0

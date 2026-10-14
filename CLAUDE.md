@@ -98,6 +98,7 @@ is easy to skip.
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
 | `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
+| `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
 
 ### Quest portable-core handoff (2026-10-08)
 

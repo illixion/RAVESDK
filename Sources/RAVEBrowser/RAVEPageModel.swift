@@ -102,6 +102,14 @@ public struct RAVEPageReading: Codable, Sendable, Equatable {
         case reader
         /// `document.body.innerText`: what is rendered, overlays included.
         case page
+        /// The main landmark's rendered text (the body's, without one),
+        /// leaving out navigation, banners, sidebars, footers and anything
+        /// hidden. For app-like pages with no article in them.
+        case main
+        /// `reader` when Readability's article is most of what `main` says,
+        /// `main` otherwise, so a feed or a thread is read whole rather than
+        /// as the one card Readability picked. Reports which it used.
+        case content
     }
 
     public var mode: Mode
@@ -126,6 +134,21 @@ public struct RAVEPageAction: Codable, Sendable, Equatable {
     /// a new-window link, which a web view with no UI delegate would drop.
     public var followed: String?
     public var info: RAVEPageInfo?
+    /// How many times the document changed between the action and the page
+    /// going quiet. An app-like page answers a click by rewriting itself, so
+    /// this, not the URL, is what says the click did something.
+    public var changes: Int?
+}
+
+/// The document going quiet after an action or a load.
+public struct RAVEPageQuiet: Codable, Sendable, Equatable {
+    public var changes: Int
+    /// Milliseconds waited.
+    public var waited: Int
+    /// False when the page was still changing at the time limit.
+    public var settled: Bool
+    /// The page started unloading: a navigation began during the wait.
+    public var leaving: Bool?
 }
 
 public struct RAVEPageScroll: Codable, Sendable, Equatable {
