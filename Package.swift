@@ -38,7 +38,6 @@ let package = Package(
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
         .library(name: "RAVESlideshowCore", targets: ["RAVESlideshowCore"]),
         .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
-        .library(name: "RAVERoboFrame", targets: ["RAVERoboFrame"]),
         .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
         .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
@@ -108,12 +107,6 @@ let package = Package(
         .target(name: "RAVESlideshowCore"),
         .testTarget(name: "RAVESlideshowCoreTests", dependencies: ["RAVESlideshowCore"]),
         .target(name: "RAVESlideshow", dependencies: ["RAVESlideshowCore", "RAVEMedia"]),
-        // RoboFrame's WebSocket protocol client, shared by every Swift
-        // RoboFrame client: Hypnos's remote viewer, RoboFrame's NativeClient
-        // and its Linux kiosk. Typed messages, session multiplexing, the
-        // present/visibility replay and the media URLs; transport is RAVENet.
-        .target(name: "RAVERoboFrame", dependencies: ["RAVENet", "RAVESlideshowCore"]),
-        .testTarget(name: "RAVERoboFrameTests", dependencies: ["RAVERoboFrame", "RAVENet"]),
         // The film player: a film's picture through AVSampleBufferDisplayLayer
         // on a host-clock timebase, and its Atmos objects rendered as spatial
         // sources on the same clock, both served by Hypnos's Jellyfin Atmos
@@ -196,7 +189,6 @@ let portableTargets: Set<String> = [
     "RAVENet", "RAVENetTests",
     "RAVEMediaCore",
     "RAVESlideshowCore", "RAVESlideshowCoreTests",
-    "RAVERoboFrame", "RAVERoboFrameTests",
 ]
 package.targets.removeAll { !portableTargets.contains($0.name) }
 package.products.removeAll { !portableTargets.contains($0.name) }

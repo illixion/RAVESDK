@@ -95,7 +95,6 @@ is easy to skip.
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
 | `RAVESlideshowCore` | Source-agnostic slideshow lifecycle (`RAVESlideshowEngine`), local sync payloads, display settings. Foundation + Observation only, builds on Linux |
 | `RAVESlideshow` | The SwiftUI render surfaces and RAVEMedia adapters over `RAVESlideshowCore`, which it re-exports so `import RAVESlideshow` reaches the engine |
-| `RAVERoboFrame` | RoboFrame's WebSocket protocol client, shared by every Swift RoboFrame client (Hypnos's remote viewer, RoboFrame's NativeClient and its Linux kiosk): typed frames (`RoboFrameFrames`), session multiplexing and the post-reconnect replay (`RoboFrameConnection`), present/visibility edges (`RoboFrameSceneState`), server URLs (`RoboFrameEndpoint`). The wire contract is `RoboFrame/docs/protocol.md`; change both together. Builds on Linux |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
@@ -104,8 +103,9 @@ is easy to skip.
 
 ### Linux: the portable targets
 
-`RAVENet`, `RAVEMediaCore`, `RAVESlideshowCore` and `RAVERoboFrame` build and
-test on Linux, for RoboFrame's Pi kiosk (`RoboFrame/swift-kiosk`). When the
+`RAVENet`, `RAVEMediaCore` and `RAVESlideshowCore` build and test on Linux,
+for RoboFrame's Pi kiosk (`RoboFrame/swift-kiosk`, whose protocol client is
+RoboFrame's own `RoboFrameKit`, built on `RAVENet`). When the
 manifest is evaluated on Linux it drops every other target and product (the
 `#if os(Linux)` block at the end of `Package.swift`), so a plain `swift build` /
 `swift test` there works; add a target to that list only once it builds there.
