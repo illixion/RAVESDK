@@ -11,13 +11,16 @@ import Foundation
 public struct RoboFrameEndpoint: Hashable, Sendable {
     /// The server's HTTP base, e.g. `http://servo:3123`.
     public var baseURL: URL
-    public var accessToken: String
+    /// Trimmed: a pasted token's trailing newline would fail every route.
+    public var accessToken: String {
+        didSet { accessToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
     /// Sent as `deviceId` on `/get` so `/history` files the request under this display.
     public var deviceId: String
 
     public init(baseURL: URL, accessToken: String = "", deviceId: String = "") {
         self.baseURL = baseURL
-        self.accessToken = accessToken
+        self.accessToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
         self.deviceId = deviceId
     }
 
@@ -51,9 +54,8 @@ public struct RoboFrameEndpoint: Hashable, Sendable {
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         let base = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = "/" + (base.isEmpty ? "rpc/ws" : "\(base)/rpc/ws")
-        let token = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        components.queryItems = token.isEmpty ? nil : [URLQueryItem(name: "token", value: token)]
-        return components.url
+        components.queryItems = accessToken.isEmpty ? nil : [URLQueryItem(name: "token", value: accessToken)]
+        return components.urlEncodingPlus
     }
 
     /// `/get` for one post. See `RoboFrameMediaOptions` for the variants.
@@ -75,6 +77,17 @@ public struct RoboFrameEndpoint: Hashable, Sendable {
         if !deviceId.isEmpty { items.append(URLQueryItem(name: "deviceId", value: deviceId)) }
         if !accessToken.isEmpty { items.append(URLQueryItem(name: "token", value: accessToken)) }
         components.queryItems = items
+        return components.urlEncodingPlus
+    }
+}
+
+private extension URLComponents {
+    /// `url`, with `+` in the query escaped. URLComponents leaves it bare,
+    /// and the server's query parsers read a bare `+` as a space, so a
+    /// base64 token or a `kitchen+1` deviceId arrived altered.
+    var urlEncodingPlus: URL? {
+        var components = self
+        components.percentEncodedQuery = percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         return components.url
     }
 }

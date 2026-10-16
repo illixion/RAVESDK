@@ -242,10 +242,12 @@ struct RoboFrameNumber: Decodable {
             self.int = int
         } else {
             let double = try value.decode(Double.self)
-            guard double.isFinite else {
-                throw DecodingError.dataCorruptedError(in: value, debugDescription: "non-finite number")
+            // Int(_:) traps outside Int's range, and the server forwards some
+            // values (an HA brightness) unvalidated.
+            guard let int = Int(exactly: double.rounded()) else {
+                throw DecodingError.dataCorruptedError(in: value, debugDescription: "number out of range")
             }
-            self.int = Int(double.rounded())
+            self.int = int
         }
     }
 }

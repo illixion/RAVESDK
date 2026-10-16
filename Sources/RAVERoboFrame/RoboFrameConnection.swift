@@ -13,6 +13,12 @@
    scene reports with the socket, so each session's `onConnected` re-sends
    `slideshowConfig`, and then every present/visibility aggregate is
    re-stated — in that order, per the protocol's checklist.
+ - **A session speaks only once it has joined.** The server drops a
+   session-scoped frame (`present`, `setModTags`, `requestNext`, …) from a
+   session it has no `slideshowConfig` for, so until a session's
+   `slideshowConfig` has gone out on the current socket its other frames are
+   held, and sent right after it. A window opened on a live connection, or a
+   call made between a reconnect and the replay, would otherwise be lost.
  - **Frames go out in order.** They funnel through one stream into the
    transport actor; a `Task` per frame would leave ordering to the scheduler,
    and `slideshowConfig` must precede the scene replay.
@@ -55,6 +61,14 @@ public final class RoboFrameConnection {
     @ObservationIgnored private var outboundTask: Task<Void, Never>?
     @ObservationIgnored private var sessions: [String: RoboFrameSessionHandlers] = [:]
     @ObservationIgnored private var scene = RoboFrameSceneState()
+    /// Sessions whose `slideshowConfig` went out on the current socket.
+    @ObservationIgnored private var joined: Set<String> = []
+    /// Session-scoped frames sent before the session joined, oldest first.
+    @ObservationIgnored private var held: [String: [String]] = [:]
+    /// The server sends `tagLists` once per socket, on connect; a session
+    /// that attaches later gets this copy.
+    @ObservationIgnored private var tagLists: [[String]]?
+    private static let maxHeldFrames = 32
 
     /// - Parameters:
     ///   - url: The WebSocket URL, token included (`RoboFrameEndpoint.webSocketURL`).
@@ -85,6 +99,7 @@ public final class RoboFrameConnection {
                 guard let self else { return }
                 guard self.isConnected else { return self.reviveIfIdle() }
                 handlers?.onConnected?()
+                if let tagLists = self.tagLists { handlers?.onMessage?(.tagLists(tagLists)) }
             }
         } else {
             // The socket was released (every other session went absent). A
@@ -107,6 +122,8 @@ public final class RoboFrameConnection {
             send("sessionEnd", sessionId: sessionId)
         }
         scene.remove(sessionId: sessionId)
+        joined.remove(sessionId)
+        held.removeValue(forKey: sessionId)
         if isConnected { flushScene() }
         return sessions.count
     }
@@ -156,6 +173,8 @@ public final class RoboFrameConnection {
         transport = nil
         Task { await outgoing?.stop() }
         state = .idle
+        joined.removeAll()
+        tagLists = nil
     }
 
     /// Ping, and reconnect only if nothing answers within `timeout`. The
@@ -196,7 +215,15 @@ public final class RoboFrameConnection {
             receive(text)
         case .stateChanged(let newState):
             guard state != newState else { return }
+            // Ready is declared here, on a frame, never heard back: a markReady
+            // queued for a socket that has since been replaced lands on the new
+            // one, and adopting its echo would skip that socket's replay.
+            if newState.isReady { return }
             state = newState
+            if !newState.isReady {
+                joined.removeAll()
+                tagLists = nil
+            }
             if case .failed(let reason) = newState {
                 logger.log(.error, "halted: \(reason)")
                 broadcast(.halted(reason: reason))
@@ -212,8 +239,12 @@ public final class RoboFrameConnection {
         // straight away and sends gate on `isConnected`.
         state = .ready
         if let transport { Task { await transport.markReady() } }
+        // Each session's slideshowConfig (sent from onConnected) joins it and
+        // sends its presence; the closing flush covers the rest.
+        joined.removeAll()
+        scene.forgetSent()
         for handlers in sessions.values { handlers.onConnected?() }
-        flushScene(force: true)
+        flushScene()
     }
 
     private func receive(_ text: String) {
@@ -236,11 +267,14 @@ public final class RoboFrameConnection {
 
     private func deliver(_ message: RoboFrameMessage, sessionIds: [String]) {
         switch message {
-        case .playback:
+        case .playback, .searchEmpty:
             // Session-scoped. A frame naming no sessions goes to all of them,
             // so something renders.
             guard !sessionIds.isEmpty else { return broadcast(message) }
             for id in sessionIds { sessions[id]?.onMessage?(message) }
+        case .tagLists(let lists):
+            tagLists = lists
+            broadcast(message)
         case .sensor(var reading):
             if reading.isUnavailable {
                 guard let known = sensors[reading.entityId] else { return broadcast(message) }
@@ -277,7 +311,7 @@ public final class RoboFrameConnection {
             if !scene.allAbsent { reviveIfIdle() }
             return
         }
-        for report in scene.flush(force: force) {
+        for report in scene.flush(force: force, joined: joined) {
             switch report {
             case .present(let sessionId, let deviceId, let present):
                 logger.log(.info, "tx present sessionId=\(sessionId, privacy: .private(mask: .hash)) deviceId=\(deviceId, privacy: .private(mask: .hash)) present=\(present, privacy: .public)")
@@ -294,6 +328,11 @@ public final class RoboFrameConnection {
     /// Join (or re-join) the session's channel. Send from `onConnected`.
     public func sendSlideshowConfig(sessionId: String, _ config: RoboFrameSlideshowConfig) {
         send("slideshowConfig", sessionId: sessionId, payload: RoboFrameFrames.slideshowConfigPayload(config))
+        // Sent before the socket is ready, it may reach a server that then
+        // forgets it; onConnected sends it again, and that one joins.
+        guard isConnected, sessions[sessionId] != nil, joined.insert(sessionId).inserted else { return }
+        for frame in held.removeValue(forKey: sessionId) ?? [] { outbound?.yield(frame) }
+        flushScene()
     }
 
     /// The session has shown `postId`. Send once per transition, with the id
@@ -360,6 +399,16 @@ public final class RoboFrameConnection {
             logger.log(.warning, "tx dropped unencodable action=\(action, privacy: .public)")
             return
         }
+        if let sessionId, !Self.joinActions.contains(action), !joined.contains(sessionId), sessions[sessionId] != nil {
+            var frames = held[sessionId] ?? []
+            frames.append(frame)
+            if frames.count > Self.maxHeldFrames { frames.removeFirst(frames.count - Self.maxHeldFrames) }
+            held[sessionId] = frames
+            return
+        }
         outbound?.yield(frame)
     }
+
+    /// Session-scoped actions that go out before (or without) a join.
+    private static let joinActions: Set<String> = ["slideshowConfig", "present", "sessionEnd"]
 }

@@ -58,18 +58,27 @@ public struct RoboFrameSceneState: Equatable, Sendable {
         !contributions.values.contains(where: \.present)
     }
 
+    /// Forget what was sent, so the next flush re-states everything (the
+    /// server forgot it with the old socket).
+    public mutating func forgetSent() {
+        sentPresence.removeAll()
+        sentVisibility.removeAll()
+    }
+
     /// The reports that differ from what was last sent, marking them sent.
     /// `force` re-sends everything (after a reconnect). Presence comes first,
     /// in session order, then visibility in deviceId order.
-    public mutating func flush(force: Bool = false) -> [Report] {
-        if force {
-            sentPresence.removeAll()
-            sentVisibility.removeAll()
-        }
+    ///
+    /// `joined`, when given, holds back the presence of every other session:
+    /// the server drops a `present` for a session that hasn't sent its
+    /// `slideshowConfig` yet, so it waits, unsent, until the session joins.
+    /// Visibility is device-scoped and goes out regardless.
+    public mutating func flush(force: Bool = false, joined: Set<String>? = nil) -> [Report] {
+        if force { forgetSent() }
         var reports: [Report] = []
         var visibility: [String: Bool] = [:]
         for (sessionId, contribution) in contributions.sorted(by: { $0.key < $1.key }) {
-            if sentPresence[sessionId] != contribution.present {
+            if joined?.contains(sessionId) ?? true, sentPresence[sessionId] != contribution.present {
                 sentPresence[sessionId] = contribution.present
                 reports.append(.present(sessionId: sessionId, deviceId: contribution.deviceId, present: contribution.present))
             }

@@ -66,6 +66,8 @@ struct RoboFrameDecodingTests {
         #expect(message(#"{"action":"displayState","payload":{"target":"screen1","state":false}}"#) == .displayState(target: "screen1", on: false))
         #expect(message(#"{"action":"setSuppress","payload":{"target":"screen1","state":"on"}}"#) == .suppress(target: "screen1", on: true))
         #expect(message(#"{"action":"setBrightness","payload":{"target":"screen1","brightness":64}}"#) == .brightness(target: "screen1", value: 64))
+        // Out of Int's range: dropped, not a trap.
+        #expect(message(#"{"action":"setBrightness","payload":{"target":"screen1","brightness":1e19}}"#) == nil)
     }
 
     @Test("Effect frames and sensor updates")
@@ -161,6 +163,19 @@ struct RoboFrameSceneStateTests {
             .visibility(deviceId: "room", visible: true),
         ])
     }
+
+    @Test("A session's presence waits until it has joined; visibility doesn't")
+    func presenceWaitsForJoin() {
+        var scene = RoboFrameSceneState()
+        scene.report(sessionId: "a", deviceId: "room", present: true, visible: true)
+        scene.report(sessionId: "b", deviceId: "room", present: true, visible: false)
+        #expect(scene.flush(joined: ["a"]) == [
+            .present(sessionId: "a", deviceId: "room", present: true),
+            .visibility(deviceId: "room", visible: true),
+        ])
+        #expect(scene.flush(joined: ["a"]).isEmpty)
+        #expect(scene.flush(joined: ["a", "b"]) == [.present(sessionId: "b", deviceId: "room", present: true)])
+    }
 }
 
 @Suite("Slideshow items")
@@ -192,6 +207,27 @@ struct RoboFrameEndpointTests {
         let endpoint = try #require(RoboFrameEndpoint(webSocketURL: socket, accessToken: "t", deviceId: "slideshow_display"))
         #expect(endpoint.baseURL.absoluteString == "http://100.103.115.47:3123")
         #expect(endpoint.webSocketURL?.absoluteString == "ws://100.103.115.47:3123/rpc/ws?token=t")
+    }
+
+    @Test("A pasted token's whitespace is trimmed for every route, not just the socket")
+    func trimmedToken() throws {
+        var endpoint = try #require(RoboFrameEndpoint(server: "http://frame.local:3123", accessToken: " t\n", deviceId: "d"))
+        #expect(endpoint.webSocketURL?.absoluteString == "ws://frame.local:3123/rpc/ws?token=t")
+        #expect(endpoint.url(path: "save", postID: 1)?.absoluteString == "http://frame.local:3123/save?id=1&deviceId=d&token=t")
+        endpoint.accessToken = "u \n"
+        #expect(endpoint.url(path: "history.json")?.absoluteString == "http://frame.local:3123/history.json?deviceId=d&token=u")
+    }
+
+    @Test("A + in the token or deviceId is escaped, not left for the server to read as a space")
+    func plusEscaped() throws {
+        let endpoint = try #require(RoboFrameEndpoint(server: "http://frame.local:3123", accessToken: "a+b/c=", deviceId: "kitchen+1"))
+        for url in [endpoint.webSocketURL, endpoint.url(path: "save", postID: 1)] {
+            let query = try #require(url?.query(percentEncoded: true))
+            #expect(!query.contains("+"))
+            let items = URLComponents(string: try #require(url?.absoluteString))?.queryItems ?? []
+            #expect(items.first { $0.name == "token" }?.value == "a+b/c=")
+        }
+        #expect(endpoint.url(path: "save")?.query(percentEncoded: true)?.contains("deviceId=kitchen%2B1") == true)
     }
 
     @Test("/get carries the variant, then the deviceId and token")
