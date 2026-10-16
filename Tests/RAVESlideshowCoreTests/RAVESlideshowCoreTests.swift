@@ -187,6 +187,31 @@ struct RAVESlideshowEngineTests {
         #expect(engine.current?.item.id == first)
     }
 
+    @Test("A server-driven current that changes mid-load is shown once the load lands")
+    func serverDrivenCurrentChangedMidLoad() async throws {
+        let provider = FixtureProvider(items: [], loadDelay: 0.1)
+        let engine = RAVESlideshowEngine(
+            provider: provider,
+            displaySettings: .init(delay: 60, transitionDuration: 0),
+            configuration: .init(prefetchLimit: 0, serverDriven: true, automaticAdvancement: true, platformCapabilities: .iOSFallback)
+        )
+        defer { engine.stop() }
+
+        engine.start()
+        await engine.waitUntilIdleForTesting()
+        engine.setAuthoritativeCurrent(Self.item("a"))
+        await engine.waitUntilIdleForTesting()
+        #expect(engine.current?.item.id == "a")
+
+        engine.setAuthoritativeCurrent(Self.item("b"))
+        try? await Task.sleep(for: .milliseconds(30))
+        engine.setAuthoritativeCurrent(Self.item("c"))
+        try? await Task.sleep(for: .milliseconds(400))
+        await engine.waitUntilIdleForTesting()
+
+        #expect(engine.current?.item.id == "c")
+    }
+
     @Test("Visual changes publish the merged settings callback")
     func visualSettingsNotifyConsumers() {
         let provider = FixtureProvider(items: Self.items(1))

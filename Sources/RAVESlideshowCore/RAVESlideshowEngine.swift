@@ -416,6 +416,9 @@ public final class RAVESlideshowEngine {
         }
         onTransition?(displayed)
         await provider.didDisplay(prefetched.item)
+        // The server may have moved on while this one loaded or faded in (a
+        // second → press); the reconcile skipped it then, so catch up now.
+        reconcileAuthoritativeCurrent()
     }
 
     private func automaticAdjustment(for media: RAVESlideshowLoadedMedia) -> RAVESlideshowColorAdjustments {

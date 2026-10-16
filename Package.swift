@@ -8,7 +8,7 @@ import PackageDescription
 // use them needs the checkout, and gets "no such product" without it.
 let hasVergence = FileManager.default.fileExists(atPath: Context.packageDirectory + "/../vergence/Package.swift")
 let needsVergence: Set<String> = [
-    "RAVEMedia", "RAVEMediaTests", "RAVESlideshow", "RAVESlideshowTests", "RAVEFilm", "RAVEFilmTests", "RAVEFilmLab",
+    "RAVEMedia", "RAVEMediaTests", "RAVESlideshow", "RAVEFilm", "RAVEFilmTests", "RAVEFilmLab",
 ]
 
 let applePlatforms: [Platform] = [.macOS, .iOS, .tvOS, .visionOS]
