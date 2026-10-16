@@ -815,7 +815,7 @@ the link list.
 
 | App (directory) | Links |
 |---|---|
-| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
+| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |
