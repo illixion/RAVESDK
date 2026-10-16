@@ -45,7 +45,10 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
     private var closeCodeValue: URLSessionWebSocketTask.CloseCode = .invalid
     private var closeReasonValue: Data?
 
-    /// Writes from any thread go out one whole frame at a time.
+    /// Writes from any thread go out one whole frame at a time. The reader
+    /// also holds it to close the descriptor, so a write never lands on a
+    /// closed descriptor whose number was handed out again (an image fetch,
+    /// mpv). Taken before `lock` when both are held.
     private let writeLock = NSLock()
 
     init(request: URLRequest, timeout: TimeInterval) {
@@ -89,9 +92,8 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
             pending.append((frame, completion))
             lock.unlock()
         } else {
-            let descriptor = descriptor
             lock.unlock()
-            completion(write(frame, to: descriptor))
+            completion(write(frame))
         }
     }
 
@@ -101,15 +103,17 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
         lock.lock()
         guard !isCancelled else { lock.unlock(); return }
         isCancelled = true
-        let descriptor = descriptor
         let wasOpen = isOpen
         lock.unlock()
-        if wasOpen, descriptor >= 0 {
+        if wasOpen {
             var code = UInt16(clamping: closeCode.rawValue).bigEndian
             let payload = withUnsafeBytes(of: &code) { Array($0) }
-            _ = write(RAVEWebSocketFrame.encode(opcode: .close, payload: payload), to: descriptor)
+            _ = write(RAVEWebSocketFrame.encode(opcode: .close, payload: payload))
         }
-        if descriptor >= 0 { shutdown(descriptor, Int32(SHUT_RDWR)) }
+        // Under the lock: the reader closes the descriptor only while holding it.
+        lock.withLock {
+            if descriptor >= 0 { _ = shutdown(descriptor, Int32(SHUT_RDWR)) }
+        }
         fail(URLError(.cancelled))
     }
 
@@ -127,26 +131,33 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
             self.descriptor = descriptor
             lock.unlock()
             var buffer = try handshake(descriptor)
-            open(descriptor)
+            open()
             try readFrames(descriptor, buffer: &buffer)
         } catch {
             fail(error)
         }
+        writeLock.lock()
         lock.lock()
         let descriptor = self.descriptor
         self.descriptor = -1
         lock.unlock()
         if descriptor >= 0 { close(descriptor) }
+        writeLock.unlock()
     }
 
-    private func open(_ descriptor: Int32) {
+    /// Flushes the sends queued during the handshake. The write lock is held
+    /// from before `isOpen` flips, so a send that sees it open queues behind
+    /// the flush instead of overtaking it.
+    private func open() {
+        writeLock.lock()
+        defer { writeLock.unlock() }
         lock.lock()
         isOpen = true
         let queued = pending
         pending = []
         lock.unlock()
         for (frame, completion) in queued {
-            completion(write(frame, to: descriptor))
+            completion(writeHoldingLock(frame))
         }
     }
 
@@ -197,6 +208,10 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
             var on: Int32 = 1
             setsockopt(descriptor, Int32(IPPROTO_TCP), TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
             setsockopt(descriptor, SOL_SOCKET, SO_KEEPALIVE, &on, socklen_t(MemoryLayout<Int32>.size))
+            // A peer that stops reading can't block a send (and with it the
+            // transport actor, and the reconnect that would recover) forever.
+            var sendTimeout = timeval(tv_sec: .init(timeout), tv_usec: 0)
+            setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
             #if canImport(Darwin)
             setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             #endif
@@ -228,7 +243,7 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
             head += "\(name): \(value)\r\n"
         }
         head += "\r\n"
-        if let error = write(Array(head.utf8), to: descriptor) { throw error }
+        if let error = write(Array(head.utf8)) { throw error }
 
         let deadline = Date().addingTimeInterval(timeout)
         var buffer: [UInt8] = []
@@ -260,7 +275,7 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
                 buffer.removeFirst(frame.length)
                 switch frame.opcode {
                 case .ping:
-                    _ = write(RAVEWebSocketFrame.encode(opcode: .pong, payload: frame.payload), to: descriptor)
+                    _ = write(RAVEWebSocketFrame.encode(opcode: .pong, payload: frame.payload))
                 case .pong:
                     break
                 case .close:
@@ -272,7 +287,7 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
                         closeCodeValue = code
                         closeReasonValue = frame.payload.count > 2 ? Data(frame.payload[2...]) : nil
                     }
-                    _ = write(RAVEWebSocketFrame.encode(opcode: .close, payload: Array(frame.payload.prefix(2))), to: descriptor)
+                    _ = write(RAVEWebSocketFrame.encode(opcode: .close, payload: Array(frame.payload.prefix(2))))
                     throw URLError(.networkConnectionLost)
                 case .continuation:
                     guard message != nil else { throw URLError(.cannotParseResponse) }
@@ -309,9 +324,16 @@ final class RAVEPOSIXWebSocket: @unchecked Sendable {
         }
     }
 
-    private func write(_ bytes: [UInt8], to descriptor: Int32) -> (any Error)? {
+    private func write(_ bytes: [UInt8]) -> (any Error)? {
         writeLock.lock()
         defer { writeLock.unlock() }
+        return writeHoldingLock(bytes)
+    }
+
+    /// The caller holds `writeLock`.
+    private func writeHoldingLock(_ bytes: [UInt8]) -> (any Error)? {
+        let descriptor = lock.withLock { self.descriptor }
+        guard descriptor >= 0 else { return URLError(.networkConnectionLost) }
         var offset = 0
         while offset < bytes.count {
             #if canImport(Glibc)

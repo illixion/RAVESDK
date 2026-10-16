@@ -329,7 +329,12 @@ public actor RAVEWebSocketTransport {
         task.resume()
         lastConnectAttemptAt = Date()
         lastReceiveAt = Date()
-        transition(to: .connecting)
+        // Announced even when already connecting. A socket replaced before it
+        // was declared ready (a forced reconnect racing the first frame) is
+        // still a new socket, and a client that declared itself ready on the
+        // old one's frame has to hear that, or it never replays on this one.
+        state = .connecting
+        eventContinuation.yield(.stateChanged(.connecting))
 
         logger.log(.info, "connecting to \(configuration.url.scheme ?? "?", privacy: .public)://\(Self.loggableEndpoint(configuration.url), privacy: .private(mask: .hash))")
 
