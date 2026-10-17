@@ -87,7 +87,7 @@ is easy to skip.
 | Target | Purpose |
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing. Also builds on Linux (see below) |
-| `RAVEUI` | Ornament tab bar, hover effects, grid column layout, window-session registry, window manager, shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), `raveScreenTitle(_:)` + `RAVEScreenHeading` (a screen title that scrolls with the content on tvOS, where the bar's large title stays put over it; use them instead of a bare `navigationTitle` on any screen tvOS shows), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
+| `RAVEUI` | Ornament tab bar, the Home ornament for pop-out windows (`raveHomeOrnament`), hover effects, grid column layout, window-session registry, window manager, shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), `raveScreenTitle(_:)` + `RAVEScreenHeading` (a screen title that scrolls with the content on tvOS, where the bar's large title stays put over it; use them instead of a bare `navigationTitle` on any screen tvOS shows), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
 | `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality/stall rules, Up Next ordering and skip-segment models/policy. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
@@ -344,6 +344,13 @@ Design points that will look like bugs if lost:
   provide: an `AppIntentsPackage` conformer listing `RAVEUIAppIntentsPackage` (a
   **standalone struct** — the `App` struct is MainActor-isolated and can't satisfy the
   nonisolated protocol under Swift 6) and an `AppShortcutsProvider` with Siri phrases.
+
+**`raveHomeOrnament`** puts a Home button under a pop-out window, because visionOS brings back
+whichever windows were last open and a pop-out can return alone with no way to the main one.
+The ornament is shared and the action is the app's: Longwave opens a value-keyed main window,
+Spatial Home goes through its app model, spatial-ai-character dismisses and reopens a main
+window that is still open (the summon rule below). Longwave's `HomeOrnament` and Spatial
+Home's console/system ornaments are the copies it was lifted from and can move onto it.
 
 **`RAVEWindowRegistry` / `RAVEWindowManagerView`** are the user-facing window inventory —
 distinct from `RAVEWindowSessionRegistry`, which answers the narrow lifecycle question
@@ -880,7 +887,7 @@ the link list.
 | `xrTimer` | `RAVEUI`, `RAVEConsole` |
 | `Oneiros` (visionOS + macOS) | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `halflife-visionos/LambdaVision` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics`, `RAVERig` |
-| `spatial-ai-character` | `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
+| `spatial-ai-character` | `RAVEUI`, `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
 
 Read this from `productName = RAVE…` in each `project.pbxproj`, not from `import RAVE…` —
 re-exports and typealiases hide a dependency from the import list.
