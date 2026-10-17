@@ -92,13 +92,13 @@ is easy to skip.
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Now a thin RealityKit/SwiftUI player over `~/Projects/vergence` (public, cross-platform), which holds the pipeline: the Apple engine in `VergenceApple`, and the Foundation-only half in `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there. Vergence is optional for the package: without a `../vergence` checkout, Package.swift leaves out RAVEMedia, RAVESlideshow, RAVEFilm and RAVEFilmLab (`needsVergence`), so apps that use none of them resolve without it; add a target that imports RAVEMedia to that set |
-| `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers, the loopback video framing, and a virtual camera one app publishes and another subscribes to |
+| `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers, the loopback video framing, a virtual camera one app publishes and another subscribes to, and the camera feeds a page's camera proxy relays (`RAVECameraFeed`: the Persona, a loopback subscription, `RAVEInProcessCamera`) |
 | `RAVESlideshowCore` | Source-agnostic slideshow lifecycle (`RAVESlideshowEngine`), local sync payloads, display settings. Foundation + Observation only, builds on Linux |
 | `RAVESlideshow` | The SwiftUI render surfaces and RAVEMedia adapters over `RAVESlideshowCore`, which it re-exports so `import RAVESlideshow` reaches the engine |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
-| `RAVEBrowser` | A tool surface over a `WKWebView` the app already shows, for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
+| `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
 
 ### Linux: the portable targets
@@ -164,8 +164,7 @@ whole Apple film/audio target into Android or duplicate those policies in Kotlin
 
 `RAVEPageDriver` borrows a `WKWebView` and claims nothing on it — no navigation or UI
 delegate, no user scripts — so it can sit on top of any host's view (spatial-ai-character's
-`ScreenPanel` now; Raven's `BrowserTab` is the planned second consumer, for Raven's own
-assistant). The rules that keep it site-agnostic and safe:
+`ScreenPanel`, Raven's assistant over its tabs). The rules that keep it site-agnostic and safe:
 
 - **Everything runs in its own `WKContentWorld`.** The page can't see or redefine the
   helpers, and element refs live in that world's global, so a navigation (fresh document,
@@ -207,32 +206,63 @@ window — WebKit treats a page in no window, or an unshown one, as hidden and s
 it, the same fact the pause relies on — and success is judged from the URL a task ends on,
 not from what the model says. Fixed tasks on Wikipedia and Reddit; `--list` names them.
 
-**What else belongs in this target** (decided 2026-09-28, not built yet). Three apps want
-a web view, and each wants a different shell around it:
+**The tab core and the seam** (decided 2026-09-28, built 2026-10-17 by splitting Raven's
+`BrowserTab`). Three apps want a web view, and each wants a different shell around it: Raven is
+the full browser, spatial-ai-character has a screen in the room and a call window, Longwave
+plans web panels pinned to the hand. So this target holds the web view **with nothing
+spatial**, and nothing unique to a site:
 
-- **Raven** is the full browser. It stays standalone and becomes a client of this target.
-- **spatial-ai-character** has a screen in the room that the character reads and drives.
-- **Longwave** plans OVR Toolkit-style web panels pinned to the hand (Twitch chat on the
-  wrist).
+- **`RAVEBrowserTab`** owns its `WKWebView` for its whole life and handles what every
+  WebKit app runs into: KVO on url/title/back/forward/progress (same-document navigations
+  fire no delegate callback), reload-when-visible after a content-process death (owed, not
+  done, while hidden), the Safari UA tail and `.desktop` mode, hibernation and lazy restore
+  (about:blank before release, never `stopLoading()` after it), capture state, media
+  permission (`.prompt` unless the app answers). Its header carries Raven's measurements;
+  read it before changing any of that. Shown through `RAVEWebViewHost`.
+- **`RAVEPageFeature`** is the seam. A tab's features install their scripts and handlers
+  once, at birth, on the tab's one `WKUserContentController`, **in the order the app lists
+  them**: that order is the script order, and the scripts that wrap `getUserMedia` chain in
+  it. They get `attach(to:)` per web view, `pageWillNavigate()` at navigation and
+  hibernation, may block hibernation with a reason, and `close()`.
+- **`RAVETabHibernation`** (opt-in per tab, `hibernation: .shared`; only for an app that
+  reports `setVisible`), **`RAVEBrowserProfile`** (the data-store half of a profile; the
+  default id is persisted by apps and fixed), **`RAVEAddressInput`** (the address bar's
+  security boundary; the search template is the app's).
+- **The call layer**, opt-in features (decided 2026-10-17, when spatial-ai-character needed a
+  Meet call inside its own app, since an open immersive space hides other apps' windows):
+  `RAVEPlatformIdentityScript`, `RAVEKeyboardSuppressionScript`, `RAVEWebRTCRecoveryScript`
+  and `RAVECameraProxy`, in that order (`RAVECallFeatures.make`). The reporting scripts post
+  to a handler the app names; `RAVEPageReports` logs them for an app with no diagnostics.
+  The `__raven…` page globals and the `ravenReplay` handler keep Raven's names on purpose:
+  the app's other scripts and the moved tests key on them.
 
-So this target holds the web view **with nothing spatial**, and nothing unique to a site
-(decided 2026-09-28): the generic core of Raven's `BrowserTab` and its **WebKit quirk
-handling** (owns the `WKWebView`, KVO'd URL/title because same-document navigations fire no
-delegate callback, reload-when-visible after a content-process death, the Safari UA tail,
-hibernation and lazy restore), the **profile system** and data stores (the character's
-logged-out one; a logged-in one for typing in Twitch chat), optionally Raven's **UI shell**
-(tab strip, toolbar, window model), the page-feature seam where each app registers its own
-page scripts, the page tools above, **transparent pages** (a non-opaque view plus a page
-feature that clears the page's own background, for overlays), and **pausing** (below).
+**`RAVECameraProxy` paints a page's camera from a `RAVECameraFeed`.** Three modes: the
+Persona (device-exclusive, retries, and every failure falls back to WebKit's camera), the
+avatar (fails closed: an offline card on the same track and a resubscribe every 2 s, never
+the real camera), and **`.virtualDevice`**, which never asks WebKit for a camera at all. A
+combined request sends WebKit the audio half only, and the page sees a device that exists
+only in the script: listed by `enumerateDevices` (stable id, before and after permission, in
+place of the real camera entries), `granted` by `permissions.query`, and named the same by
+`getSettings`/`getCapabilities`/`getConstraints`/`label`, whatever `deviceId` the page asks
+for. Meet rejects a track whose `deviceId` matches nothing in its device list (measured on a
+synthesized microphone in Raven), which is why all of it has to agree. The relay is tuned
+for lip sync (3 in flight, keyframe on drop, `callAsyncJavaScript` arguments). Raven's
+instant replay rides on it through the extension point: `RAVECameraProxyTap` sees every
+unit, configuration and feed start/stop, and `beginSubstitution`/`sendSubstitute`/
+`endSubstitution` replace what the page receives. `RAVECameraProxyFailClosedTests` drives
+the real script in JavaScriptCore, all three modes.
+
+Still planned here, not built: **transparent pages** (a non-opaque view plus a page feature
+that clears the page's own background, for overlays) and the **pausing** container below.
 
 **Not here:** Raven's ad blocker (its filter-list converter, AdGuard's SafariConverterLib, is
-GPL-3.0 and would carry GPL into every app linking this target), the native player, Google
-Meet / WebRTC recovery / call audio / camera replay / screen share, the broadcast extension,
-or anything else written for particular websites. Those stay Raven's, attached through the
-seam. The panel that shows a page in the room is **not** here either. It is RAVEEngine's
-`RAVEPanel`,
-content-agnostic, and the app puts a browser view into it; neither package imports the
-other.
+GPL-3.0 and would carry GPL into every app linking this target), the native player, call
+audio (EQ, leveler, relocation), camera replay, screen share and the broadcast extension,
+page diagnostics, or anything else written for particular websites. Those stay Raven's,
+attached through the seam. The panel that shows a page in the room is **not** here either.
+It is RAVEEngine's `RAVEPanel`, content-agnostic, and the app puts a browser view into it;
+neither package imports the other. Raven's UI shell (tab strip, toolbar, window model) has
+not moved; it is still optional.
 
 **Pausing: WebKit will not do it for us** (measured on the AVP, 2026-09-28, a page counting
 its own `requestAnimationFrame` calls and 100 ms timer ticks). A page in a RealityKit
@@ -402,8 +432,8 @@ appear in the console. Debug traces carry them in `system-log.txt`, in developme
   applied), because a clipboard usually ends up in an LLM chat.
 
 The toolbar carries DebugTrace's `DebugTraceButton`. The logging targets (`RAVENet`,
-`RAVEMedia`, `RAVECamera`, `RAVESpatialAudio`, `RAVEFilm`, `RAVEDeviceSetup`, `RAVEConsole`)
-depend on `../DebugTrace`. DebugTrace links neither RAVE package, so this adds no cycle.
+`RAVEMedia`, `RAVECamera`, `RAVESpatialAudio`, `RAVEFilm`, `RAVEDeviceSetup`, `RAVEConsole`,
+`RAVEBrowser`) depend on `../DebugTrace`. DebugTrace links neither RAVE package, so this adds no cycle.
 
 **`RAVESystemMonitor`/`RAVESystemMonitorView` are Spatial Stash's GPU memory monitor,
 generalised.** That app built it to compare lossy against lossless texture storage — a
@@ -818,6 +848,18 @@ Design points worth keeping:
   someone watches. Anything local can dial loopback, so the owner must show when it is being
   watched. Flow control is Raven's relay rule: never drop a lone delta, drop to the next
   keyframe and ask for it at once. `swift test` runs it over real sockets.
+- **`RAVEInProcessCamera` is the same camera without the socket**, for a proxy in the
+  publishing app itself (spatial-ai-character's call window). Same API as the publisher, and
+  `makeFeed()` hands out `RAVECameraFeed`s, so the proxy cannot tell it from loopback. A late
+  joiner gets the config and waits for the keyframe the owner is asked for. `publish` comes
+  from the encoder's thread: all state is behind one lock, and deliveries are enqueued on each
+  feed's serial queue while holding it, which is what keeps each stream in publish order. Its
+  tests also pass under `--sanitize=thread`.
+- **The feeds** (`RAVECameraFeed`, lifted from Raven 2026-10-17): `RAVEPersonaCameraFeed`
+  (capture → HEVC, chosen for decode latency in WebKit's `VideoDecoder`, not bitrate; 2 s
+  GOP), `RAVEVirtualCameraFeed` (a loopback subscription). Buffer-owning classes count
+  themselves in `RAVELiveObjects`, which an app's memory heartbeat prints: a count that only
+  goes up is a leak named outright.
 
 ## How consumers use this
 
@@ -832,13 +874,13 @@ the link list.
 |---|---|
 | `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
-| `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension) |
+| `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), `RAVEBrowser`, `RAVELLM` |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |
 | `VisionProHomeAssistant` (SpatialHome) | `RAVENet`, `RAVEUI`, `RAVEConsole` |
 | `xrTimer` | `RAVEUI`, `RAVEConsole` |
 | `Oneiros` (visionOS + macOS) | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `halflife-visionos/LambdaVision` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics`, `RAVERig` |
-| `spatial-ai-character` | `RAVEConsole`, + Engine's `RAVEDiagnostics`, and `RAVERig` transitively through its own `CharacterKit` |
+| `spatial-ai-character` | `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
 
 Read this from `productName = RAVE…` in each `project.pbxproj`, not from `import RAVE…` —
 re-exports and typealiases hide a dependency from the import list.
