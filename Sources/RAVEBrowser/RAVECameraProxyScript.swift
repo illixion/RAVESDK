@@ -1392,7 +1392,14 @@ public enum RAVECameraProxyScript {
         s.canvas.width = geometry.outW;
         s.canvas.height = geometry.outH;
 
-        s.proxyStream = s.canvas.captureStream(30);
+        // No frame rate: a frame goes out each time the canvas changes, so
+        // every paint is sent once. `captureStream(30)` samples on WebKit's
+        // own 30 Hz timer instead, which beats against a 30 fps source: a
+        // paint just after a tick waited for the next one or was lost, and
+        // the far end got ~26 fps with a hitch every sixth frame (measured on
+        // the avatar camera, 2026-10-17). Every source here paints once per
+        // frame it has, so nothing needs the cap.
+        s.proxyStream = s.canvas.captureStream();
         s.proxyTrack = s.proxyStream.getVideoTracks()[0];
         if (!s.proxyTrack) {
           post({ kind: 'error', scope: 'setup', message: 'captureStream produced no track' });
