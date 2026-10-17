@@ -140,8 +140,13 @@ let package = Package(
         // read (Mozilla's Readability, bundled), numbered elements, marked
         // snapshots, click/type/scroll — for a language model to use pages
         // with nothing site-specific. First consumer is spatial-ai-character's
-        // ambient browsing; Raven's assistant is the planned second. The
-        // driver needs WebKit, so on tvOS only the model types build.
+        // ambient browsing; Raven's assistant is the second. The driver needs
+        // WebKit, so on tvOS only the model types build.
+        // Also the browser tab core lifted from Raven (2026-10-17): the tab
+        // that owns its WKWebView, the page-feature seam, hibernation,
+        // profiles, and the opt-in call layer. The camera proxy relays
+        // RAVECamera's feeds, hence that dependency; RAVECamera builds on every
+        // platform this does, so it is unconditional. DebugTrace for logging.
         // A language model as the apps use one (messages in, text out, a JSON
         // schema, streaming) and Ollama behind it. Foundation only, so it
         // builds everywhere; PCC or the on-device model become further
@@ -150,10 +155,10 @@ let package = Package(
         .testTarget(name: "RAVELLMTests", dependencies: ["RAVELLM"]),
         .target(
             name: "RAVEBrowser",
-            dependencies: ["RAVELLM"],
+            dependencies: ["RAVELLM", "RAVECamera", .product(name: "DebugTrace", package: "DebugTrace")],
             resources: [.copy("Resources/Readability.js"), .copy("Resources/Readability-LICENSE.md")]
         ),
-        .testTarget(name: "RAVEBrowserTests", dependencies: ["RAVEBrowser"]),
+        .testTarget(name: "RAVEBrowserTests", dependencies: ["RAVEBrowser", "RAVECamera"]),
         // Mac bench for RAVEBrowser's agent loop against a model on Ollama
         // (`swift run RAVEBrowserLab --model …`). Not a product, like
         // RAVEFilmLab: no app builds it.
