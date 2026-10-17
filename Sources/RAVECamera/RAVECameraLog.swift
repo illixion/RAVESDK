@@ -19,4 +19,7 @@ public enum RAVECameraLog {
 
     /// Compression-session lifecycle: creation, parameter-set changes, failures.
     public static let encoder = DebugLogger(subsystem: subsystem, category: "H264Encoder")
+
+    /// Virtual camera publishers and subscribers: listening, who joined and left, failures.
+    public static let virtualCamera = DebugLogger(subsystem: subsystem, category: "VirtualCamera")
 }

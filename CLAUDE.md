@@ -92,7 +92,7 @@ is easy to skip.
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Now a thin RealityKit/SwiftUI player over `~/Projects/vergence` (public, cross-platform), which holds the pipeline: the Apple engine in `VergenceApple`, and the Foundation-only half in `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there. Vergence is optional for the package: without a `../vergence` checkout, Package.swift leaves out RAVEMedia, RAVESlideshow, RAVEFilm and RAVEFilmLab (`needsVergence`), so apps that use none of them resolve without it; add a target that imports RAVEMedia to that set |
-| `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers |
+| `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers, the loopback video framing, and a virtual camera one app publishes and another subscribes to |
 | `RAVESlideshowCore` | Source-agnostic slideshow lifecycle (`RAVESlideshowEngine`), local sync payloads, display settings. Foundation + Observation only, builds on Linux |
 | `RAVESlideshow` | The SwiftUI render surfaces and RAVEMedia adapters over `RAVESlideshowCore`, which it re-exports so `import RAVESlideshow` reaches the engine |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
@@ -803,6 +803,21 @@ Design points worth keeping:
   starts second is interrupted with `videoDeviceInUseByAnotherClient`. Raven's page script
   stops the WebKit track *before* asking for this session; the type documents the rule,
   the caller has to honour it.
+
+- **`RAVEVideoFraming` is the one wire format for encoded video between two processes on a
+  device**, lifted from Raven's `BroadcastFraming` (2026-10-17) when the virtual camera needed
+  the same thing. Each stream opens with its own magic (`RVN1` screen share, `RVC1` camera), so
+  a client on the wrong port fails on the first bytes. The config carries the frame size
+  (trailing, read as 0×0 when absent) and there is a `keyframeRequest` for the control
+  direction.
+- **`RAVEVirtualCamera` exists because visionOS has no virtual capture device.**
+  spatial-ai-character publishes its performed avatar (`RAVEVirtualCameraPublisher`, loopback
+  port 46415) and Raven's camera proxy subscribes (`RAVEVirtualCameraSubscriber`) instead of
+  starting the Persona. The publisher listens and the subscriber dials, because a camera exists
+  before anyone opens it; `onSubscribersChanged` is the owner's cue to render only while
+  someone watches. Anything local can dial loopback, so the owner must show when it is being
+  watched. Flow control is Raven's relay rule: never drop a lone delta, drop to the next
+  keyframe and ask for it at once. `swift test` runs it over real sockets.
 
 ## How consumers use this
 
