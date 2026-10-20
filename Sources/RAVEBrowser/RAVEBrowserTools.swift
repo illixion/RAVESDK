@@ -586,7 +586,9 @@ public enum RAVEBrowserTools {
         return WithEvents(value: output, events: support?.events(after: mark).map { "\($0.kind): \($0.text)" } ?? [])
     }
 
-    static func debugError(_ error: RAVEPageError) -> DebugError {
+    /// A driver error as one that tells a model what to do next, for a host's
+    /// own tools over the driver.
+    public static func debugError(_ error: RAVEPageError) -> DebugError {
         switch error {
         case .noWebView:
             return .failedPrecondition("the tab has no page", hint: "navigate somewhere first, or pick another tab")

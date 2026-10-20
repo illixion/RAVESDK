@@ -118,6 +118,16 @@ public final class RAVEPageSupport: RAVEPageFeature, RAVEPageEventHandler {
         controller.add(handler, contentWorld: .page, name: Self.messageHandler)
     }
 
+    /// An agent drives its tab while the person works elsewhere, so on the
+    /// Mac the page keeps rendering when its window is covered
+    /// (`RAVEBackgroundWindow`): otherwise WebKit would treat it as hidden and
+    /// throttle it mid-task.
+    public func attach(to webView: WKWebView?) {
+        #if os(macOS)
+        if let webView { RAVEBackgroundWindow.keepRenderingWhenCovered(webView) }
+        #endif
+    }
+
     public func close() {
         controller?.removeScriptMessageHandler(forName: Self.messageHandler, contentWorld: .page)
         handler.onMessage = nil
