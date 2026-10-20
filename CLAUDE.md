@@ -608,8 +608,21 @@ so `RAVEConsole` still sees these lines; only the categories are the package's o
 `StillDepthMap` (8-bit, near = 255, p2…p98-normalized, cropped to the image's own
 region of Vision's `.scaleFit` letterbox). It deliberately bypasses the video
 stabilizer: its temporal EMA would blend one image's depth into the next. Same
-one-caller-at-a-time rule as the video entry points; Hypnos's gallery tiles own a
-dedicated provider for it.
+one-caller-at-a-time rule as the video entry points, which is why apps go through
+**`RAVEStillDepthEstimator.shared`** (`Stills/`) rather than a provider of their own:
+one inference at a time, newest request first, cancelled requests dropped before
+they reach the model, model released after 20 s idle.
+
+**AI 3D for stills: `RAVEAIDepthPhotoView`** (visionOS, `Stills/`) shows a picture as a
+mesh displaced by its `StillDepthMap` (`RAVEDepthMesh`): one inference and one
+RealityKit mesh, the cheap alternative to `ImagePresentationComponent`. The host lays
+it over its flat picture (same rect; the mesh floats 1 pt off the plane), puts an
+input layer at `inputTargetZ` in front because the RealityView swallows taps even
+with hit testing off, and lifts any overlay above that. Opacity fades are stepped
+on `OpacityComponent` (SwiftUI's don't reach it); adjustments are baked into the
+texture and re-baked once the sliders settle. Consumers: Hypnos (photo viewer,
+slideshows, and through `RAVEDepthMesh` its 3D Depth thumbnails) and RoboFrame's
+slideshows.
 
 **Depth is anchored, not normalized per frame** (`DepthRefinement.swift` in Vergence's `VergenceCore`,
 `DepthAnchorGPU.swift`). Apple's Core ML Depth Anything V2 normalizes each map to
@@ -882,7 +895,7 @@ the link list.
 | `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), `RAVEBrowser`, `RAVELLM` |
-| `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow` |
+| `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia` (incl. AI 3D stills), `RAVESlideshow` |
 | `VisionProHomeAssistant` (SpatialHome) | `RAVENet`, `RAVEUI`, `RAVEConsole` |
 | `xrTimer` | `RAVEUI`, `RAVEConsole` |
 | `Oneiros` (visionOS + macOS) | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |

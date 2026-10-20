@@ -23,6 +23,10 @@ public enum RAVEMediaLog {
     /// The live player: engage decisions, playback fit.
     public static let pipeline = DebugLogger(subsystem: subsystem, category: "Pseudo3D")
 
+    /// Depth for still pictures: the shared estimator's model loads, releases
+    /// and timings.
+    public static let stills = DebugLogger(subsystem: subsystem, category: "StillDepth")
+
     /// Per-stage intervals for the fake-3D pipeline (inference, stabilize, warp,
     /// transfer) — view in Instruments' os_signpost track to see where a pump
     /// tick or a depth-conversion frame spends its time.
