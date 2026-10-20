@@ -30,6 +30,7 @@ struct WebRTCRecoveryScriptTests {
         #expect(source.contains("var ENABLED = true;"))
         #expect(source.contains("var RESUME_SUSPENDED = true;"))
         #expect(source.contains("var START_UNSTARTED = true;"))
+        #expect(source.contains("var RESUME_AUDIO = true;"))
         #expect(source.contains("var RETRY_DUD_CAMERA = false;"))
     }
 
@@ -41,7 +42,8 @@ struct WebRTCRecoveryScriptTests {
     @Test func thePlayMarksNameTheStreamTheyWereEarnedOn() {
         #expect(source.contains("function askedFor(el, id) { return !!id && el.__ravenAskedFor === id; }"))
         #expect(source.contains("function playedFor(el, id) { return !!id && el.__ravenPlayedFor === id; }"))
-        #expect(source.contains("try { el.__ravenAskedFor = id; } catch (e) {}"))
+        // The page asking to play also withdraws any pause it made itself.
+        #expect(source.contains("try { el.__ravenAskedFor = id; el.__ravenPausedFor = 0; } catch (e) {}"))
         #expect(source.contains("try { el.__ravenPlayedFor = id; } catch (e) {}"))
         #expect(source.contains("if (playedFor(el, id) || (el.readyState >= 2 && el.videoWidth > 0)) {"))
         #expect(source.contains("if (!askedFor(el, id) && el.isConnected && anyLive(tracks)) {"))

@@ -94,9 +94,34 @@
  `_setInvisibleMediaAutoplayNotPermitted:` exists on macOS and **does not
  exist on visionOS at all** — `WKPreferences` has no autoplay selector here.
 
+ **Remote audio is suspended by the same hand, and nothing resumed it.**
+ Measured 2026-10-20 on a Meet call: when tracking is lost WebKit pauses
+ *every* media element in the page at once (the diagnostics' resource line
+ read `audio=3 playing=0` seven milliseconds after the microphone muted), and
+ when the wearer is back the video pass resumes the tiles while Meet's three
+ remote `<audio>` elements stay paused. Every participant goes silent for the
+ rest of the call, and only a reload brings them back. Meet starts those
+ elements with `autoplay` and never calls `play()`, so the resolved-play mark
+ the video verdict relies on is never written for them. The audio pass earns
+ its proof itself instead: an element it saw playing this stream on a tick,
+ found paused later with a live track, that the page did not call `pause()`
+ on. That last clause is the deliberate-pause guard, read from a `pause()`
+ wrapper beside the `play()` one, because WebKit's own suspension never goes
+ through the JavaScript method. It retries without giving up, on a backoff:
+ a bare `play()` is all it ever does, and a give-up budget would leave a call
+ silent after one long enough tracking loss.
+
+ **A recovered tile gets a fresh budget.** The same suspension comes back with
+ every tracking loss, and Meet keeps a participant's stream for the whole call,
+ so a budget spent once per stream made the third loss in a call a
+ `rtcGaveUp` and a dead tile. An element that has painted for
+ `EPISODE_RESET_MS` since its last attempt starts the next episode from zero.
+ One suspended again within seconds of every resume (the zero-sized element
+ above) never gets that long, so it still runs out.
+
  So the workaround stays a workaround, and the `rtcSuspended` / `rtcStalled`
- lines remain the only evidence the OS bug is present. When a future OS stops
- producing them, delete the script.
+ / `rtcAudioSuspended` lines remain the only evidence the OS bug is present.
+ When a future OS stops producing them, delete the script.
 
  Raven's `WebRTCRecoveryScript`, lifted 2026-10-17 with the call layer. Its
  Safari port is Raven's `extras/webrtc-unstick.user.js`; keep the two in sync
@@ -172,6 +197,11 @@ public enum RAVEWebRTCRecoveryScript {
   var ATTACH_GRACE_MS = 250;
   var RETRY_MS = 4000;
   var MAX_ATTEMPTS = 2;
+  // How long a resumed tile has to keep painting before its next suspension
+  // counts as a new episode with its own MAX_ATTEMPTS (see the header).
+  var EPISODE_RESET_MS = 30000;
+  // The audio pass never gives up; it backs off to this between attempts.
+  var AUDIO_RETRY_CAP_MS = 30000;
   var TICK_MS = 2000;
   // A page that has gone this long without a single MediaStream-backed video is
   // not a call, so stop polling it. The observer below restarts the timer if one
@@ -234,6 +264,9 @@ public enum RAVEWebRTCRecoveryScript {
   // resolve? The marks are written by the `play()` wrapper further down.
   function askedFor(el, id) { return !!id && el.__ravenAskedFor === id; }
   function playedFor(el, id) { return !!id && el.__ravenPlayedFor === id; }
+  // Did the page itself pause this stream since it last asked it to play?
+  // Written by the `pause()` wrapper; WebKit's suspension never sets it.
+  function pausedFor(el, id) { return !!id && el.__ravenPausedFor === id; }
 
   // `live`/`muted`/`enabled` separate the three ways a black tile happens: the
   // track ended, the sender is not sending, or the page turned it off. Only the
@@ -477,7 +510,7 @@ public enum RAVEWebRTCRecoveryScript {
         // promise settles, and a resolution then belongs to the stream that
         // was actually playing, not to whatever arrived since.
         if (streamBacked && !el.__ravenForcing) {
-          try { el.__ravenAskedFor = id; } catch (e) {}
+          try { el.__ravenAskedFor = id; el.__ravenPausedFor = 0; } catch (e) {}
         }
 
         var result;
@@ -505,6 +538,24 @@ public enum RAVEWebRTCRecoveryScript {
           });
         }
         return result;
+      };
+    }
+
+    // The page's own pauses, so a deliberate one is never undone. Only the
+    // audio pass reads it: an audio element has no layout or frame size to
+    // tell a parked element from a suspended one, so page intent is the
+    // only evidence there is. WebKit pausing media itself does not come
+    // through here.
+    if (mediaProto && typeof mediaProto.pause === 'function') {
+      var nativePause = mediaProto.pause;
+      mediaProto.pause = function () {
+        var el = this;
+        try {
+          if (!el.__ravenForcing && el.srcObject && typeof el.srcObject.getAudioTracks === 'function') {
+            el.__ravenPausedFor = streamId(el.srcObject);
+          }
+        } catch (e) {}
+        return nativePause.apply(el, arguments);
       };
     }
   } catch (e) {}
@@ -544,6 +595,11 @@ public enum RAVEWebRTCRecoveryScript {
   // self-view tile. The same never-started state is what freshly added remote
   // streams — screen shares — land in when they stall mid-call.
   var START_UNSTARTED = true;
+
+  // Resuming a remote `<audio>` WebKit paused under a call. On by
+  // measurement: Meet's three went to `playing=0` with the tracking loss and
+  // stayed there while the video pass resumed every tile (see the header).
+  var RESUME_AUDIO = true;
 
   function probeStream(stream) {
     return new Promise(function (resolve) {
@@ -675,6 +731,7 @@ public enum RAVEWebRTCRecoveryScript {
                                                    : verdict === 'remote');
 
     state.attempts++;
+    state.lastAttemptAt = now;
     if (state.attempts === 1) {
       post(suspended ? 'rtcSuspended' : unstarted ? 'rtcUnstarted' : 'rtcStalled', {
         seconds: Math.round((now - state.since) / 1000),
@@ -784,6 +841,12 @@ public enum RAVEWebRTCRecoveryScript {
             height: el.videoHeight,
             seconds: Math.round((now - state.since) / 1000)
           });
+        } else if (state.attempts > 0 && now - state.lastAttemptAt >= EPISODE_RESET_MS) {
+          // Painted long enough since the last resume: the next suspension is
+          // a new episode, with its own budget and its own report.
+          state.attempts = 0;
+          state.recoveryReported = false;
+          state.since = now;
         } else if (state.attempts === 0 && !state.reported && reports < REPORT_CAP) {
           // Frames are arriving. Said out loud because "black picture" and
           // "no frames" are different faults with different owners: an element
@@ -874,7 +937,86 @@ public enum RAVEWebRTCRecoveryScript {
       act(el, stream, state, tracks, verdict, now, 'poll');
     }
 
+    tickAudio(now);
+
     if (!sawStream && now - idleSince > IDLE_STOP_MS) { stop(); }
+  }
+
+  // ---- remote audio WebKit paused ---------------------------------------
+  //
+  // Its own pass and its own state (`__ravenRTCAudio`), because nothing in the
+  // video verdict applies: an `<audio>` has no layout, no frame size and, on
+  // Meet, no `play()` call to have been marked. What stands in for them, all
+  // for the element's current stream:
+  //
+  //   seen playing  — on a tick, so it is a call the page started (autoplay
+  //                   counts) and not an element it is holding in reserve
+  //   now paused, connected, a live track — what the suspension leaves
+  //   not paused by the page — `pausedFor`; the page's reason always wins
+  //
+  // A muted track is accepted: a participant who is not talking may well read
+  // muted, and resuming them is what lets the next thing they say be heard.
+  function audioTracks(stream) {
+    try { return stream.getAudioTracks ? stream.getAudioTracks() : []; }
+    catch (e) { return []; }
+  }
+
+  function tickAudio(now) {
+    var audios;
+    try { audios = document.querySelectorAll('audio'); } catch (e) { return; }
+
+    for (var i = 0; i < audios.length && i < MAX_ELEMENTS; i++) {
+      var el = audios[i];
+      var stream = null;
+      try { stream = el.srcObject; } catch (e) {}
+      if (!stream || typeof stream.getAudioTracks !== 'function') { continue; }
+      sawStream = true;
+
+      var state = el.__ravenRTCAudio;
+      if (!state || state.stream !== stream) {
+        state = el.__ravenRTCAudio = {
+          stream: stream, id: streamId(stream), played: false, attempts: 0, since: 0, nextAt: 0
+        };
+      }
+
+      if (!el.paused) {
+        if (state.attempts > 0) {
+          post('rtcAudioRecovered', {
+            attempts: state.attempts,
+            seconds: Math.round((now - state.since) / 1000)
+          });
+          state.attempts = 0;
+        }
+        state.played = true;
+        continue;
+      }
+
+      var tracks = audioTracks(stream);
+      if (!state.played || !el.isConnected || !anyLive(tracks)) { continue; }
+      // Left alone, and said once: if a call goes silent with this line in the
+      // log, the page paused its own audio and this pass is not the fix.
+      if (pausedFor(el, state.id)) {
+        if (!state.pageReported) {
+          state.pageReported = true;
+          post('rtcAudioPausedByPage', { tracks: describeTracks(tracks), readyState: el.readyState });
+        }
+        continue;
+      }
+      if (now < state.nextAt) { continue; }
+
+      state.attempts++;
+      if (state.attempts === 1) {
+        state.since = now;
+        post('rtcAudioSuspended', {
+          tracks: describeTracks(tracks),
+          readyState: el.readyState,
+          action: (ENABLED && RESUME_AUDIO) ? 'resuming' : 'observing only'
+        });
+      }
+      if (!(ENABLED && RESUME_AUDIO)) { state.played = false; state.attempts = 0; continue; }
+      resume(el);
+      state.nextAt = now + Math.min(RETRY_MS * state.attempts, AUDIO_RETRY_CAP_MS);
+    }
   }
 
   function start() {
