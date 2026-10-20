@@ -16,7 +16,9 @@
 //  its own content world, out of the page's reach. What needs more than that
 //  (console and network capture, dialogs, frames) is `RAVEPageSupport`, a
 //  page feature the host installs; tools that need it say so when it is
-//  absent.
+//  absent. Iframes need `RAVEPageFrames` (every `RAVEBrowserTab` has one):
+//  with it, `elements` lists what is inside them too, numbered with the rest,
+//  and every action on such a ref runs in its frame.
 //
 //  Running the caller's JavaScript is tiered (`RAVEScriptPolicy`): the app
 //  decides when it makes the driver, and the default is never. Page text
@@ -72,6 +74,20 @@ public final class RAVEPageDriver {
     public let world: WKContentWorld
     /// Whether `evaluate` may run, decided by whoever made the driver.
     public let scripting: RAVEScriptPolicy
+    /// The page's iframes, when the host registers them; nil means the main
+    /// frame only.
+    public let frames: RAVEPageFrames?
+
+    /// Where a ref from the last `elements` call lives: a frame, the ref the
+    /// frame's own list gave it, and where that frame sits on the page (nil
+    /// when it could not be placed). Refs not in here are the main frame's.
+    struct Route {
+        var frame: RAVEPageFrames.Frame?
+        var local: Int
+        var offset: CGPoint?
+    }
+
+    var routes: [Int: Route] = [:]
 
     public enum InputMode: String, Sendable {
         /// Native on the Mac whenever the web view is in a window; synthetic
@@ -94,10 +110,18 @@ public final class RAVEPageDriver {
 
     /// - Parameter scripting: whether `evaluate` runs. `never` unless the app
     ///   says otherwise; see `RAVEScriptPolicy` for who should say what.
-    public init(webView: WKWebView, worldName: String = "RAVEBrowser", scripting: RAVEScriptPolicy = .never) {
+    ///   - frames: the page's iframes (`RAVEBrowserTab.frames`); must use the
+    ///     same world name.
+    public init(webView: WKWebView, worldName: String = "RAVEBrowser", scripting: RAVEScriptPolicy = .never,
+                frames: RAVEPageFrames? = nil) {
         self.webView = webView
         self.world = .world(name: worldName)
         self.scripting = scripting
+        self.frames = frames
+    }
+
+    func route(_ ref: Int) -> Route {
+        routes[ref] ?? Route(frame: nil, local: ref, offset: .zero)
     }
 
     // MARK: - Navigation
@@ -156,8 +180,16 @@ public final class RAVEPageDriver {
     /// Lists what can be clicked or typed into, and numbers it. The numbers
     /// are what `click`, `type` and `scroll(toRef:)` take, until the next
     /// call or navigation.
+    ///
+    /// With `frames`, iframes' elements follow the page's own, placed in the
+    /// page's viewport and marked with their frame.
     public func elements(scope: Scope = .viewport, limit: Int = 150) async throws -> RAVEPageElements {
-        try await run(RAVEPageScripts.elements, ["scope": scope.rawValue, "limit": limit])
+        routes = [:]
+        var list: RAVEPageElements = try await run(RAVEPageScripts.elements, ["scope": scope.rawValue, "limit": limit])
+        if frames?.frames.isEmpty == false {
+            await addFrameElements(to: &list, scope: scope, limit: limit)
+        }
+        return list
     }
 
     public func find(_ text: String, index: Int = 0) async throws -> RAVEPageFind {
@@ -224,19 +256,24 @@ public final class RAVEPageDriver {
     /// that ignores it), the value is set the synthetic way instead.
     @discardableResult
     public func type(ref: Int, text: String, append: Bool = false, submit: Bool = false) async throws -> RAVEPageAction {
+        let route = route(ref)
+        let frame = route.frame?.info
         #if os(macOS)
         if let view = nativeView() {
-            let target: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": ref, "x": NSNull(), "y": NSNull()])
-            if target.covered == nil, !target.select {
-                RAVENativeInput.click(view, at: windowPoint(target, in: view))
+            let target: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": route.local, "x": NSNull(), "y": NSNull()],
+                                                       in: frame)
+            if target.covered == nil, !target.select, let point = try await nativePoint(target, route: route, in: view) {
+                RAVENativeInput.click(view, at: point)
             }
-            let field: RAVEPageFieldState = try await run(RAVEPageScripts.focusField, ["ref": ref, "append": append])
+            let field: RAVEPageFieldState = try await run(RAVEPageScripts.focusField, ["ref": route.local, "append": append],
+                                                          in: frame)
             RAVENativeInput.insert(view, text: text)
-            let after: RAVEPageFieldState = try await run(RAVEPageScripts.fieldValue, ["ref": ref])
+            let after: RAVEPageFieldState = try await run(RAVEPageScripts.fieldValue, ["ref": route.local], in: frame)
             if after.value == field.value, !text.isEmpty {
                 // Nothing landed: set it the way a script can.
-                var action: RAVEPageAction = try await run(RAVEPageScripts.type,
-                                                           ["ref": ref, "text": text, "append": append, "submit": submit])
+                var action: RAVEPageAction = try await run(RAVEPageScripts.type, [
+                    "ref": route.local, "text": text, "append": append, "submit": submit,
+                ], in: frame)
                 action.via = "synthetic"
                 action.note = "the field ignored typed input, so its value was set directly"
                 return try await settle(after: action, followed: false)
@@ -245,8 +282,9 @@ public final class RAVEPageDriver {
             return try await settle(after: RAVEPageAction(target: field.target, via: "native"), followed: false)
         }
         #endif
-        var action: RAVEPageAction = try await run(RAVEPageScripts.type,
-                                                   ["ref": ref, "text": text, "append": append, "submit": submit])
+        var action: RAVEPageAction = try await run(RAVEPageScripts.type, [
+            "ref": route.local, "text": text, "append": append, "submit": submit,
+        ], in: frame)
         action.via = "synthetic"
         return try await settle(after: action, followed: false)
     }
@@ -261,16 +299,20 @@ public final class RAVEPageDriver {
         } catch {
             throw RAVEPageError.invalidArgument(error.localizedDescription)
         }
+        let route = ref.map(route)
         #if os(macOS)
         if let view = nativeView() {
             // Focus only: a press on a button to focus it would press it.
-            let focused: RAVEPageKeysResult = try await run(RAVEPageScripts.keys, ["ref": ref ?? NSNull(), "keys": []])
+            let focused: RAVEPageKeysResult = try await run(RAVEPageScripts.keys, [
+                "ref": route?.local ?? NSNull(), "keys": [],
+            ], in: route?.frame?.info)
             for chord in chords { RAVENativeInput.press(view, chord) }
             return try await settle(after: RAVEPageAction(target: focused.target, via: "native"), followed: false)
         }
         #endif
-        let pressed: RAVEPageKeysResult = try await run(RAVEPageScripts.keys,
-                                                        ["ref": ref ?? NSNull(), "keys": chords.map(\.scriptValue)])
+        let pressed: RAVEPageKeysResult = try await run(RAVEPageScripts.keys, [
+            "ref": route?.local ?? NSNull(), "keys": chords.map(\.scriptValue),
+        ], in: route?.frame?.info)
         return try await settle(after: RAVEPageAction(target: pressed.target, via: "synthetic"), followed: false)
     }
 
@@ -278,30 +320,35 @@ public final class RAVEPageDriver {
     /// that open on hover.
     @discardableResult
     public func hover(_ point: Point) async throws -> RAVEPageAction {
-        let (ref, x, y) = point.arguments
+        let (route, ref, x, y) = resolve(point)
         var note: String?
         #if os(macOS)
         if let view = nativeView() {
-            let target: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": ref, "x": x, "y": y])
-            RAVENativeInput.move(view, to: windowPoint(target, in: view))
-            if await sawNativeEvent("mousemove") {
-                return try await settle(after: RAVEPageAction(target: target.target, via: "native"), followed: false)
+            let target: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": ref, "x": x, "y": y],
+                                                       in: route.frame?.info)
+            if let at = try await nativePoint(target, route: route, in: view) {
+                RAVENativeInput.move(view, to: at)
+                if await sawNativeEvent("mousemove", in: route.frame?.info) {
+                    return try await settle(after: RAVEPageAction(target: target.target, via: "native"), followed: false)
+                }
+                note = "WebKit ignores a real pointer move into a window that is not key, so it was hovered synthetically"
             }
-            note = "WebKit ignores a real pointer move into a window that is not key, so it was hovered synthetically"
         }
         #endif
-        let hovered: RAVEPageKeysResult = try await run(RAVEPageScripts.hover, ["ref": ref, "x": x, "y": y])
+        let hovered: RAVEPageKeysResult = try await run(RAVEPageScripts.hover, ["ref": ref, "x": x, "y": y],
+                                                        in: route.frame?.info)
         return try await settle(after: RAVEPageAction(target: hovered.target, via: "synthetic", note: note), followed: false)
     }
 
     /// Whether the page saw a real event of `type` since the last `target`
     /// script, waiting briefly: WebKit delivers input after the call that
     /// sent it returns.
-    private func sawNativeEvent(_ type: String, within limit: Duration = .milliseconds(400)) async -> Bool {
+    private func sawNativeEvent(_ type: String, in frame: WKFrameInfo? = nil,
+                                within limit: Duration = .milliseconds(400)) async -> Bool {
         let clock = ContinuousClock()
         let start = clock.now
         while clock.now - start < limit {
-            if let seen: [String: Bool] = try? await run(RAVEPageScripts.seen), seen[type] == true { return true }
+            if let seen: [String: Bool] = try? await run(RAVEPageScripts.seen, in: frame), seen[type] == true { return true }
             try? await Task.sleep(for: .milliseconds(50))
         }
         return false
@@ -313,24 +360,31 @@ public final class RAVEPageDriver {
     /// drag, real on the Mac.
     @discardableResult
     public func drag(from: Point, to: Point, steps: Int = 12) async throws -> RAVEPageDrag {
-        let (fromRef, fromX, fromY) = from.arguments
-        let (toRef, toX, toY) = to.arguments
+        let (fromRoute, fromRef, fromX, fromY) = resolve(from)
+        let (toRoute, toRef, toX, toY) = resolve(to)
         #if os(macOS)
         if let view = nativeView() {
-            let source: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": fromRef, "x": fromX, "y": fromY])
-            if !source.draggable {
-                let destination: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": toRef, "x": toX, "y": toY])
-                RAVENativeInput.drag(view, from: windowPoint(source, in: view), to: windowPoint(destination, in: view),
-                                     steps: steps)
-                var drag = RAVEPageDrag(from: source.target, to: destination.target, html5: false, dropped: true)
-                drag.via = "native"
-                return try await settle(after: drag)
+            let source: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": fromRef, "x": fromX, "y": fromY],
+                                                       in: fromRoute.frame?.info)
+            if !source.draggable, let start = try await nativePoint(source, route: fromRoute, in: view) {
+                let destination: RAVEPageTarget = try await run(RAVEPageScripts.target, ["ref": toRef, "x": toX, "y": toY],
+                                                                in: toRoute.frame?.info)
+                if let end = try await nativePoint(destination, route: toRoute, in: view) {
+                    RAVENativeInput.drag(view, from: start, to: end, steps: steps)
+                    var drag = RAVEPageDrag(from: source.target, to: destination.target, html5: false, dropped: true)
+                    drag.via = "native"
+                    return try await settle(after: drag)
+                }
             }
         }
         #endif
+        // A synthetic drag stays inside one document.
+        guard fromRoute.frame?.id == toRoute.frame?.id || to.isPoint else {
+            throw RAVEPageError.invalidArgument("a drag between two frames needs real input; drag to a point instead")
+        }
         var drag: RAVEPageDrag = try await run(RAVEPageScripts.drag, [
             "fromRef": fromRef, "fromX": fromX, "fromY": fromY, "toRef": toRef, "toX": toX, "toY": toY, "steps": steps,
-        ])
+        ], in: fromRoute.frame?.info)
         drag.via = "synthetic"
         return try await settle(after: drag)
     }
@@ -339,7 +393,10 @@ public final class RAVEPageDriver {
     @discardableResult
     public func select(ref: Int, values: [String]) async throws -> RAVEPageSelection {
         guard !values.isEmpty else { throw RAVEPageError.invalidArgument("select needs at least one option") }
-        var selection: RAVEPageSelection = try await run(RAVEPageScripts.selectOption, ["ref": ref, "values": values])
+        let route = route(ref)
+        var selection: RAVEPageSelection = try await run(RAVEPageScripts.selectOption, [
+            "ref": route.local, "values": values,
+        ], in: route.frame?.info)
         let action = try await settle(after: RAVEPageAction(target: selection.target), followed: false)
         selection.info = action.info
         selection.changes = action.changes
@@ -350,13 +407,16 @@ public final class RAVEPageDriver {
     /// if it is not already.
     @discardableResult
     public func check(ref: Int, checked: Bool = true) async throws -> RAVEPageCheck {
-        let before: RAVEPageCheckState = try await run(RAVEPageScripts.checkState, ["ref": ref])
+        let route = route(ref)
+        let before: RAVEPageCheckState = try await run(RAVEPageScripts.checkState, ["ref": route.local],
+                                                       in: route.frame?.info)
         guard before.checked != checked else {
             return RAVEPageCheck(target: before.target, checked: before.checked, changed: false, info: try await info())
         }
         if before.disabled == true { throw RAVEPageError.script("ref \(ref) is \(before.target), which is disabled") }
         let action = try await click(ref: ref)
-        let after: RAVEPageCheckState? = try? await run(RAVEPageScripts.checkState, ["ref": ref])
+        let after: RAVEPageCheckState? = try? await run(RAVEPageScripts.checkState, ["ref": route.local],
+                                                        in: route.frame?.info)
         return RAVEPageCheck(target: before.target, checked: after?.checked ?? checked,
                              changed: (after?.checked ?? checked) != before.checked, info: action.info, via: action.via)
     }
@@ -386,8 +446,9 @@ public final class RAVEPageDriver {
             let type = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
             payload.append(["name": file.lastPathComponent, "type": type, "data": data.base64EncodedString()])
         }
-        var upload: RAVEPageUpload = try await run(RAVEPageScripts.upload, ["ref": ref, "files": payload],
-                                                   deadline: .seconds(30))
+        let route = route(ref)
+        var upload: RAVEPageUpload = try await run(RAVEPageScripts.upload, ["ref": route.local, "files": payload],
+                                                   deadline: .seconds(30), in: route.frame?.info)
         upload.files = files.map(\.lastPathComponent)
         let action = try await settle(after: RAVEPageAction(target: upload.target), followed: false)
         upload.info = action.info
@@ -410,7 +471,9 @@ public final class RAVEPageDriver {
 
     @discardableResult
     public func scroll(toRef ref: Int) async throws -> RAVEPageScroll {
-        try await run(RAVEPageScripts.scroll, ["by": NSNull(), "to": NSNull(), "ref": ref])
+        let route = route(ref)
+        return try await run(RAVEPageScripts.scroll, ["by": NSNull(), "to": NSNull(), "ref": route.local],
+                             in: route.frame?.info)
     }
 
     /// Hides cookie banners, sign-up walls and other modal layers, and undoes
@@ -430,16 +493,25 @@ public final class RAVEPageDriver {
     /// rather than serialised and cycles cut.
     ///
     /// Whether it runs at all is this driver's `scripting` policy.
-    public func evaluate(_ source: String, maxCharacters: Int = 20_000,
+    ///
+    /// - Parameter frame: an id from `frames()`, to run it in that iframe.
+    public func evaluate(_ source: String, frame: String? = nil, maxCharacters: Int = 20_000,
                          timeout: Duration = .seconds(30)) async throws -> RAVEPageEvaluation {
         let view = try view()
+        var frameInfo: WKFrameInfo?
+        if let frame {
+            guard let found = frames?.frame(id: frame) else {
+                throw RAVEPageError.invalidArgument("no frame \(frame): list them with frames")
+            }
+            frameInfo = found.info
+        }
         switch scripting {
         case .never:
             throw RAVEPageError.scriptingNotAllowed
         case .always:
             break
         case .ask(let consent):
-            let url = view.url
+            let url = frameInfo?.request.url ?? view.url
             let request = RAVEScriptRequest(origin: url.map(Self.origin) ?? "about:blank",
                                             url: url?.absoluteString ?? "", source: source)
             guard await consent.allows(request) else { throw RAVEPageError.scriptDeclined }
@@ -456,7 +528,7 @@ public final class RAVEPageDriver {
             let result: Any?
             do {
                 result = try await view.callAsyncJavaScript(body, arguments: ["__ravenMax": maxCharacters],
-                                                            in: nil, contentWorld: .page)
+                                                            in: frameInfo, contentWorld: .page)
             } catch {
                 throw Self.pageError(error)
             }
@@ -488,19 +560,47 @@ public final class RAVEPageDriver {
         return webView
     }
 
-    private func windowPoint(_ target: RAVEPageTarget, in view: WKWebView) -> NSPoint {
-        RAVENativeInput.windowPoint(css: CGPoint(x: target.x, y: target.y),
-                                    viewport: CGSize(width: target.width, height: target.height), in: view)
+    /// Where a real press on `target` lands in the window: its point in its
+    /// own frame's viewport, moved by where that frame sits on the page.
+    /// Nil for a frame that could not be placed. A frame's place is measured
+    /// again here, since `target` scrolled the element into view.
+    private func nativePoint(_ target: RAVEPageTarget, route: Route, in view: WKWebView) async throws -> NSPoint? {
+        var offset = CGPoint.zero
+        var viewport = CGSize(width: target.width, height: target.height)
+        if let frame = route.frame {
+            guard let placed = await placeFrames().first(where: { $0.frame.id == frame.id }), let at = placed.offset else {
+                return nil
+            }
+            offset = at
+            let page = try await info().viewport
+            viewport = CGSize(width: page.width, height: page.height)
+        }
+        return RAVENativeInput.windowPoint(css: CGPoint(x: target.x + offset.x, y: target.y + offset.y),
+                                           viewport: viewport, in: view)
     }
     #endif
+
+    /// A drag end as its route, and as `(ref, x, y)` script arguments.
+    private func resolve(_ point: Point) -> (Route, Any, Any, Any) {
+        switch point {
+        case .ref(let ref):
+            let route = route(ref)
+            return (route, route.local, NSNull(), NSNull())
+        case .at(let x, let y):
+            return (Route(frame: nil, local: 0, offset: .zero), NSNull(), x, y)
+        }
+    }
 
     private func press(ref: Int?, x: Double?, y: Double?, button: MouseButton, count: Int,
                        modifiers: RAVEPageModifiers) async throws -> RAVEPageAction {
         var note: String?
+        let route = ref.map(route) ?? Route(frame: nil, local: 0, offset: .zero)
+        let local: Any = ref == nil ? NSNull() : route.local
         #if os(macOS)
         if let view = nativeView(), button != .right {
             let target: RAVEPageTarget = try await run(RAVEPageScripts.target,
-                                                       ["ref": ref ?? NSNull(), "x": x ?? NSNull(), "y": y ?? NSNull()])
+                                                       ["ref": local, "x": x ?? NSNull(), "y": y ?? NSNull()],
+                                                       in: route.frame?.info)
             // A web view with no UI delegate drops new-window navigations, so
             // a link that would open one is followed in place.
             if let link = target.newWindow, view.uiDelegate == nil, button == .left, let url = URL(string: link) {
@@ -514,19 +614,21 @@ public final class RAVEPageDriver {
                 // A real click lands on what is on top. The element was asked
                 // for, so it gets a synthetic one and the model hears why.
                 note = "covered by \(covered), so it was clicked synthetically"
-            } else {
-                RAVENativeInput.click(view, at: windowPoint(target, in: view),
-                                      button: button == .middle ? .middle : .left, count: count, modifiers: modifiers)
+            } else if let point = try await nativePoint(target, route: route, in: view) {
+                RAVENativeInput.click(view, at: point, button: button == .middle ? .middle : .left, count: count,
+                                      modifiers: modifiers)
                 return try await settle(after: RAVEPageAction(target: target.target, via: "native"), followed: false)
+            } else {
+                note = "its frame could not be placed on the page, so it was clicked synthetically"
             }
         }
         #endif
         var action: RAVEPageAction = try await run(RAVEPageScripts.click, [
-            "ref": ref ?? NSNull(), "x": x ?? NSNull(), "y": y ?? NSNull(), "follow": true,
+            "ref": local, "x": x ?? NSNull(), "y": y ?? NSNull(), "follow": true,
             "button": button == .right ? 2 : button == .middle ? 1 : 0, "count": max(1, count),
             "shift": modifiers.contains(.shift), "ctrl": modifiers.contains(.control),
             "alt": modifiers.contains(.option), "meta": modifiers.contains(.command),
-        ])
+        ], in: route.frame?.info)
         action.via = "synthetic"
         action.note = note
         return try await settle(after: action, followed: action.followed != nil)
@@ -642,13 +744,15 @@ public final class RAVEPageDriver {
     /// waiting on it would hang forever.
     public var scriptDeadline: Duration = .seconds(10)
 
-    private func run<T: Decodable>(_ script: String, _ arguments: [String: Any] = [:],
-                                   deadline: Duration? = nil) async throws -> T {
+    /// Runs one of the driver's scripts in its world: in the main frame, or
+    /// in `frame`.
+    func run<T: Decodable>(_ script: String, _ arguments: [String: Any] = [:],
+                           deadline: Duration? = nil, in frame: WKFrameInfo? = nil) async throws -> T {
         let view = try view()
         let json = try await Self.withDeadline(deadline ?? scriptDeadline) { [world] in
             let result: Any?
             do {
-                result = try await view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: world)
+                result = try await view.callAsyncJavaScript(script, arguments: arguments, in: frame, contentWorld: world)
             } catch {
                 throw Self.pageError(error)
             }
@@ -701,12 +805,9 @@ public final class RAVEPageDriver {
 }
 
 private extension RAVEPageDriver.Point {
-    /// `(ref, x, y)` as script arguments, nulls for what does not apply.
-    var arguments: (Any, Any, Any) {
-        switch self {
-        case .ref(let ref): (ref, NSNull(), NSNull())
-        case .at(let x, let y): (NSNull(), x, y)
-        }
+    var isPoint: Bool {
+        if case .at = self { return true }
+        return false
     }
 }
 

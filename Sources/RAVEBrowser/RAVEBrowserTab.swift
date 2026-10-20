@@ -58,6 +58,9 @@
  */
 
 #if canImport(WebKit)
+#if os(macOS)
+import AppKit
+#endif
 import Foundation
 import Observation
 import RAVECamera
@@ -124,6 +127,11 @@ public final class RAVEBrowserTab: Identifiable {
     /// The app's features, in the order their scripts were installed.
     @ObservationIgnored public let features: [any RAVEPageFeature]
 
+    /// The page's iframes, for `RAVEPageDriver`: installed on every tab ahead
+    /// of the app's features. It runs only in the driver's own content world,
+    /// which no page can see, so it perturbs nothing a site could notice.
+    @ObservationIgnored public let frames = RAVEPageFrames()
+
     // MARK: - Hooks for the app
 
     /// The page asked for a new tab (`target="_blank"`, `window.open`). Whoever
@@ -154,6 +162,14 @@ public final class RAVEBrowserTab: Identifiable {
     /// A reason the app is holding this tab awake (Raven: its assistant is
     /// driving the page), or nil.
     public var hibernationHold: String?
+
+    /// Where a download is saved when no feature decides it, or nil for no
+    /// downloads at all — what a web view does on its own, where a response
+    /// it cannot show simply fails to load. Raven for Mac sets `~/Downloads`.
+    @ObservationIgnored public var downloadDirectory: URL?
+    /// A download ended, saved at `file` or failed with a message — after the
+    /// features heard it. For the app's own downloads list.
+    @ObservationIgnored public var onDownloadEnded: ((_ download: RAVEPageDownload, _ file: URL?, _ error: String?) -> Void)?
 
     // MARK: - Lifecycle state
 
@@ -255,6 +271,7 @@ public final class RAVEBrowserTab: Identifiable {
 
         // In the app's order, once. See `RAVEPageFeature` for why the order is
         // the app's to write down.
+        frames.install(on: controller)
         for feature in features { feature.install(on: controller) }
 
         delegate.onNavigationStateChanged = { [weak self] in self?.syncFromWebView() }
@@ -275,12 +292,36 @@ public final class RAVEBrowserTab: Identifiable {
         }
         delegate.onOpenInNewTab = { [weak self] url in
             guard let self else { return }
+            for handler in eventHandlers { handler.openedWindow(url) }
             if let onOpenInNewTab { onOpenInNewTab(url) } else { webView?.load(URLRequest(url: url)) }
         }
         delegate.onContentProcessTerminated = { [weak self] in self?.contentProcessTerminated() }
         delegate.mediaCapturePermission = { [weak self] origin, type in
             self?.mediaCapturePermission?(origin, type) ?? .prompt
         }
+        delegate.answerDialog = { [weak self] dialog, webView in
+            await self?.answer(dialog, in: webView) ?? Self.defaultAnswer(dialog)
+        }
+        delegate.canDownload = { [weak self] in
+            guard let self else { return false }
+            return downloadDirectory != nil || !eventHandlers.isEmpty
+        }
+        delegate.onResponse = { [weak self] response in
+            for handler in self?.eventHandlers ?? [] { handler.received(response) }
+        }
+        delegate.downloads.decide = { [weak self] download in
+            self?.decision(for: download) ?? .cancel
+        }
+        delegate.downloads.ended = { [weak self] download, file, error in
+            guard let self else { return }
+            for handler in eventHandlers { handler.downloadEnded(download, file: file, error: error) }
+            onDownloadEnded?(download, file, error)
+        }
+        #if os(macOS)
+        delegate.chooseFiles = { [weak self] request, webView in
+            await self?.choose(request, in: webView)
+        }
+        #endif
 
         // A restored tab has no page until it is shown; everything above this
         // line is what it *does* have, which is why a chip and an address bar
@@ -379,6 +420,7 @@ public final class RAVEBrowserTab: Identifiable {
         releasePage(unloading: true)
         // The controller retains every feature's message handler, so each
         // has to be removed explicitly or the tab's teardown leaks the chain.
+        frames.close()
         for feature in features { feature.close() }
         onOpenInNewTab = nil
         onURLChanged = nil
@@ -415,6 +457,7 @@ public final class RAVEBrowserTab: Identifiable {
         // Whatever the features know is about to stop being true — the frame
         // tokens they hold belong to a document that is going away, which is
         // exactly what this hook means everywhere else.
+        frames.pageWillNavigate()
         for feature in features { feature.pageWillNavigate() }
 
         releasePage(unloading: true)
@@ -632,6 +675,101 @@ public final class RAVEBrowserTab: Identifiable {
     }
     #endif
 
+    /// The page tools over this tab's current page, iframes included, or nil
+    /// while it has no page. Make one per use: a hibernation builds a new web
+    /// view, and a driver holds the one it was given.
+    public func driver(scripting: RAVEScriptPolicy = .never) -> RAVEPageDriver? {
+        webView.map { RAVEPageDriver(webView: $0, worldName: "RAVEBrowser", scripting: scripting, frames: frames) }
+    }
+
+    // MARK: - Dialogs, downloads, files
+
+    /// The features that answer what WebKit asks (`RAVEPageEventHandler`), in
+    /// their order.
+    private var eventHandlers: [any RAVEPageEventHandler] {
+        features.compactMap { $0 as? any RAVEPageEventHandler }
+    }
+
+    /// A feature's answer, else a browser's: on the Mac a sheet on the tab's
+    /// window, elsewhere (and with no window) what WebKit does when nothing
+    /// implements the dialog at all.
+    private func answer(_ dialog: RAVEPageDialog, in webView: WKWebView) async -> RAVEPageDialogAnswer {
+        for handler in eventHandlers {
+            if let answer = await handler.answer(dialog) { return answer }
+        }
+        #if os(macOS)
+        if let window = webView.window { return await Self.present(dialog, on: window) }
+        #endif
+        return Self.defaultAnswer(dialog)
+    }
+
+    /// OK for an alert, Cancel for the rest: a web view's own behaviour with no
+    /// UI delegate method.
+    nonisolated static func defaultAnswer(_ dialog: RAVEPageDialog) -> RAVEPageDialogAnswer {
+        dialog.kind == .alert ? .accept(text: nil) : .dismiss
+    }
+
+    private func decision(for download: RAVEPageDownload) -> RAVEPageDownloadDecision {
+        for handler in eventHandlers {
+            if let decision = handler.decide(download) { return decision }
+        }
+        guard let downloadDirectory else { return .cancel }
+        return .save(to: Self.unusedFile(in: downloadDirectory, named: download.suggestedFilename))
+    }
+
+    /// `name`, or `name (2)`, `name (3)`… — WebKit refuses a destination that
+    /// already exists.
+    public nonisolated static func unusedFile(in directory: URL, named name: String) -> URL {
+        let safe = name.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        let base = (safe.isEmpty ? "download" : safe) as NSString
+        var candidate = directory.appendingPathComponent(base as String)
+        var n = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let stem = base.deletingPathExtension, ext = base.pathExtension
+            candidate = directory.appendingPathComponent("\(stem) (\(n))" + (ext.isEmpty ? "" : ".\(ext)"))
+            n += 1
+        }
+        return candidate
+    }
+
+    #if os(macOS)
+    private func choose(_ request: RAVEPageFileRequest, in webView: WKWebView) async -> [URL]? {
+        for handler in eventHandlers {
+            if let choice = await handler.choose(request) {
+                if case .files(let urls) = choice { return urls }
+                return nil
+            }
+        }
+        guard let window = webView.window else { return nil }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = request.allowsMultiple
+        panel.canChooseDirectories = request.allowsDirectories
+        panel.canChooseFiles = true
+        let response = await withCheckedContinuation { continuation in
+            panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+        }
+        return response == .OK ? panel.urls : nil
+    }
+
+    private static func present(_ dialog: RAVEPageDialog, on window: NSWindow) async -> RAVEPageDialogAnswer {
+        let alert = NSAlert()
+        alert.messageText = URL(string: dialog.url)?.host() ?? "This page"
+        alert.informativeText = dialog.message
+        alert.addButton(withTitle: "OK")
+        if dialog.kind != .alert { alert.addButton(withTitle: "Cancel") }
+        let field = NSTextField(string: dialog.defaultText ?? "")
+        if dialog.kind == .prompt {
+            field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+            alert.accessoryView = field
+        }
+        let response = await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+        }
+        guard response == .alertFirstButtonReturn else { return .dismiss }
+        return .accept(text: dialog.kind == .prompt ? field.stringValue : nil)
+    }
+    #endif
+
     // MARK: - Internals
 
     private func loadStarted() {
@@ -639,6 +777,7 @@ public final class RAVEBrowserTab: Identifiable {
         loadError = nil
         // The page being navigated away from owns everything the features
         // know about it.
+        frames.pageWillNavigate()
         for feature in features { feature.pageWillNavigate() }
         onLoadStarted?()
         syncFromWebView()
@@ -705,6 +844,120 @@ public final class RAVEBrowserTab: Identifiable {
         var onOpenInNewTab: ((URL) -> Void)?
         var onContentProcessTerminated: (() -> Void)?
         var mediaCapturePermission: ((WKSecurityOrigin, WKMediaCaptureType) -> WKPermissionDecision)?
+        var answerDialog: ((RAVEPageDialog, WKWebView) async -> RAVEPageDialogAnswer)?
+        /// Whether anything would take a download; when not, a response the
+        /// web view cannot show fails to load as it always did.
+        var canDownload: (() -> Bool)?
+        var onResponse: ((RAVEPageResponse) -> Void)?
+        #if os(macOS)
+        var chooseFiles: ((RAVEPageFileRequest, WKWebView) async -> [URL]?)?
+        #endif
+        let downloads = Downloads()
+
+        // MARK: Dialogs
+
+        func webView(
+            _ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable () -> Void
+        ) {
+            let dialog = RAVEPageDialog(kind: .alert, message: message, url: frame.request.url?.absoluteString ?? "")
+            Task { @MainActor in
+                _ = await self.answerDialog?(dialog, webView)
+                completionHandler()
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (Bool) -> Void
+        ) {
+            let dialog = RAVEPageDialog(kind: .confirm, message: message, url: frame.request.url?.absoluteString ?? "")
+            Task { @MainActor in
+                let answer = await self.answerDialog?(dialog, webView) ?? RAVEBrowserTab.defaultAnswer(dialog)
+                if case .accept = answer { completionHandler(true) } else { completionHandler(false) }
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
+            initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (String?) -> Void
+        ) {
+            let dialog = RAVEPageDialog(kind: .prompt, message: prompt, defaultText: defaultText,
+                                        url: frame.request.url?.absoluteString ?? "")
+            Task { @MainActor in
+                let answer = await self.answerDialog?(dialog, webView) ?? RAVEBrowserTab.defaultAnswer(dialog)
+                if case .accept(let text) = answer { completionHandler(text ?? defaultText ?? "") } else { completionHandler(nil) }
+            }
+        }
+
+        #if os(macOS)
+        /// Mac only: on iOS and visionOS, WebKit shows its own document
+        /// picker unless this is implemented, and that is the better default
+        /// there.
+        func webView(
+            _ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void
+        ) {
+            let request = RAVEPageFileRequest(allowsMultiple: parameters.allowsMultipleSelection,
+                                              allowsDirectories: parameters.allowsDirectories)
+            Task { @MainActor in completionHandler(await self.chooseFiles?(request, webView) ?? nil) }
+        }
+        #endif
+
+        // MARK: Downloads
+
+        /// A `download` link becomes a download when something would take
+        /// it; everything else navigates, as with no delegate method.
+        func webView(
+            _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+        ) {
+            decisionHandler(navigationAction.shouldPerformDownload && canDownload?() == true ? .download : .allow)
+        }
+
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            download.delegate = downloads
+        }
+
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            download.delegate = downloads
+        }
+
+        final class Downloads: NSObject, WKDownloadDelegate {
+            var decide: ((RAVEPageDownload) -> RAVEPageDownloadDecision)?
+            var ended: ((RAVEPageDownload, URL?, String?) -> Void)?
+            private var active: [ObjectIdentifier: (download: RAVEPageDownload, file: URL)] = [:]
+
+            func download(
+                _ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
+                completionHandler: @escaping @MainActor @Sendable (URL?) -> Void
+            ) {
+                let request = RAVEPageDownload(url: response.url ?? download.originalRequest?.url,
+                                               suggestedFilename: suggestedFilename, mimeType: response.mimeType)
+                switch decide?(request) ?? .cancel {
+                case .save(let file):
+                    active[ObjectIdentifier(download)] = (request, file)
+                    RAVEBrowserLog.browser.info("download started \(request.url?.absoluteString ?? "?", privacy: .private)")
+                    completionHandler(file)
+                case .cancel:
+                    completionHandler(nil)
+                }
+            }
+
+            func downloadDidFinish(_ download: WKDownload) {
+                guard let entry = active.removeValue(forKey: ObjectIdentifier(download)) else { return }
+                RAVEBrowserLog.browser.info("download finished \(entry.file.lastPathComponent, privacy: .private)")
+                ended?(entry.download, entry.file, nil)
+            }
+
+            func download(_ download: WKDownload, didFailWithError error: any Error, resumeData: Data?) {
+                guard let entry = active.removeValue(forKey: ObjectIdentifier(download)) else { return }
+                RAVEBrowserLog.browser.error("download failed: \(error.raveLogCode, privacy: .public)")
+                ended?(entry.download, nil, error.localizedDescription)
+            }
+        }
+
+        // MARK: Navigation
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             RAVEBrowserLog.browser.info("load started \(webView.url?.absoluteString ?? "?", privacy: .private)")
@@ -729,11 +982,23 @@ public final class RAVEBrowserTab: Identifiable {
             decidePolicyFor navigationResponse: WKNavigationResponse,
             decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void
         ) {
-            if let http = navigationResponse.response as? HTTPURLResponse, http.statusCode >= 400 {
+            let http = navigationResponse.response as? HTTPURLResponse
+            if let http, http.statusCode >= 400 {
                 RAVEBrowserLog.browser.error("""
                 HTTP \(http.statusCode, privacy: .public) for \
                 \(http.url?.absoluteString ?? "?", privacy: .private)
                 """)
+            }
+            onResponse?(RAVEPageResponse(url: navigationResponse.response.url, status: http?.statusCode,
+                                         mimeType: navigationResponse.response.mimeType,
+                                         isMainFrame: navigationResponse.isForMainFrame))
+            // What the web view cannot show, or the server says to save, is a
+            // download — when something would take it.
+            let attachment = http?.value(forHTTPHeaderField: "Content-Disposition")?
+                .lowercased().hasPrefix("attachment") == true
+            if canDownload?() == true, !navigationResponse.canShowMIMEType || attachment {
+                decisionHandler(.download)
+                return
             }
             decisionHandler(.allow)
         }

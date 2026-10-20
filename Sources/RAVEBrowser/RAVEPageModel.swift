@@ -50,11 +50,32 @@ public struct RAVEPageElement: Codable, Sendable, Equatable {
     public var value: String?
     public var checked: Bool?
     public var disabled: Bool?
-    /// Box in viewport CSS pixels at the time of the call.
+    /// Box in viewport CSS pixels at the time of the call — the page's
+    /// viewport, also for an element inside an iframe.
     public var x: Double
     public var y: Double
     public var w: Double
     public var h: Double
+    /// For an element inside an iframe: the frame's host (`js.stripe.com`).
+    public var inFrame: String?
+
+    public init(ref: Int, role: String, name: String, tag: String, href: String? = nil, value: String? = nil,
+                checked: Bool? = nil, disabled: Bool? = nil, x: Double, y: Double, w: Double, h: Double,
+                inFrame: String? = nil) {
+        self.ref = ref
+        self.role = role
+        self.name = name
+        self.tag = tag
+        self.href = href
+        self.value = value
+        self.checked = checked
+        self.disabled = disabled
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.inFrame = inFrame
+    }
 
     public var frame: CGRect { CGRect(x: x, y: y, width: w, height: h) }
 
@@ -68,8 +89,23 @@ public struct RAVEPageElement: Codable, Sendable, Equatable {
         if let href, !href.isEmpty, !href.hasPrefix("javascript:") {
             line += " → " + (href.count > 100 ? String(href.prefix(99)) + "…" : href)
         }
+        if let inFrame { line += " (in frame \(inFrame))" }
         return line
     }
+}
+
+/// One of the page's iframes, as `RAVEPageDriver.frames()` lists it.
+public struct RAVEPageFrame: Codable, Sendable, Equatable {
+    /// What `evaluate(frame:)` takes.
+    public var id: String
+    public var url: String
+    /// Its content box in the page's viewport, when it could be placed.
+    public var x: Double?
+    public var y: Double?
+    public var w: Double?
+    public var h: Double?
+    /// Whether any of it is on screen.
+    public var visible: Bool
 }
 
 public struct RAVEPageElements: Codable, Sendable, Equatable {

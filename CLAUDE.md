@@ -196,6 +196,24 @@ delegate, no user scripts — so it can sit on top of any host's view (spatial-a
   `RAVEBrowserLab` run this way; `--watch` puts the Lab's window in front, still never key.
 - **New-window links are followed in place**, because a web view with no UI delegate
   silently drops them.
+- **Iframes, cross-origin included, through `RAVEPageFrames`** (every `RAVEBrowserTab` has
+  one: `tab.frames`, and `tab.driver(scripting:)` wires it in). Each frame announces its
+  `WKFrameInfo` from the driver's isolated world — WebKit offers no public frame list — so
+  `elements` numbers what is inside iframes after the page's own (`inFrame` names the host),
+  moved into the page's viewport, and every ref action runs in its frame; a real click in an
+  iframe is trusted like any other. Placement matches a frame to its parent's iframe by
+  `src`; an unmatched frame is listed only for `scope: page` and pressed synthetically.
+- **`RAVEPageSupport` is for agent tabs only**: console, exceptions, `fetch`/XHR/resource
+  timing, dialogs answered without UI (OK for alerts, Cancel otherwise unless
+  `answerNextDialog`, once), downloads to a folder, file choosers from staged files, and an
+  event list an action's result can quote. It wraps `console`/`fetch` in the page world, where
+  a page can see them, so "off means absent" for people's tabs. An opaque-origin document
+  (`loadHTMLString` with no base URL) reports its own errors as "Script error.".
+- **`RAVEBrowserTab` answers what WebKit asks**: dialogs, downloads, file choosers (Mac),
+  responses and new windows go first to features conforming to `RAVEPageEventHandler`, in
+  order; then the Mac shows a sheet on the tab's window, elsewhere WebKit's no-delegate
+  default stands. Downloads happen only with `downloadDirectory` or a handler, so an app that
+  sets neither behaves as before. The delegate methods are pinned by a `responds(to:)` test.
 - **`read()` is Mozilla's Readability** (`Resources/Readability.js`, Apache 2.0, v0.6.0 —
   Safari's Reader has no API). It reads a *copy* of the DOM, so overlays don't matter to it;
   `dismissOverlays()` is the heuristic for when the page itself has to be usable.

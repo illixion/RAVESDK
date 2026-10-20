@@ -74,3 +74,57 @@ public struct RAVEWebViewHost: UIViewRepresentable {
     }
 }
 #endif
+
+#if os(macOS) && canImport(WebKit)
+import SwiftUI
+import WebKit
+
+/// The Mac's host: the same contract as the UIKit one above — it creates
+/// nothing, re-parents whichever web view is current, and pausing is taking
+/// it out of the container.
+public struct RAVEWebViewHost: NSViewRepresentable {
+    /// The page to show, or nil for none.
+    public let webView: WKWebView?
+    public let isPaused: Bool
+
+    public init(webView: WKWebView?, isPaused: Bool = false) {
+        self.webView = webView
+        self.isPaused = isPaused
+    }
+
+    public func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    public func updateNSView(_ container: NSView, context: Context) {
+        let wanted = isPaused ? nil : webView
+        for subview in container.subviews where subview !== wanted { subview.removeFromSuperview() }
+        if let webView, context.coordinator.mediaSuspended != isPaused {
+            context.coordinator.mediaSuspended = isPaused
+            let suspend = isPaused
+            Task { @MainActor in await webView.setAllMediaPlaybackSuspended(suspend) }
+        }
+        guard let wanted, wanted.superview !== container else { return }
+        wanted.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(wanted)
+        NSLayoutConstraint.activate([
+            wanted.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            wanted.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            wanted.topAnchor.constraint(equalTo: container.topAnchor),
+            wanted.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+    }
+
+    public func makeCoordinator() -> Coordinator { Coordinator() }
+
+    public final class Coordinator {
+        var mediaSuspended = false
+    }
+
+    /// Leave the web view attached to nothing rather than letting AppKit tear
+    /// it down with the container: the app still owns it.
+    public static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
+        for subview in container.subviews { subview.removeFromSuperview() }
+    }
+}
+#endif

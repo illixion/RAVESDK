@@ -64,6 +64,27 @@ extension RAVEPageScripts {
                                 select, draggable: !!(el.closest && el.closest('[draggable=true]')) });
         """#
 
+    /// No arguments. This document's frame id (null in the main frame), its
+    /// URL and viewport, and its own iframes' content boxes in its viewport —
+    /// what the driver needs to place a child frame's elements on the page.
+    static let frameGeometry = prelude + #"""
+        const frames = Array.from(document.querySelectorAll('iframe, frame')).map(f => {
+            const r = f.getBoundingClientRect();
+            return { src: f.src || (f.hasAttribute('srcdoc') ? 'about:srcdoc' : 'about:blank'),
+                     x: r.left + f.clientLeft, y: r.top + f.clientTop, w: f.clientWidth, h: f.clientHeight,
+                     shown: r.width > 1 && r.height > 1 && getComputedStyle(f).visibility !== 'hidden' };
+        });
+        return JSON.stringify({ id: R.frameID || null, url: location.href, width: innerWidth, height: innerHeight, frames });
+        """#
+
+    /// Arguments: `points` (`[x, y]` in viewport CSS pixels), `frame` (the
+    /// index of an iframe in `frameGeometry`'s list). Which points land on
+    /// that iframe rather than on something covering it.
+    static let framePointsShown = prelude + #"""
+        const f = document.querySelectorAll('iframe, frame')[frame];
+        return JSON.stringify(points.map(([px, py]) => !!f && deepElementFromPoint(px, py) === f));
+        """#
+
     /// No arguments. Which real events the page has seen since `target`.
     static let seen = prelude + #"""
         return JSON.stringify({ mousemove: !!(R.seen && R.seen.mousemove), mousedown: !!(R.seen && R.seen.mousedown) });
