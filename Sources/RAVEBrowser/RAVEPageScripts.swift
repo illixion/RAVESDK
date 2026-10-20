@@ -207,7 +207,10 @@ enum RAVEPageScripts {
         return JSON.stringify({ viewport: viewport(), elements, total: kept.length, truncated: kept.length > elements.length });
         """#
 
-    /// Arguments: `ref`, or `x` and `y` in viewport CSS pixels.
+    /// Arguments: `ref`, or `x` and `y` in viewport CSS pixels; `button` (0
+    /// left, 1 middle, 2 right), `count` (2 double-clicks), `follow` (follow a
+    /// new-window link in place), and the modifiers `shift`, `ctrl`, `alt`,
+    /// `meta`.
     static let click = prelude + #"""
         watch();
         let el = ref !== null ? refElement(ref) : deepElementFromPoint(x, y);
@@ -217,20 +220,35 @@ enum RAVEPageScripts {
         // A web view with no UI delegate drops new-window navigations, so a
         // link that would open one is followed in place instead.
         const link = el.closest && el.closest('a[href]');
-        if (link && link.target && !/^_(self|parent|top)$/i.test(link.target)) {
+        if (follow && button === 0 && link && link.target && !/^_(self|parent|top)$/i.test(link.target)) {
             location.href = link.href;
             return JSON.stringify({ target, followed: link.href });
         }
         const r = el.getBoundingClientRect();
-        const init = { bubbles: true, cancelable: true, composed: true, button: 0, buttons: 1,
-                       clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+        const init = { bubbles: true, cancelable: true, composed: true, button, buttons: button === 2 ? 2 : button === 1 ? 4 : 1,
+                       clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+                       shiftKey: shift, ctrlKey: ctrl, altKey: alt, metaKey: meta };
         const pointer = Object.assign({ pointerId: 1, pointerType: 'mouse', isPrimary: true }, init);
-        el.dispatchEvent(new PointerEvent('pointerdown', pointer));
-        el.dispatchEvent(new MouseEvent('mousedown', init));
-        if (el.focus) el.focus({ preventScroll: true });
-        el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, pointer, { buttons: 0 })));
-        el.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, init, { buttons: 0 })));
-        el.click();
+        for (let i = 1; i <= Math.max(1, count); i++) {
+            const detail = { detail: i };
+            el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, pointer, detail)));
+            el.dispatchEvent(new MouseEvent('mousedown', Object.assign({}, init, detail)));
+            if (i === 1 && el.focus) el.focus({ preventScroll: true });
+            el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, pointer, detail, { buttons: 0 })));
+            el.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, init, detail, { buttons: 0 })));
+            if (button === 2) {
+                el.dispatchEvent(new MouseEvent('contextmenu', Object.assign({}, init, detail, { buttons: 0 })));
+            } else if (button === 1) {
+                el.dispatchEvent(new MouseEvent('auxclick', Object.assign({}, init, detail, { buttons: 0 })));
+            } else if (shift || ctrl || alt || meta || i > 1) {
+                el.dispatchEvent(new MouseEvent('click', Object.assign({}, init, detail, { buttons: 0 })));
+            } else {
+                // `click()` rather than a dispatched event: it activates what a
+                // real click would (a checkbox, a submit button, a link).
+                el.click();
+            }
+        }
+        if (count >= 2 && button === 0) el.dispatchEvent(new MouseEvent('dblclick', Object.assign({}, init, { detail: 2, buttons: 0 })));
         return JSON.stringify({ target });
         """#
 

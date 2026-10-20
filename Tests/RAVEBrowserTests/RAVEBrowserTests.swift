@@ -41,7 +41,19 @@ import WebKit
 @Suite struct RAVEPageScriptSyntaxTests {
     static let scripts: [(String, String, [String])] = [
         ("elements", RAVEPageScripts.elements, ["scope", "limit"]),
-        ("click", RAVEPageScripts.click, ["ref", "x", "y"]),
+        ("click", RAVEPageScripts.click, ["ref", "x", "y", "follow", "button", "count", "shift", "ctrl", "alt", "meta"]),
+        ("target", RAVEPageScripts.target, ["ref", "x", "y"]),
+        ("focusField", RAVEPageScripts.focusField, ["ref", "append"]),
+        ("fieldValue", RAVEPageScripts.fieldValue, ["ref"]),
+        ("keys", RAVEPageScripts.keys, ["ref", "keys"]),
+        ("hover", RAVEPageScripts.hover, ["ref", "x", "y"]),
+        ("drag", RAVEPageScripts.drag, ["fromRef", "fromX", "fromY", "toRef", "toX", "toY", "steps"]),
+        ("selectOption", RAVEPageScripts.selectOption, ["ref", "values"]),
+        ("checkState", RAVEPageScripts.checkState, ["ref"]),
+        ("upload", RAVEPageScripts.upload, ["ref", "files"]),
+        ("waitForText", RAVEPageScripts.waitForText, ["text", "gone", "maxMs"]),
+        ("evaluationExpression", RAVEPageScripts.evaluation("document.title", asExpression: true), ["__ravenMax"]),
+        ("evaluationStatements", RAVEPageScripts.evaluation("return 1", asExpression: false), ["__ravenMax"]),
         ("type", RAVEPageScripts.type, ["ref", "text", "append", "submit"]),
         ("scroll", RAVEPageScripts.scroll, ["by", "to", "ref"]),
         ("find", RAVEPageScripts.find, ["text", "index"]),
@@ -181,10 +193,8 @@ import WebKit
     @Test func aPageThatNeverStopsChangingCostsOnlyTheLimit() async throws {
         // In a shown window: WebKit throttles a windowless page's timers as
         // hidden, which would make the ticker look quiet.
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled],
-                              backing: .buffered, defer: false)
-        window.contentView = view
-        window.orderFrontRegardless()
+        RAVEBackgroundWindow.enterBackgroundMode()
+        let window = RAVEBackgroundWindow.show(view, size: CGSize(width: 400, height: 300))
         defer { window.orderOut(nil) }
         let driver = driver
         driver.quietLimit = .milliseconds(1500)

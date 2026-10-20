@@ -6,9 +6,10 @@
    swift run RAVEBrowserLab --list
 
  Measures the agent loop the apps ship, without a headset: the page runs in a
- 1280×800 window here (watch it browse), the model on the Mac's Ollama picks
- each step, and success is judged from the page a task ends on, not from what
- the model says. Prints one JSON line per task and a summary line.
+ 1280×800 window behind every other one (`--watch` brings it in front, still
+ without taking focus), the model on the Mac's Ollama picks each step, and
+ success is judged from the page a task ends on, not from what the model
+ says. Prints one JSON line per task and a summary line.
 
  Options:
    --model NAME      an Ollama model (required unless --list)
@@ -17,6 +18,7 @@
    --text-only       no snapshots: the element outline alone
    --ollama URL      default http://127.0.0.1:11434
    --verbose         print every step to stderr
+   --watch           show the window in front of others (it never takes focus)
  */
 
 import AppKit
@@ -72,6 +74,7 @@ struct Options {
     var textOnly = false
     var ollama = URL(string: "http://127.0.0.1:11434")!
     var verbose = false
+    var watch = false
     var list = false
 
     init(_ arguments: [String]) {
@@ -84,6 +87,7 @@ struct Options {
             case "--text-only": textOnly = true
             case "--ollama": ollama = URL(string: it.next() ?? "") ?? ollama
             case "--verbose", "-v": verbose = true
+            case "--watch": watch = true
             case "--list": list = true
             default: FileHandle.standardError.write(Data("unknown option \(argument)\n".utf8)); exit(2)
             }
@@ -108,17 +112,17 @@ func runLab(_ options: Options) async -> Int32 {
     }
     guard !options.model.isEmpty else { stderr("--model is required"); return 2 }
 
-    // A real, visible window: WebKit treats a page in no window, or an
-    // unshown one, as hidden and stops rendering it — the same thing the
-    // headset's pause relies on — and a hidden page cannot be snapshotted.
-    let frame = NSRect(x: 80, y: 80, width: 1280, height: 800)
-    let window = NSWindow(contentRect: frame, styleMask: [.titled, .miniaturizable], backing: .buffered, defer: false)
-    window.title = "RAVEBrowserLab — \(options.model)"
+    // A real window: WebKit treats a page in no window as hidden and stops
+    // rendering it — the same thing the headset's pause relies on — and a
+    // hidden page cannot be snapshotted. Behind everything and never key, so
+    // a run doesn't take the person's focus (see RAVEBackgroundWindow).
+    let size = CGSize(width: 1280, height: 800)
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
-    let view = WKWebView(frame: NSRect(origin: .zero, size: frame.size), configuration: configuration)
-    window.contentView = view
-    window.orderFrontRegardless()
+    let view = WKWebView(frame: NSRect(origin: .zero, size: size), configuration: configuration)
+    let window = RAVEBackgroundWindow.show(view, size: size, title: "RAVEBrowserLab — \(options.model)",
+                                           placement: options.watch ? .front : .behind)
+    defer { window.orderOut(nil) }
 
     let driver = RAVEPageDriver(webView: view)
     let agent = RAVEPageAgent(driver: driver)
@@ -165,7 +169,7 @@ func runLab(_ options: Options) async -> Int32 {
 
 let options = Options(CommandLine.arguments)
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
+RAVEBackgroundWindow.enterBackgroundMode()
 Task { @MainActor in
     let code = await runLab(options)
     exit(code)

@@ -138,6 +138,126 @@ public struct RAVEPageAction: Codable, Sendable, Equatable {
     /// going quiet. An app-like page answers a click by rewriting itself, so
     /// this, not the URL, is what says the click did something.
     public var changes: Int?
+    /// `native` (real events, trusted by the page) or `synthetic` (from
+    /// script, `isTrusted` false).
+    public var via: String?
+    /// Why the action went another way than asked, when it did.
+    public var note: String?
+
+    public init(target: String, followed: String? = nil, info: RAVEPageInfo? = nil, changes: Int? = nil,
+                via: String? = nil, note: String? = nil) {
+        self.target = target
+        self.followed = followed
+        self.info = info
+        self.changes = changes
+        self.via = via
+        self.note = note
+    }
+}
+
+/// The options a `select` left chosen.
+public struct RAVEPageSelection: Codable, Sendable, Equatable {
+    public var target: String
+    /// Visible texts of the chosen options.
+    public var selected: [String]
+    public var info: RAVEPageInfo?
+    public var changes: Int?
+}
+
+public struct RAVEPageCheck: Codable, Sendable, Equatable {
+    public var target: String
+    public var checked: Bool
+    /// False when it already was as asked, and nothing was clicked.
+    public var changed: Bool
+    public var info: RAVEPageInfo?
+    public var via: String?
+}
+
+public struct RAVEPageDrag: Codable, Sendable, Equatable {
+    public var from: String
+    public var to: String?
+    /// HTML drag and drop (`draggable`), rather than a pointer drag.
+    public var html5: Bool
+    /// For HTML drag and drop: whether the target accepted the drop.
+    public var dropped: Bool
+    public var note: String?
+    public var via: String?
+    public var info: RAVEPageInfo?
+    public var changes: Int?
+
+    public init(from: String, to: String?, html5: Bool, dropped: Bool) {
+        self.from = from
+        self.to = to
+        self.html5 = html5
+        self.dropped = dropped
+    }
+}
+
+public struct RAVEPageUpload: Codable, Sendable, Equatable {
+    public var target: String
+    /// `input` (a file field took them) or `drop` (dropped on the element).
+    public var via: String
+    public var count: Int
+    /// For a drop: whether the element accepted it.
+    public var accepted: Bool?
+    public var files: [String]?
+    public var info: RAVEPageInfo?
+    public var changes: Int?
+}
+
+public struct RAVEPageWait: Codable, Sendable, Equatable {
+    /// Whether the text appeared (or, waiting for it to go, went).
+    public var met: Bool
+    /// Milliseconds waited.
+    public var waited: Int
+    /// The page started unloading during the wait.
+    public var leaving: Bool?
+}
+
+/// What a script `evaluate` ran produced.
+public struct RAVEPageEvaluation: Codable, Sendable, Equatable {
+    /// `typeof` the value, with `null`, `array` and `node` told apart.
+    public var type: String
+    /// The value as JSON (elements described, cycles cut), or nil for
+    /// `undefined`. Cut at the length asked for; `truncated` says so.
+    public var json: String?
+    public var length: Int
+    public var truncated: Bool
+    /// `expression` or `statements`: how the source was run.
+    public var mode: String?
+}
+
+/// Where a real press on an element must land, from `RAVEPageScripts.target`.
+struct RAVEPageTarget: Decodable {
+    var target: String
+    /// Viewport CSS pixels.
+    var x: Double
+    var y: Double
+    /// The viewport's size, for converting to the view.
+    var width: Double
+    var height: Double
+    /// What is on top of the element at every point a press could use.
+    var covered: String?
+    /// The URL a link would open in a new window.
+    var newWindow: String?
+    var tag: String
+    var select: Bool
+    var draggable: Bool
+}
+
+struct RAVEPageFieldState: Decodable {
+    var target: String
+    var value: String
+}
+
+struct RAVEPageKeysResult: Decodable {
+    var target: String
+}
+
+struct RAVEPageCheckState: Decodable {
+    var target: String
+    var checked: Bool
+    var disabled: Bool?
 }
 
 /// The document going quiet after an action or a load.

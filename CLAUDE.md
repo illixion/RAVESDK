@@ -98,7 +98,7 @@ is easy to skip.
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
-| `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/scroll/find, dismiss overlays; `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
+| `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/keys/hover/drag/select/check/upload/scroll/find/wait, dismiss overlays, tiered JavaScript (`RAVEScriptPolicy`), real input on the Mac (`RAVENativeInput`, `RAVEBackgroundWindow`); `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
 
 ### Linux: the portable targets
@@ -169,15 +169,31 @@ delegate, no user scripts — so it can sit on top of any host's view (spatial-a
 - **Everything runs in its own `WKContentWorld`.** The page can't see or redefine the
   helpers, and element refs live in that world's global, so a navigation (fresh document,
   fresh global) makes an old ref throw `stale ref N` rather than hit something else.
-- **No arbitrary-JavaScript tool, on purpose.** Page text reaches the model; a model that
-  can be talked into running script can do anything the page can.
+- **Running the caller's JavaScript is tiered, and the app decides** (`RAVEScriptPolicy`,
+  fixed when it makes the driver, default `never`). Page text reaches the model, and a model
+  talked into running script can do anything the page can, so: `never` for
+  spatial-ai-character (unattended ambient browsing), `ask` for Raven's assistant
+  (`RAVEScriptSessionConsent`: asked once per chat), `always` for Raven for Mac's agent
+  harness. `evaluate` runs in the page world; JavaScriptCore parses the source first to tell an
+  expression from statements, so nothing runs twice. An agent is offered the action only when
+  the policy allows it.
 - **Refs, not coordinates.** `elements()` numbers what is visible *and not covered* (it
   hit-tests each centre, walking open shadow roots), `snapshot(marks:)` draws those numbers
   in Core Graphics — never into the page, so nothing flashes on the user's screen — and a
   vision model answers "click 12". `click(x:y:)` exists only as a fallback.
-- **Typing goes through the prototype's `value` setter**, so React-style controlled inputs
-  notice. Events are synthetic (`isTrusted == false`); the few sites that check will ignore
-  them, and there is no public API for a real touch.
+- **Input is real on the Mac, synthetic elsewhere.** A macOS web view in a window gets
+  `NSEvent`s straight to its responder methods (`RAVENativeInput`): clicks, keys and
+  `insertText` arrive `isTrusted`, measured in the tests, also in a background window that
+  is not key. Two exceptions, both measured or forced: WebKit ignores a pointer *move* into a
+  window that is not key, so hover checks the page saw it and falls back (with a `note`); and a
+  right click or a press on a `<select>` is always synthetic, because AppKit answers both
+  with a menu it tracks modally on the main thread. visionOS and iOS have no public way to
+  inject a touch, so there typing goes through the prototype's `value` setter (React-style
+  inputs notice) and events are `isTrusted == false`. Each action reports `via`.
+- **Mac windows for pages never take focus** (`RAVEBackgroundWindow`): an accessory process
+  (Oneiros's harness mode), the window ordered behind everything, and WebKit's occlusion check
+  off for the view (SPI, guarded) so a covered page still renders. The tests and
+  `RAVEBrowserLab` run this way; `--watch` puts the Lab's window in front, still never key.
 - **New-window links are followed in place**, because a web view with no UI delegate
   silently drops them.
 - **`read()` is Mozilla's Readability** (`Resources/Readability.js`, Apache 2.0, v0.6.0 —
@@ -201,10 +217,10 @@ the same result three times ends the run; and a ref whose element a feed re-rend
 again by role and link (`R.meta`) instead of failing.
 
 **`RAVEBrowserLab` measures that loop on the Mac**, no headset: `swift run RAVEBrowserLab
---model gemma3:12b [--task id] [--text-only] --verbose`. The page runs in a real, visible
-window — WebKit treats a page in no window, or an unshown one, as hidden and stops rendering
-it, the same fact the pause relies on — and success is judged from the URL a task ends on,
-not from what the model says. Fixed tasks on Wikipedia and Reddit; `--list` names them.
+--model gemma3:12b [--task id] [--text-only] [--watch] --verbose`. The page runs in a real
+window — WebKit treats a page in no window as hidden and stops rendering it, the same fact
+the pause relies on — kept behind everything unless `--watch`, and success is judged from
+the URL a task ends on, not from what the model says. Fixed tasks on Wikipedia and Reddit; `--list` names them.
 
 **The tab core and the seam** (decided 2026-09-28, built 2026-10-17 by splitting Raven's
 `BrowserTab`). Three apps want a web view, and each wants a different shell around it: Raven is
