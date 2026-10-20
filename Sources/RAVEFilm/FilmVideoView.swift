@@ -7,7 +7,10 @@
 
  visionOS shows the player's RealityKit video plane (`videoEntity`, placed
  by RAVEMedia's `RAVEVideoPlaneView`) and states the picture's display
- criteria to the window from an empty UIKit view behind it.
+ criteria to the window from an empty UIKit view behind it. With
+ `showsPicture` off the plane is left to another scene (an immersive
+ space's screen adds `videoEntity` to its own content) and only the
+ criteria stay, since the window is still the one the display mode follows.
  */
 
 import AVFoundation
@@ -56,6 +59,7 @@ public struct FilmVideoView: View {
     var squareCorners: Bool
     var opacity: Float
     var takesInput: Bool
+    var showsPicture: Bool
     var onTap: () -> Void
 
     /// - Parameters:
@@ -64,20 +68,27 @@ public struct FilmVideoView: View {
     ///     comes back), a little dims it under an open menu.
     ///   - takesInput: the plane catches taps (`onTap`); off while a menu
     ///     should keep the gaze.
+    ///   - showsPicture: off, the plane is shown elsewhere and this view
+    ///     only states the display criteria.
     public init(player: FilmVideoPlayer, squareCorners: Bool = false, opacity: Float = 1,
-                takesInput: Bool = true, onTap: @escaping () -> Void = {}) {
+                takesInput: Bool = true, showsPicture: Bool = true, onTap: @escaping () -> Void = {}) {
         self.player = player
         self.squareCorners = squareCorners
         self.opacity = opacity
         self.takesInput = takesInput
+        self.showsPicture = showsPicture
         self.onTap = onTap
     }
 
     public var body: some View {
-        RAVEVideoPlaneView(entity: player.videoEntity, aspect: player.pictureAspect, squareCorners: squareCorners,
-                           opacity: opacity, takesInput: takesInput, onTap: onTap,
-                           onAttach: { player.pictureAttached = true })
-            .background { CriteriaHost(player: player) }
+        if showsPicture {
+            RAVEVideoPlaneView(entity: player.videoEntity, aspect: player.pictureAspect, squareCorners: squareCorners,
+                               opacity: opacity, takesInput: takesInput, onTap: onTap,
+                               onAttach: { player.pictureAttached = true })
+                .background { CriteriaHost(player: player) }
+        } else {
+            CriteriaHost(player: player)
+        }
     }
 
     private struct CriteriaHost: UIViewRepresentable {

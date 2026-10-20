@@ -24,6 +24,10 @@
    wearer's metres at any window distance. `.automatic` reads the same
    factor as how much further away the window is than at its natural
    size, and moves the listener with it.
+ - visionOS, in an immersive space (`roomPose`): the app knows where the
+   head and the screen are, so it hands the room's pose in the space's
+   coordinates (listener at the origin, −z toward the screen) and the
+   stage sets it in scene space, whatever the view's own origin.
  - iOS and macOS: a virtual camera. A `PerspectiveCamera` at the origin is
    the active camera and so the audio listener, with the room centred on
    it; `listenerOrientation` turns it (head tracking lives in the app). An
@@ -77,6 +81,9 @@ public struct FilmStageView: View {
     /// visionOS: called with the window's dynamic scale (real metres per
     /// `RealityView` metre) whenever it changes.
     var onWindowScale: (@MainActor (Float) -> Void)?
+    /// visionOS, in an immersive space: the room's pose in scene space, read
+    /// every tick; nil keeps the last one. Replaces `listenerDistance`.
+    var roomPose: (@MainActor () -> simd_float4x4?)?
     /// iOS/macOS: the listener's head orientation, read every tick.
     var listenerOrientation: @MainActor () -> simd_quatf
 
@@ -107,8 +114,20 @@ public struct FilmStageView: View {
         self.player = player
         self.listenerDistance = listenerDistance
         self.onWindowScale = onWindowScale
+        self.roomPose = nil
         self.listenerOrientation = listenerOrientation
     }
+
+    #if os(visionOS)
+    /// A stage in an immersive space, its room placed by `roomPose`.
+    public init(player: FilmPlayer, roomPose: @escaping @MainActor () -> simd_float4x4?) {
+        self.player = player
+        self.listenerDistance = .automatic()
+        self.onWindowScale = nil
+        self.roomPose = roomPose
+        self.listenerOrientation = { simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) }
+    }
+    #endif
 
     public var body: some View {
         RealityView { content in
@@ -267,9 +286,13 @@ public struct FilmStageView: View {
         buildIfNeeded()
         player.tick()
         #if os(visionOS)
-        // The room in real metres, its centre the listener's real distance away.
-        room.scale = SIMD3(repeating: 1 / windowScale)
-        room.position = SIMD3(0, 0, placement.metres(windowScale: windowScale) / windowScale)
+        if let roomPose {
+            if let pose = roomPose() { room.setTransformMatrix(pose, relativeTo: nil) }
+        } else {
+            // The room in real metres, its centre the listener's real distance away.
+            room.scale = SIMD3(repeating: 1 / windowScale)
+            room.position = SIMD3(0, 0, placement.metres(windowScale: windowScale) / windowScale)
+        }
         #else
         listener.orientation = listenerOrientation()
         #endif
