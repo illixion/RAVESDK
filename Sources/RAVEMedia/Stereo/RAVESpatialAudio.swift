@@ -10,8 +10,10 @@
 
 #if os(visionOS)
 
+import AudioToolbox
 import AVFoundation
 import CoreMedia
+import os
 
 extension AVPlayerItem {
     /// Apply the spatial-audio policy: spatialize only genuine multichannel
@@ -56,15 +58,51 @@ extension AVPlayer {
     /// neither) the item's own tracks once it is `.readyToPlay`. The last
     /// probe is why a surround HLS stream no longer stays pinned to
     /// `.bypassed` — the asset-level track load alone returns nothing for it.
+    ///
+    /// Genuine multichannel is head-tracked, or head-locked (`.fixed`) under
+    /// `RAVEMediaPolicy.headLockedSurround`, which a live player follows.
     public func applySpatialAudioPolicy(for asset: AVURLAsset) {
-        guard !RAVEMediaPolicy.spatializeStereo else { return }
+        RAVESpatialAudioPlayers.register(self)
+        guard !RAVEMediaPolicy.spatializeStereo else {
+            if RAVEMediaPolicy.headLockedSurround { intendedSpatialAudioExperience = .fixed(soundStageSize: .automatic) }
+            return
+        }
         intendedSpatialAudioExperience = .bypassed
         let item = currentItem
         Task { [weak self] in
             let surround = await asset.detectMultichannelAudio(item: item)
             guard surround, let self, self.currentItem === item else { return }
-            self.intendedSpatialAudioExperience = .headTracked(.automatic, soundStageSize: .automatic)
+            self.intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience
         }
+    }
+
+    /// Re-applies the surround policy after `RAVEMediaPolicy.headLockedSurround`
+    /// changed. Bypassed (stereo) players stay bypassed.
+    fileprivate func refreshSurroundAnchoring() {
+        guard !(intendedSpatialAudioExperience is BypassedSpatialAudio) else { return }
+        intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience
+    }
+}
+
+/// Every player the policy was applied to, weakly, so a change of
+/// `RAVEMediaPolicy.headLockedSurround` reaches the ones playing.
+enum RAVESpatialAudioPlayers {
+    private static let players = OSAllocatedUnfairLock(uncheckedState: NSHashTable<AVPlayer>.weakObjects())
+
+    static var surroundExperience: any SpatialAudioExperience {
+        if RAVEMediaPolicy.headLockedSurround { return .fixed(soundStageSize: .automatic) }
+        return RAVEMediaPolicy.spatializeStereo
+            ? AutomaticSpatialAudio.automatic
+            : .headTracked(.automatic, soundStageSize: .automatic)
+    }
+
+    static func register(_ player: AVPlayer) {
+        players.withLockUnchecked { _ = $0.add(player) }
+    }
+
+    static func refreshSurroundAnchoring() {
+        let live = players.withLockUnchecked { $0.allObjects }
+        for player in live { player.refreshSurroundAnchoring() }
     }
 }
 

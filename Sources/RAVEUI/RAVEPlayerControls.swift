@@ -76,6 +76,9 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     private let onInteraction: () -> Void
     private let onScrubbingChanged: (Bool) -> Void
     private let accessories: Accessories
+    /// Always on the bar, beside the volume, even when the accessories
+    /// collapse into "More".
+    private let pinned: AnyView?
     @State private var scrubSeconds: Double?
     @State private var isScrubbing = false
     @State private var isAccessoryScrolling = false
@@ -90,6 +93,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 onMenuChanged: @escaping (Bool) -> Void = { _ in },
                 setVolume: ((Double) -> Void)? = nil,
                 menuDismissal: Int = 0,
+                pinned: AnyView? = nil,
                 @ViewBuilder accessories: () -> Accessories) {
         self.state = state
         self.layout = layout
@@ -102,6 +106,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         self.onInteraction = onInteraction
         self.onScrubbingChanged = onScrubbingChanged
         self.accessories = accessories()
+        self.pinned = pinned
     }
 
     public var body: some View {
@@ -167,6 +172,11 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             timelineRow
                 .frame(minWidth: Self.compactTimelineMinWidth, maxWidth: .infinity)
             compactVolume
+            if let pinned {
+                pinned
+                    .ravePlayerButtonStyle()
+                    .fixedSize()
+            }
             if Accessories.self != EmptyView.self {
                 if overflow {
                     #if os(tvOS)
@@ -354,7 +364,10 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     }
 
     private var accessoryRow: some View {
-        HStack(spacing: 12) { accessories }
+        HStack(spacing: 12) {
+            pinned
+            accessories
+        }
             .ravePlayerButtonStyle()
             .fixedSize(horizontal: true, vertical: false)
     }
