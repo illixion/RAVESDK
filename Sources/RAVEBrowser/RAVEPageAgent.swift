@@ -24,7 +24,7 @@ import Foundation
 /// models produce reliably under a schema.
 public struct RAVEPageAgentStep: Codable, Sendable, Equatable {
     public enum Action: String, Codable, Sendable, CaseIterable {
-        case click, type, scroll, find, read, back, navigate, done
+        case click, type, scroll, find, read, back, navigate, script, done
     }
 
     public var why: String?
@@ -58,6 +58,7 @@ public struct RAVEPageAgentStep: Codable, Sendable, Equatable {
         case .read: "read"
         case .back: "back"
         case .navigate: "go to \(url ?? "")"
+        case .script: "script \((text ?? "").prefix(60))"
         case .done: "done"
         }
     }
@@ -77,6 +78,9 @@ public struct RAVEPageAgentTurn: Sendable {
     public var history: [String]
     /// The previous action's full result, page text included.
     public var previous: String
+    /// What the model may answer with this turn: every action, less
+    /// `script` unless the driver's policy allows it.
+    public var actions: [RAVEPageAgentStep.Action] = RAVEPageAgentStep.Action.allCases.filter { $0 != .script }
 
     /// The turn as one user message.
     public var prompt: String {
@@ -128,13 +132,28 @@ public final class RAVEPageAgent {
 
     /// Where the next `read` continues, per page.
     private var readPosition: (url: String, offset: Int) = ("", 0)
+    /// Whether this run still offers `script`: the driver allows it, and the
+    /// person has not declined it.
+    private var offersScript = false
+    /// How much of a script's value the model sees.
+    public var scriptCharacters = 2000
 
     public init(driver: RAVEPageDriver) {
         self.driver = driver
     }
 
-    /// The contract a model follows: pass as its system prompt.
-    public nonisolated static let instructions = """
+    /// The contract a model follows, as its system prompt, for the actions a
+    /// turn offers.
+    public nonisolated static func instructions(for actions: [RAVEPageAgentStep.Action]) -> String {
+        let script = actions.contains(.script) ? """
+
+            {"action": "script", "text": "..."}   (run JavaScript on the page and get its value back: only for what \
+            the other actions cannot do; the user may be asked first)
+            """ : ""
+        return instructionsBefore + script + instructionsAfter
+    }
+
+    private nonisolated static let instructionsBefore = """
         You operate a web browser for a user, one action at a time, to reach a goal.
 
         Each turn you get the page's title and URL, the steps taken so far, the result of \
@@ -150,6 +169,10 @@ public final class RAVEPageAgent {
         {"action": "read"}   (the page's article text, a part at a time: read again for the next part)
         {"action": "back"}
         {"action": "navigate", "url": "https://..."}
+        """
+
+    private nonisolated static let instructionsAfter = """
+
         {"action": "done", "answer": "..."}   (the goal is reached; the answer is what you tell the user)
 
         Add "why" in a few words. When the last result already holds what the goal asks for, \
@@ -161,13 +184,14 @@ public final class RAVEPageAgent {
         for the user to confirm.
         """
 
-    /// The JSON schema a step must match, for models that constrain decoding.
-    /// Built on each read, so a non-Sendable dictionary never crosses actors.
-    public nonisolated static var stepSchema: [String: Any] { [
+    /// The JSON schema a step must match, for models that constrain decoding,
+    /// for the actions a turn offers. Built on each call, so a non-Sendable
+    /// dictionary never crosses actors.
+    public nonisolated static func stepSchema(for actions: [RAVEPageAgentStep.Action]) -> [String: Any] { [
         "type": "object",
         "properties": [
             "why": ["type": "string"],
-            "action": ["type": "string", "enum": RAVEPageAgentStep.Action.allCases.map(\.rawValue)],
+            "action": ["type": "string", "enum": actions.map(\.rawValue)],
             "ref": ["type": "integer"],
             "text": ["type": "string"],
             "submit": ["type": "boolean"],
@@ -185,6 +209,7 @@ public final class RAVEPageAgent {
         var history: [String] = []
         var previous = "none yet"
         var lastBrief = "", lastOutcome = "", repeats = 0
+        offersScript = driver.scripting.permitsScripts
         for index in 1...maxSteps {
             // Stopping is the caller cancelling its task. Checked between
             // steps, since a cancelled model request only looks like an
@@ -200,7 +225,8 @@ public final class RAVEPageAgent {
                 goal: goal, step: index, maxSteps: maxSteps,
                 title: before?.title ?? "", url: before?.url ?? "",
                 outline: elements?.outline() ?? "(the page's elements could not be listed)",
-                snapshot: snapshot, history: Array(history.suffix(12)), previous: previous)
+                snapshot: snapshot, history: Array(history.suffix(12)), previous: previous,
+                actions: RAVEPageAgentStep.Action.allCases.filter { $0 != .script || offersScript })
 
             let asked = Date()
             let step: RAVEPageAgentStep
@@ -291,6 +317,20 @@ public final class RAVEPageAgent {
         switch step.action {
         case .click, .type, .done:
             return "done"
+        case .script:
+            guard offersScript else { return "error: running JavaScript is not available here; use the other actions" }
+            guard let source = step.text, !source.isEmpty else { return "error: script needs the JavaScript as text" }
+            do {
+                let result = try await driver.evaluate(source, maxCharacters: scriptCharacters)
+                guard let json = result.json else { return "the script ran and returned nothing" }
+                return "the script returned (\(result.type)): " + json + (result.truncated ? " …(cut)" : "")
+            } catch RAVEPageError.scriptDeclined {
+                offersScript = false
+                return "error: the user declined running JavaScript here; do not try script again"
+            } catch RAVEPageError.scriptingNotAllowed {
+                offersScript = false
+                return "error: running JavaScript is not available here; use the other actions"
+            }
         case .scroll:
             let scroll = try await driver.scroll(by: step.direction == "up" ? -0.8 : 0.8)
             if !scroll.moved { return "the page did not move: already at the \(scroll.atTop ? "top" : "bottom")" }

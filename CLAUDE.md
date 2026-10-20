@@ -234,6 +234,21 @@ small model will keep trying; an action that changed nothing is said so; the sam
 the same result three times ends the run; and a ref whose element a feed re-rendered is found
 again by role and link (`R.meta`) instead of failing.
 
+**`RAVEPageAgent` offers `script` only when the driver's policy allows it** (the turn's
+`actions` drive both the instructions and the step schema), and stops offering it for the run
+once the person declines, so a small model never loops on a tool it cannot have.
+
+**`RAVEBrowserTools` is the catalog every host serves** (decided 2026-10-20): the page tools
+as DebugTrace `DebugEndpoint`s, so validation, did-you-mean, the envelope, hints and MCP
+(images as image content) come from DebugTrace's registry rather than another copy of them.
+A host passes what differs: a name prefix (spatial-ai-character's `web…`; none for Raven for
+Mac's harness), the context parameters every tool takes to find its page (`tab`; `page` and
+`wake`), a `resolve` from arguments to `Target(driver, support)`, and whether `evaluate` and
+`upload` are offered. An action's reply carries `events` (dialogs, downloads, new windows,
+console errors) when the target has `RAVEPageSupport`. `tabEndpoints(host:)` adds tab tools
+over a `TabHost` (`tabs`, `tabOpen` with a `throwaway` profile, `tabClose`, `tabSelect`,
+`resize`).
+
 **`RAVEBrowserLab` measures that loop on the Mac**, no headset: `swift run RAVEBrowserLab
 --model gemma3:12b [--task id] [--text-only] [--watch] --verbose`. The page runs in a real
 window — WebKit treats a page in no window as hidden and stops rendering it, the same fact

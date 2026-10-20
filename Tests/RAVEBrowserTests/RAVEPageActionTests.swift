@@ -307,3 +307,56 @@ import WebKit
     }
 }
 #endif
+
+#if canImport(WebKit) && os(macOS)
+/// The agent offers `script` only when the driver's policy allows it, and
+/// stops offering it once the person declines.
+@MainActor
+@Suite(.serialized) struct RAVEPageAgentScriptTests {
+    /// Answers each turn from a list, and records what each turn offered.
+    final class Scripted: RAVEPageAgentModel, @unchecked Sendable {
+        var steps: [RAVEPageAgentStep]
+        var offered: [[RAVEPageAgentStep.Action]] = []
+        var previous: [String] = []
+        init(_ steps: [RAVEPageAgentStep]) { self.steps = steps }
+
+        func step(for turn: RAVEPageAgentTurn) async throws -> RAVEPageAgentStep {
+            offered.append(turn.actions)
+            previous.append(turn.previous)
+            return steps.isEmpty ? RAVEPageAgentStep(action: .done, answer: "") : steps.removeFirst()
+        }
+    }
+
+    @Test func scriptFollowsThePolicy() async throws {
+        let view = WKWebView()
+        let page = "<!doctype html><title>Agent</title><body><button>Go</button></body>"
+
+        let never = RAVEPageAgent(driver: RAVEPageDriver(webView: view))
+        never.usesSnapshots = false
+        try await never.driver.load(html: page)
+        let quiet = Scripted([RAVEPageAgentStep(action: .done, answer: "ok")])
+        _ = await never.run(goal: "nothing", model: quiet)
+        #expect(quiet.offered.first?.contains(.script) == false)
+        #expect(!RAVEPageAgent.instructions(for: quiet.offered.first ?? []).contains("\"script\""))
+
+        let always = RAVEPageAgent(driver: RAVEPageDriver(webView: view, scripting: .always))
+        always.usesSnapshots = false
+        let model = Scripted([RAVEPageAgentStep(action: .script, text: "document.title"),
+                              RAVEPageAgentStep(action: .done, answer: "Agent")])
+        let result = await always.run(goal: "read the title", model: model)
+        #expect(result.finished)
+        #expect(model.offered.first?.contains(.script) == true)
+        #expect(RAVEPageAgent.instructions(for: model.offered.first ?? []).contains("\"script\""))
+        #expect(model.previous.last?.contains(#"the script returned (string): "Agent""#) == true)
+
+        let consent = RAVEScriptSessionConsent { _ in .deny }
+        let asking = RAVEPageAgent(driver: RAVEPageDriver(webView: view, scripting: .ask(consent)))
+        asking.usesSnapshots = false
+        let declined = Scripted([RAVEPageAgentStep(action: .script, text: "1"), RAVEPageAgentStep(action: .done, answer: "")])
+        _ = await asking.run(goal: "try", model: declined)
+        #expect(declined.offered.first?.contains(.script) == true)
+        #expect(declined.offered.last?.contains(.script) == false)
+        #expect(declined.previous.last?.contains("declined") == true)
+    }
+}
+#endif

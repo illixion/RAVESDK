@@ -28,9 +28,9 @@ public struct RAVEChatPageModel: RAVEPageAgentModel {
 
     public func step(for turn: RAVEPageAgentTurn) async throws -> RAVEPageAgentStep {
         let request = RAVEChatRequest(
-            messages: [.system(RAVEPageAgent.instructions),
+            messages: [.system(RAVEPageAgent.instructions(for: turn.actions)),
                        .user(turn.prompt, images: turn.snapshot.map { [$0] } ?? [])],
-            schemaObject: RAVEPageAgent.stepSchema, temperature: 0, contextLength: contextLength)
+            schemaObject: RAVEPageAgent.stepSchema(for: turn.actions), temperature: 0, contextLength: contextLength)
         let content = try await model.reply(to: request)
         do {
             return try JSONDecoder().decode(RAVEPageAgentStep.self, from: Data(content.utf8))
