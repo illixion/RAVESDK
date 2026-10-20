@@ -40,6 +40,7 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
     private let placeholder: () -> Placeholder
 
     @State private var windowSize: CGSize = .zero
+    @State private var kenBurnsItemID: String?
     @State private var kenBurnsScale: CGFloat = 1.0
     @State private var kenBurnsOffset: CGSize = .zero
 
@@ -59,41 +60,42 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
 
     public var body: some View {
         ZStack {
-            if let current = engine.current {
-                // Bottom layer stays at a constant opacity regardless of an
-                // incoming crossfade — only the incoming layer above animates.
-                // Coupling this layer's opacity to `incoming == nil` used to
-                // make the engine's atomic current/incoming commit (see
-                // `RAVESlideshowEngine.display()`) double as an animation
-                // trigger: the content swap and a redundant fade-in landed in
-                // the same transaction, producing a visible flash/glitch
-                // right as the crossfade finished.
-                render(current, role: .current)
-                    .opacity(engine.visualSettings.opacity)
-                    .scaleEffect(kenBurnsScale)
-                    .offset(kenBurnsOffset)
-            } else {
+            if engine.current == nil, engine.incoming == nil {
                 placeholder()
             }
 
-            // Scoped to a Group of its own so the crossfade's `.animation`
-            // below can never reach the current layer's scaleEffect/offset —
-            // it used to sit on the whole ZStack, and applying it to the Ken
-            // Burns transform too meant the transform's near-maximum zoom for
-            // the outgoing image got revealed on the *new* current content at
-            // the moment of commit, as the incoming layer faded away above it.
-            Group {
-                if let incoming = engine.incoming {
-                    render(incoming, role: .incoming)
-                        .opacity(engine.visualSettings.opacity)
-                        .transition(.opacity)
-                }
+            // One layer per item, keyed by its id, so an item keeps the same
+            // view from the moment it starts fading in until it is replaced.
+            // Staging an incoming item inserts its layer (fading in) and fades
+            // the outgoing one out at the same time; the engine's commit then
+            // only removes a layer that is already invisible. Nothing swaps
+            // content inside a visible layer, so the commit can't flash, pop
+            // or reveal the outgoing image around a differently shaped
+            // incoming one.
+            ForEach(layers, id: \.media.item.id) { layer in
+                let kenBurns = layer.media.item.id == kenBurnsItemID
+                render(layer.media, role: layer.role)
+                    .opacity(layer.isOutgoing ? 0 : engine.visualSettings.opacity)
+                    // Ken Burns follows the item it was started for, not the
+                    // `current` role: at the commit the new current item must
+                    // not inherit the outgoing item's near-maximum zoom before
+                    // `startKenBurnsAnimation` resets it.
+                    .scaleEffect(kenBurns ? kenBurnsScale : 1)
+                    .offset(kenBurns ? kenBurnsOffset : .zero)
+                    .transition(.opacity)
             }
-            .animation(
-                .easeInOut(duration: engine.displaySettings.reduceMotion ? 0 : engine.displaySettings.transitionDuration),
-                value: engine.incoming?.item.id
-            )
         }
+        // On the ZStack itself, which inserts and removes the layers: an
+        // animation applied inside a conditional layer (a Group around it
+        // distributes the modifier onto its child) never reaches the
+        // insertion, and the incoming image cuts in instead of fading.
+        // Ken Burns state never changes in the same transaction as `incoming`
+        // (it is reset with animations disabled, from `onChange` of
+        // `current`), so this animation doesn't touch the zoom.
+        .animation(
+            .easeInOut(duration: engine.displaySettings.reduceMotion ? 0 : engine.displaySettings.transitionDuration),
+            value: engine.incoming?.item.id
+        )
         .background(
             GeometryReader { geo in
                 Color.clear.onAppear { windowSize = geo.size }
@@ -102,6 +104,33 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
         )
         .onChange(of: engine.current?.item.id) { _, _ in
             startKenBurnsAnimation()
+        }
+    }
+
+    private struct Layer {
+        var media: RAVESlideshowDisplayedMedia
+        var role: RAVESlideshowRenderContext.Role
+        var isOutgoing: Bool
+    }
+
+    /// Bottom to top: the current item, then the incoming one fading in over
+    /// it. An incoming item with the current item's id (the same post shown
+    /// again) is one layer, since the ids key the layers.
+    private var layers: [Layer] {
+        switch (engine.current, engine.incoming) {
+        case let (current?, incoming?) where current.item.id == incoming.item.id:
+            return [Layer(media: incoming, role: .current, isOutgoing: false)]
+        case let (current?, incoming?):
+            return [
+                Layer(media: current, role: .current, isOutgoing: true),
+                Layer(media: incoming, role: .incoming, isOutgoing: false),
+            ]
+        case let (current?, nil):
+            return [Layer(media: current, role: .current, isOutgoing: false)]
+        case let (nil, incoming?):
+            return [Layer(media: incoming, role: .incoming, isOutgoing: false)]
+        case (nil, nil):
+            return []
         }
     }
 
@@ -125,6 +154,7 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
+            kenBurnsItemID = engine.current?.item.id
             kenBurnsScale = 1.0
             kenBurnsOffset = .zero
         }
