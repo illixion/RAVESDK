@@ -92,8 +92,17 @@ public struct RAVESlideshowSurface<Still: View, Animated: View, Video: View, Pla
         // Ken Burns state never changes in the same transaction as `incoming`
         // (it is reset with animations disabled, from `onChange` of
         // `current`), so this animation doesn't touch the zoom.
+        //
+        // Only staging animates. The commit (incoming cleared) must land in a
+        // plain transaction: it re-renders the surviving layer in its new
+        // role, and under an animation SwiftUI crossfades an Image's content
+        // between the old and new render of the same picture, both at about
+        // half opacity, which dims the image for a moment right as the
+        // crossfade ends. The layer it removes is already invisible.
         .animation(
-            .easeInOut(duration: engine.displaySettings.reduceMotion ? 0 : engine.displaySettings.transitionDuration),
+            engine.incoming == nil || engine.displaySettings.reduceMotion
+                ? nil
+                : .easeInOut(duration: engine.displaySettings.transitionDuration),
             value: engine.incoming?.item.id
         )
         .background(
