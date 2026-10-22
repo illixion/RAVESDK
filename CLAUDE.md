@@ -336,6 +336,11 @@ Stash promotes on the first inbound frame; Home promotes on a parsed `auth_ok`. 
 rule generalises, so:
 
 - the app calls `markReady()` — the only place `retryCount` resets, and where keepalive starts
+- every app call about a socket (`send`, `markHandshaking`, `markReady`, `halt`) takes
+  `seenFrames:`, the count of `.frame` events the app has handled; a call decided before the
+  current socket's first frame is dropped. The app hears events late, so without it a
+  decision about a replaced socket lands on its replacement (Spatial Home's overnight
+  `auth_invalid` halt: a stale `markReady` promoted an unauthenticated socket, which then pinged)
 - fatal-vs-retryable comes from the app's `failurePolicy` closure
 - even the keepalive ping frame is app-supplied (the two apps send different shapes)
 

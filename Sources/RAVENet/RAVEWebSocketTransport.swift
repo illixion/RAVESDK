@@ -24,6 +24,16 @@
  treated as always satisfied: reconnects ride the backoff, and a kiosk's
  network doesn't flap the way a headset's does across sleep/wake.
 
+ **Calls about a socket name the socket.** The app hears events late: by the
+ time it handles a frame, the transport may already have replaced that frame's
+ socket (a pong timeout, a wake probe). A `markReady()` decided on the old
+ socket's `auth_ok` then promoted the *new*, unauthenticated one, its keepalive
+ pinged into Home Assistant's auth phase, HA answered `auth_invalid`, and the
+ app halted for good. So `send`, `markHandshaking`, `markReady` and `halt` take
+ `seenFrames:`, the number of `.frame` events the app has handled from this
+ transport, and a call made before the current socket's first frame is
+ dropped.
+
  Protocol framing lives entirely above this type. It moves `String` frames and
  nothing else — even the keepalive ping is app-supplied, because Stash pings
  with `{"action":"ping"}` and Home with `{"id":N,"type":"ping"}`.
@@ -115,6 +125,12 @@ public actor RAVEWebSocketTransport {
     /// Timestamp of the last inbound frame — the liveness signal the keepalive
     /// and probe paths both test against.
     private var lastReceiveAt: Date = .distantPast
+    /// `.frame` events yielded so far, across every socket. Frames are only
+    /// counted when yielded, so the app's own count of handled frames matches.
+    private var framesYielded = 0
+    /// `framesYielded` when the current socket opened: a `seenFrames` at or
+    /// below it was decided on an earlier socket's traffic.
+    private var framesBeforeCurrentSocket = 0
     /// Set by a `.halt` failure decision or by `halt(reason:)`. Suppresses every
     /// reconnect path until the next explicit `start()`.
     private var halted: Bool = false
@@ -183,8 +199,13 @@ public actor RAVEWebSocketTransport {
     /// Fire-and-forget send. Failures are logged, not thrown — every caller in
     /// both source implementations ignored the result, and a send error is
     /// always followed by a receive error that drives the real recovery.
-    public func send(_ text: String) {
-        guard let task = webSocketTask else { return }
+    ///
+    /// - Parameter seenFrames: `.frame` events the app had handled when it
+    ///   decided to send. Pass it for anything protocol-stateful: a frame meant
+    ///   for an authenticated socket must not reach its unauthenticated
+    ///   replacement. Nil sends to whatever socket is current.
+    public func send(_ text: String, seenFrames: Int? = nil) {
+        guard let task = webSocketTask, isCurrentSocket(seenFrames, "send") else { return }
         task.send(text) { [logger] error in
             if let error {
                 logger.log(.warning, "send error: \(error)")
@@ -194,16 +215,22 @@ public actor RAVEWebSocketTransport {
 
     /// Declare that a protocol-level handshake is underway (Home Assistant's
     /// `auth_required`). Optional — apps without a handshake never call it.
-    public func markHandshaking() {
-        guard state == .connecting else { return }
+    public func markHandshaking(seenFrames: Int? = nil) {
+        guard state == .connecting, isCurrentSocket(seenFrames, "markHandshaking") else { return }
         transition(to: .handshaking)
     }
 
     /// Declare the connection usable. Resets backoff (this is the *only* place
     /// that does — a wake or path-up edge does not prove a connection works)
     /// and starts the keepalive loop.
-    public func markReady() {
-        guard state == .connecting || state == .handshaking else { return }
+    ///
+    /// - Parameter seenFrames: `.frame` events the app had handled when it
+    ///   decided. Pass it whenever readiness follows a frame, which is always
+    ///   in practice: without it, a decision about a socket that has since been
+    ///   replaced promotes the replacement.
+    public func markReady(seenFrames: Int? = nil) {
+        guard state == .connecting || state == .handshaking, webSocketTask != nil,
+              isCurrentSocket(seenFrames, "markReady") else { return }
         retryCount = 0
         transition(to: .ready)
         startKeepalive()
@@ -212,7 +239,8 @@ public actor RAVEWebSocketTransport {
     /// Stop permanently with a reason. Used for protocol-level fatalities the
     /// transport cannot see — Home Assistant's `auth_invalid` arrives as an
     /// ordinary frame, not a socket error.
-    public func halt(reason: String) {
+    public func halt(reason: String, seenFrames: Int? = nil) {
+        guard isCurrentSocket(seenFrames, "halt") else { return }
         halted = true
         teardownSocket()
         logger.log(.error, "halted: \(reason)")
@@ -329,6 +357,7 @@ public actor RAVEWebSocketTransport {
         task.resume()
         lastConnectAttemptAt = Date()
         lastReceiveAt = Date()
+        framesBeforeCurrentSocket = framesYielded
         // Announced even when already connecting. A socket replaced before it
         // was declared ready (a forced reconnect racing the first frame) is
         // still a new socket, and a client that declared itself ready on the
@@ -367,10 +396,10 @@ public actor RAVEWebSocketTransport {
                 lastReceiveAt = Date()
                 switch message {
                 case .string(let text):
-                    eventContinuation.yield(.frame(text))
+                    yieldFrame(text)
                 case .data(let data):
                     if let text = String(data: data, encoding: .utf8) {
-                        eventContinuation.yield(.frame(text))
+                        yieldFrame(text)
                     }
                 @unknown default:
                     break
@@ -576,6 +605,20 @@ public actor RAVEWebSocketTransport {
     }
 
     // MARK: - Helpers
+
+    private func yieldFrame(_ text: String) {
+        framesYielded += 1
+        eventContinuation.yield(.frame(text))
+    }
+
+    /// Whether an app call decided after seeing `seenFrames` frames is about
+    /// the current socket, i.e. at least one of this socket's frames had
+    /// reached the app. Nil opts out of the check.
+    private func isCurrentSocket(_ seenFrames: Int?, _ call: String) -> Bool {
+        guard let seenFrames, seenFrames <= framesBeforeCurrentSocket else { return true }
+        logger.log(.info, "\(call, privacy: .public) dropped — decided on a replaced socket (seen \(seenFrames), socket opened after \(framesBeforeCurrentSocket))")
+        return false
+    }
 
     private func teardownSocket() {
         reconnectTask?.cancel()
