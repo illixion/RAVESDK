@@ -99,6 +99,9 @@ public final class FilmVideoPlayer {
     /// Wall time from a seek to the clock starting (the target frame primed).
     public private(set) var lastSeekLatency: Double = 0
 
+    /// Film seconds per second while playing, taken by the next start
+    /// (`FilmPlayer.setSpeed` restarts the clock with it).
+    public var rate: Double = 1
     /// How far ahead of the playhead to keep samples enqueued.
     public var aheadSeconds: Double = 12
     /// The same for decoded pictures, which are about 6 MB each at 1080p.
@@ -387,14 +390,14 @@ public final class FilmVideoPlayer {
         halt()
     }
 
-    /// Runs the timebase so `filmTime` is due at `hostTime`. This is the hook
-    /// an external clock (the Atmos audio engine) uses to lead the picture.
+    /// Runs the timebase so `filmTime` is due at `hostTime`, at `rate`. This
+    /// is the hook an external clock (the Atmos audio engine) uses to lead the picture.
     public func start(filmTime: Double, atHostTime hostTime: CMTime) {
         pendingSeek = nil
         let time = CMTime(seconds: filmTime, preferredTimescale: 1_000_000_000)
-        CMTimebaseSetRateAndAnchorTime(timebase, rate: 1, anchorTime: time, immediateSourceTime: hostTime)
+        CMTimebaseSetRateAndAnchorTime(timebase, rate: rate, anchorTime: time, immediateSourceTime: hostTime)
         #if os(visionOS)
-        synchronizer.setRate(1, time: time, atHostTime: hostTime)
+        synchronizer.setRate(Float(rate), time: time, atHostTime: hostTime)
         #endif
     }
 
@@ -567,7 +570,8 @@ public final class FilmVideoPlayer {
         var queuedUntil = target
         do {
             for try await frame in source.frames(from: target, stereo: stereo) {
-                while primed, !Task.isCancelled, queuedUntil - currentTime > pictureAheadSeconds {
+                // In wall time: faster playback needs as many seconds queued, so more film.
+                while primed, !Task.isCancelled, queuedUntil - currentTime > pictureAheadSeconds * max(1, rate) {
                     try? await Task.sleep(for: .milliseconds(10))
                 }
                 while !canEnqueue || !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {

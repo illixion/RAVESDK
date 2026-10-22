@@ -156,7 +156,7 @@ public final class FilmRoomReverb: @unchecked Sendable {
             frame = Int(aligner.frame(channel: o, sampleTime: Int64(timestamp.pointee.mSampleTime),
                                       timelineFrame: due, epoch: epoch))
         } else {
-            frame = audio.playhead.load(ordering: .relaxed)
+            frame = audio.outputFrame(forScene: audio.playhead.load(ordering: .relaxed))
         }
 
         let rendered = tank.withLock { tank -> Bool in
@@ -190,16 +190,41 @@ public final class FilmRoomReverb: @unchecked Sendable {
         return noErr
     }
 
-    /// The room's input for `count` frames from scene frame `first`: every
-    /// feeding element at the gain the render side applies to it.
+    /// The room's input for `count` frames from output frame `first` (the
+    /// scene frame itself at speed 1): every feeding element at the gain the
+    /// render side applies to it, time-stretched as the elements are.
     /// Called under the tank's lock (it owns `gains`).
     private func mixInput(from first: Int, count: Int, into buffer: UnsafeMutablePointer<Float>) {
         for ch in inputChannels { gains[ch] = audio.targetGain[ch] }
         let start = audio.startFrame.load(ordering: .relaxed)
+        let scale: Float = 1.0 / 32768.0
+        let speed = audio.stretch.speed
+        guard speed == 1 else {
+            let generation = audio.stretch.generation
+            var cursor = FilmTimeStretch.Cursor()
+            var cacheA: (segment: Int, samples: UnsafePointer<Int16>?) = (-1, nil)
+            var cacheB: (segment: Int, samples: UnsafePointer<Int16>?) = (-1, nil)
+            var missing = false
+            for i in 0 ..< count {
+                let output = first + i - start
+                buffer[i] = 0
+                guard output >= 0 else { continue }
+                let taps = audio.stretch.taps(output: output, cursor: &cursor, generation: generation, speed: speed) { from, count, into in
+                    audio.downmix(from: start + from, count: count, into: into)
+                }
+                var sum: Float = 0
+                for ch in inputChannels {
+                    let a = Float(audio.sample(channel: ch, frame: start + taps.a, start: start, cache: &cacheA, missing: &missing))
+                    let b = Float(audio.sample(channel: ch, frame: start + taps.b, start: start, cache: &cacheB, missing: &missing))
+                    sum += (a * taps.wa + b * taps.wb) * gains[ch]
+                }
+                buffer[i] = sum * scale
+            }
+            return
+        }
         let total = audio.frameCount
         let stride = audio.channelCount
         let segmentFrames = audio.segmentFrames
-        let scale: Float = 1.0 / 32768.0
         var cachedSegment = -1
         var cached: UnsafePointer<Int16>?
         for i in 0 ..< count {

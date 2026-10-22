@@ -82,6 +82,9 @@ public final class FilmPlayer {
     public private(set) var outputLatency: Double = 0
     /// How far ahead a start is scheduled, so both halves are ready when it comes.
     public var startLead: Double = 0.25
+    /// Playback speed: film seconds per second. The picture's clock runs at
+    /// it and the object audio is time-stretched to match, at its own pitch.
+    public private(set) var speed: Double = 1
 
     // Telemetry
     public private(set) var levels: [Float] = []
@@ -283,6 +286,17 @@ public final class FilmPlayer {
         client = nil
     }
 
+    /// Plays at `speed` (0.5…2 is what a menu offers; clamped to 0.25…4).
+    /// Playing, both halves re-anchor at the playhead, as an offset change does.
+    public func setSpeed(_ speed: Double) {
+        let clamped = min(max(speed, 0.25), 4)
+        guard clamped != self.speed else { return }
+        self.speed = clamped
+        video.rate = clamped
+        logger.info("Speed \(clamped, format: .fixed(precision: 2))x")
+        if isPlaying { resume() }
+    }
+
     /// Re-anchors both halves at the current position, e.g. after an offset change.
     private func resume() {
         schedule(at: currentTime, seekVideo: false)
@@ -320,8 +334,9 @@ public final class FilmPlayer {
             // Before the audio track's first frame (a film starting at 0 whose
             // audio begins 2 s in), frame 0 is due when the picture gets there,
             // not now; renders before the anchor are silent.
-            let audioLead = max(0, scene.startSeconds - filmTime)
-            audio.start(at: frame, anchorHostTime: Self.machTicks(host + CMTime(seconds: audioLead, preferredTimescale: 1_000_000_000)))
+            let audioLead = max(0, scene.startSeconds - filmTime) / self.speed
+            audio.start(at: frame, anchorHostTime: Self.machTicks(host + CMTime(seconds: audioLead, preferredTimescale: 1_000_000_000)),
+                        speed: self.speed)
             let pictureDelay = self.outputLatency + self.avOffsetMs / 1000
             self.video.start(filmTime: filmTime, atHostTime: host + CMTime(seconds: pictureDelay, preferredTimescale: 1_000_000_000))
             self.rateSample = nil
@@ -443,6 +458,7 @@ public final class FilmPlayer {
     public var scheduledSkewMs: Double? {
         guard let audio, let scene, isPlaying, audio.playing.load(ordering: .relaxed) else { return nil }
         let audioTime = scene.startSeconds + Double(audio.playhead.load(ordering: .relaxed)) / audio.sampleRate
-        return (audioTime - outputLatency - avOffsetMs / 1000 - currentTime) * 1000
+        // The latency and offset are wall time; faster, they cover more film.
+        return (audioTime - (outputLatency + avOffsetMs / 1000) * speed - currentTime) * 1000
     }
 }

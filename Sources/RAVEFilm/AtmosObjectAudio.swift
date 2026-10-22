@@ -182,6 +182,10 @@ public final class AtmosObjectAudio: @unchecked Sendable {
     public let fallbackRenders = Atomic<Int>(0)
     /// Per-channel host-clock alignment (offsets, drift, re-anchors).
     public let alignment: RAVEHostClockAligner
+    /// Plays the scene at another speed, at its own pitch (`start(at:anchorHostTime:speed:)`).
+    let stretch: FilmTimeStretch
+    /// The channels the stretch lines its grains up on: every one but the LFE.
+    private let referenceChannels: [Int]
 
     /// Linear gain targets, written by the main actor.
     let targetGain: UnsafeMutablePointer<Float>
@@ -204,6 +208,10 @@ public final class AtmosObjectAudio: @unchecked Sendable {
 
     public init(scene: AtmosScene, slotCount: Int) {
         channelCount = scene.elements.count
+        let reference = scene.elements
+            .filter { !($0.isBed && ($0.bedChannel?.uppercased().hasPrefix("LFE") ?? false)) }
+            .map(\.channel)
+        referenceChannels = reference.isEmpty ? Array(0 ..< scene.elements.count) : reference
         frameCount = scene.frameCount
         sampleRate = Double(scene.sampleRate)
         segmentFrames = scene.segmentFrames
@@ -218,6 +226,7 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         // Drift that forces a re-anchor: 50 ms, well past buffer-to-buffer
         // jitter, well inside what reads as out of sync.
         alignment = RAVEHostClockAligner(channelCount: channelCount, sampleRate: sampleRate, reanchorSeconds: 0.05)
+        stretch = FilmTimeStretch(sampleRate: sampleRate)
     }
 
     deinit {
@@ -227,12 +236,14 @@ public final class AtmosObjectAudio: @unchecked Sendable {
     }
 
     /// Plays scene frame `frame` at host time `anchorHostTime` (mach ticks);
-    /// 0 means at the first render.
-    public func start(at frame: Int, anchorHostTime anchor: UInt64 = 0) {
+    /// 0 means at the first render. From there `speed` scene frames play
+    /// per output frame, time-stretched so the pitch stays (`FilmTimeStretch`).
+    public func start(at frame: Int, anchorHostTime anchor: UInt64 = 0, speed: Double = 1) {
         playing.store(false, ordering: .sequentiallyConsistent)
         let clamped = max(0, min(frame, frameCount - 1))
         startFrame.store(clamped, ordering: .sequentiallyConsistent)
         anchorHostTime.store(anchor, ordering: .sequentiallyConsistent)
+        stretch.restart(speed: speed)
         alignment.reset(fallbackFrame: Int64(clamped))
         playhead.store(clamped, ordering: .relaxed)
         playing.store(true, ordering: .sequentiallyConsistent)
@@ -240,6 +251,65 @@ public final class AtmosObjectAudio: @unchecked Sendable {
 
     public func pause() {
         playing.store(false, ordering: .sequentiallyConsistent)
+    }
+
+    /// Scene frames played per output frame, as the last start set it.
+    public var speed: Double { stretch.speed }
+
+    /// The output timeline frame (the aligner's: `startFrame` plus frames
+    /// rendered since the anchor) playing scene frame `frame`; the same
+    /// frame at speed 1.
+    func outputFrame(forScene frame: Int) -> Int {
+        let speed = stretch.speed
+        guard speed != 1 else { return frame }
+        let start = startFrame.load(ordering: .relaxed)
+        return start + Int((Double(frame - start) / speed).rounded())
+    }
+
+    /// The scene frame output frame `frame` plays around, for the playhead.
+    func sceneFrame(forOutput frame: Int, speed: Double, start: Int) -> Int {
+        speed == 1 ? frame : start + Int((Double(frame - start) * speed).rounded())
+    }
+
+    /// The stretch's reference: every channel but the LFE at unit gain, for
+    /// `count` frames from scene frame `from` (absolute), silent where no
+    /// slot holds the segment.
+    func downmix(from: Int, count: Int, into out: UnsafeMutablePointer<Float>) {
+        let stride = channelCount
+        let start = startFrame.load(ordering: .relaxed)
+        let scale: Float = 1.0 / 32768.0
+        var cachedSegment = -1
+        var cached: UnsafePointer<Int16>?
+        for i in 0 ..< count {
+            let f = from + i
+            out[i] = 0
+            guard f >= start, f < frameCount else { continue }
+            let segment = f / segmentFrames
+            if segment != cachedSegment {
+                cachedSegment = segment
+                cached = samples(forSegment: segment)
+            }
+            guard let cached else { continue }
+            let base = (f - segment * segmentFrames) * stride
+            var sum: Float = 0
+            for ch in referenceChannels { sum += Float(cached[base + ch]) }
+            out[i] = sum * scale
+        }
+    }
+
+    /// One channel's sample at scene frame `f` through a one-segment cache;
+    /// silent before `start`, past the end and where no slot holds the segment.
+    @inline(__always)
+    func sample(channel ch: Int, frame f: Int, start: Int,
+                cache: inout (segment: Int, samples: UnsafePointer<Int16>?), missing: inout Bool) -> Int16 {
+        guard f >= start, f < frameCount else { return 0 }
+        let segment = f / segmentFrames
+        if segment != cache.segment {
+            cache = (segment, samples(forSegment: segment))
+            if cache.samples == nil { missing = true }
+        }
+        guard let samples = cache.samples else { return 0 }
+        return samples[(f - segment * segmentFrames) * channelCount + ch]
     }
 
     @inline(__always)
@@ -317,24 +387,50 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         var cachedSegment = -1
         var cached: UnsafePointer<Int16>?
         var missing = false
-        for i in 0 ..< n {
-            let f = frame + i
-            var value: Float = 0
-            // Silent before the anchor's frame, so a scheduled start begins on time.
-            if f >= start, f < total {
-                let segment = f / segmentFrames
-                if segment != cachedSegment {
-                    cachedSegment = segment
-                    cached = samples(forSegment: segment)
-                    if cached == nil { missing = true }
+        let speed = stretch.speed
+        if speed == 1 {
+            for i in 0 ..< n {
+                let f = frame + i
+                var value: Float = 0
+                // Silent before the anchor's frame, so a scheduled start begins on time.
+                if f >= start, f < total {
+                    let segment = f / segmentFrames
+                    if segment != cachedSegment {
+                        cachedSegment = segment
+                        cached = samples(forSegment: segment)
+                        if cached == nil { missing = true }
+                    }
+                    if let cached {
+                        value = Float(cached[(f - segment * segmentFrames) * stride + ch]) * scale * gain
+                    }
                 }
-                if let cached {
-                    value = Float(cached[(f - segment * segmentFrames) * stride + ch]) * scale * gain
-                }
+                out[i] = value
+                localPeak = max(localPeak, abs(value))
+                gain += step
             }
-            out[i] = value
-            localPeak = max(localPeak, abs(value))
-            gain += step
+        } else {
+            // Two grains under every frame, each with a segment cache of its own
+            // (they straddle segment boundaries apart).
+            let generation = stretch.generation
+            var cursor = FilmTimeStretch.Cursor()
+            var cacheA: (segment: Int, samples: UnsafePointer<Int16>?) = (-1, nil)
+            var cacheB: (segment: Int, samples: UnsafePointer<Int16>?) = (-1, nil)
+            for i in 0 ..< n {
+                let output = frame + i - start
+                var value: Float = 0
+                // Silent before the anchor, as at speed 1.
+                if output >= 0 {
+                    let taps = stretch.taps(output: output, cursor: &cursor, generation: generation, speed: speed) { from, count, into in
+                        downmix(from: start + from, count: count, into: into)
+                    }
+                    let a = Float(sample(channel: ch, frame: start + taps.a, start: start, cache: &cacheA, missing: &missing))
+                    let b = Float(sample(channel: ch, frame: start + taps.b, start: start, cache: &cacheB, missing: &missing))
+                    value = (a * taps.wa + b * taps.wb) * scale * gain
+                }
+                out[i] = value
+                localPeak = max(localPeak, abs(value))
+                gain += step
+            }
         }
         currentGain[ch] = to
         // Mono generator, but copy into any further buffers the node asked for.
@@ -345,7 +441,7 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         peak[ch] = max(peak[ch], localPeak)
 
         if ch == 0 {
-            playhead.store(max(start, min(frame + n, total)), ordering: .relaxed)
+            playhead.store(max(start, min(sceneFrame(forOutput: frame + n, speed: speed, start: start), total)), ordering: .relaxed)
             renderedFrames.add(n, ordering: .relaxed)
             if missing { underruns.add(1, ordering: .relaxed) }
         }
@@ -465,7 +561,8 @@ public final class AtmosSegmentStreamer: Sendable {
     /// starts, but never less than a second away, so the segment under the
     /// playhead (already late) still gets most of its channels back fast.
     private func deadline(for segment: Int, playhead: Int) -> ContinuousClock.Instant {
-        let untilStart = Double(segment * audio.segmentFrames - playhead) / audio.sampleRate
+        // Wall seconds: at twice the speed a segment is due in half the time.
+        let untilStart = Double(segment * audio.segmentFrames - playhead) / audio.sampleRate / max(audio.speed, 0.1)
         return .now + .seconds(max(1, untilStart - 0.5))
     }
 
