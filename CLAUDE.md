@@ -622,6 +622,19 @@ each preceded by a depth inference. `StereoPump` watches `VergenceAppLifecycle`'
 notifications and returns early from `tick()`; the timer keeps running rather than being
 cancelled, so `stop()` never has to be ordered against a notification.
 
+**A frame's time is its own presentation time, and faster than 1× real-time depth is held
+to the 1× frame rate.** `AVPlayerFrameSource` hands over `itemTimeForDisplay`, not the time the
+tick asked for: that one trails the frame by up to a tick, so cached depth could match the next
+frame's, and the gaps between frames were the ticks' spacing, which read a 24 fps film as 59 to
+120 fps and made every keeping-up report an overload (Hypnos, 2026-10-22). The source's frame
+rate is the shortest gap seen twice (`SourceFrameSpacing`). A depth source that infers per frame
+(`limitsToSourceFrameRate`) has the pump drop frames at a faster speed so it shows no more than
+the 1× rate, evenly (`FrameRateCap`, paced on the video's timeline with the source's
+`playbackRate(hostTime:)`; a wall-clock allowance came out uneven), and `RealtimeDepthSource`
+times its held map in wall time. `StereoPerformance.measured` counts against the 1× rate and the
+pump's ticks, so a report means the same at any speed. Pure, testable on macOS:
+`StereoPacing.swift`, `StereoPacingTests`.
+
 **All per-frame GPU work is off-main, and that is not a style choice.** An earlier
 version pumped on the main actor and blocked it with `waitUntilCompleted` ~90×/s,
 which starved Core Animation commits (backboardd render-watchdog SIGKILL) and the

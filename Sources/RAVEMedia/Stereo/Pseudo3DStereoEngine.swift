@@ -847,7 +847,9 @@ public final class Pseudo3DStereoEngine {
         // Realtime: also 60fps video — RealtimeDepthSource infers at ~30Hz and
         // holds the map for the in-between frame (≤1 frame of depth age);
         // slow inference still gates its own tick, so this degrades to the
-        // old 30fps cadence when the model can't keep up.
+        // old 30fps cadence when the model can't keep up. Faster than 1× it
+        // shows no more frames a second than the video has at 1×, so the
+        // inference does the same work at any speed (StereoPump's frame cap).
         let depthSource: PumpDepthSource?
         if packedStereo != nil {
             depthSource = nil
