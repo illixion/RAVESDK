@@ -87,3 +87,26 @@ bounded-age policy that rejected the async-decoupled pump.
 Raven cannot pull ahead (frames arrive as the page presents them), so for
 Raven lookahead is a presentation delay with page-side audio compensation;
 that measurement is still to be taken.
+
+## Real-time AI 3D pump, before and after working ahead (2026-10-22)
+
+Measured on Apple Vision Pro (M5, `RealityDevice17,1`), visionOS 27.2, from the pump's own
+5-second timing line (`Pseudo3D: pump …` in the in-app console) and the window's
+`StereoPerformance` reports. Source: a 60 fps YouTube video, 1080p and 720p, real-time AI 3D
+with Stable Depth on, with the real-time model the device had selected.
+
+| | Before (synchronous tick) | After (lookahead + depth on its own queue) |
+|---|---|---|
+| Frames shown | 27-31 fps; reports 43-52 % of 60 | 59.5-60.3 fps; no drop reports |
+| Depth maps | one per shown frame, 24-28 ms each | 30 a second, 24-28 ms each; 50 % of frames reuse the one before |
+| Warp / transfer | ~5 ms / ~2 ms, waited on in turn after the map | same, overlapped with the next map |
+| Picture against sound | a tick (31-37 ms) behind | queued for its due time; 0-5 % of frames late |
+| 720p instead of 1080p | still ~51 % | — (the model's input size sets the cost) |
+
+With the headset at thermal "serious" (several windows open), maps slowed to 31-35 ms and the
+pump fell to 32-40 fps for ~20 s with most frames late: half-rate depth needs a map in under
+33 ms, and a frame whose map isn't ready waits rather than taking an older one.
+
+A first threshold for "this frame is past a cut" (mean luma change 15/255 on a 48×48 grid)
+also fired on fast motion inside one shot: 35 maps a second, 32-41 % late for ten seconds.
+The refiner's own cut threshold (0.12 of the range) replaced it.

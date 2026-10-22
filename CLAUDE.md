@@ -598,7 +598,7 @@ key frame: re-seek, re-show, or ask the sender). The helper owns everything else
 
 `recover` always runs asynchronously on the helper's queue: the renderer posts its
 notification from inside `flush`/`enqueue`, which clients run under their own locks.
-Users: `StereoPump` (flush and re-show the last frame), `FilmVideoPlayer` (flush and
+Users: `StereoPump` (flush and queue its frames again, the one on screen first), `FilmVideoPlayer` (flush and
 re-seek through `onDecodingInterrupted`, so `FilmPlayer` re-anchors the Atmos clock).
 `SampleBufferFrameSource` restarts its own session at the next keyframe. Any new player
 here needs the same; RAVEFilm depends on RAVEMedia for it.
@@ -634,6 +634,39 @@ the 1× rate, evenly (`FrameRateCap`, paced on the video's timeline with the sou
 times its held map in wall time. `StereoPerformance.measured` counts against the 1× rate and the
 pump's ticks, so a report means the same at any speed. Pure, testable on macOS:
 `StereoPacing.swift`, `StereoPacingTests`.
+
+**The pump works ahead of the display, and real-time depth runs beside it (2026-10-22).** It used to
+take the frame due *now*, wait for its map, warp, transfer, and show it, so the picture sat a tick
+(~33 ms) behind the sound, and the half-rate-depth hold never engaged: it reused a map only within
+1/35 s of the last inference *starting*, and a whole tick was longer than that. A 60 fps YouTube
+video in real-time AI 3D showed 43-52 % of its frames (Vision Pro M5: map 24-28 ms, warp ~5,
+transfer ~2). Now:
+- A `LookaheadFrameSource` (`AVPlayerFrameSource`) hands frames out early. The pump takes each
+  frame in turn (`LookaheadPull`; asking for the newest skipped the frames a slow map held up)
+  75 ms ahead for real-time depth, 40 ms for cached or packed, and queues the eyes for the host time
+  the frame is due (`dueHostTime`, read backwards off `itemTime(forHostTime:)`, since the output
+  has no inverse). Push sources (Raven, `SampleBufferFrameSource`) have no clock: with real-time
+  depth each frame shows a fixed 40 ms after it came (`pushDelay`; shown once drawn, a frame
+  reusing a map would land right after the frame before, in pairs), and a newer frame is let go
+  while two still wait for depth.
+- `RealtimeDepthSource` infers on its own serial queue and copies each map out of the provider's
+  two-deep ring into a pooled texture (`DepthTexturePool`), since a frame taken ahead may still be
+  waiting to be drawn when the ring wraps. `HeldDepthPolicy` lets the next frame shown within
+  1/35 s reuse the map (≤1 frame old) unless its 48×48 luma grid (`LumaSignature`, shared with the
+  converter's static-frame skip) differs by the refiner's cut threshold (0.12 of the range) or more: a cut gets its own map
+  (half that also caught fast motion, and the extra maps left frames late). A frame whose
+  map isn't ready waits, so a slow model shows fewer frames, never older depth.
+- The pump reads transport off the clock rather than being told: frames queued for a time the
+  clock no longer keeps (pause, stall, speed) are flushed and queued again (`LookaheadClock`);
+  a playhead that moves further than the rate explains, or at all while paused, is a seek, and
+  everything taken ahead is dropped. It never asks for a time at or before the last frame taken:
+  the output answers "new" for any frame that differs from the last one it handed out, so a
+  paused pump asking for the playhead would get a frame it already has.
+- A paused frame keeps the depth it was drawn with (`PumpFrameDepth.keepAlive` holds a cached
+  frame's texture view or the pooled map), because looking a cache frame up again after the
+  reader moved on rebuilds the reader, which draws flat. While playing, a setting change shows on
+  frames drawn from then on, up to `lead` later; subtitles are drawn into frames as they are drawn,
+  so a cue shows up to `lead` after its time.
 
 **All per-frame GPU work is off-main, and that is not a style choice.** An earlier
 version pumped on the main actor and blocked it with `waitUntilCompleted` ~90×/s,

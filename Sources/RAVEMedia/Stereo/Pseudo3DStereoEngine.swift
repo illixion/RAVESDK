@@ -15,10 +15,13 @@
    AVSampleBufferVideoRenderer -> VideoPlayerComponent(.stereo) in a RealityView
 
  The renderer's synchronizer free-runs at rate 1; each warped frame is tagged
- with a host-clock timestamp relative to that start, so AVPlayer stays the only
- clock governing audio/pause/seek and the sample-buffer renderer is purely a
- stereoscopic presentation surface. The eye pool is bounded (allocation
- threshold) and the pump is rate-capped so it can never flood the compositor.
+ with the host time AVPlayer's clock has it due, relative to that start, so
+ AVPlayer stays the only clock governing audio/pause/seek and the sample-buffer
+ renderer is purely a stereoscopic presentation surface. The pump takes frames
+ a little ahead of the playhead to have them ready by then, and reads pauses,
+ seeks and speed changes off the clock itself, so none of the transport calls
+ here need to tell it. The eye pool is bounded (allocation threshold) and the
+ pump is rate-capped so it can never flood the compositor.
 
  **What is deliberately not here.** The SwiftUI view stays in the app: it is
  where window-chrome constants, gesture wiring and per-app models live, and
@@ -844,12 +847,13 @@ public final class Pseudo3DStereoEngine {
             }
         }
         // Cached depth: 60fps warp of pre-computed PTS-matched depth, no ANE.
-        // Realtime: also 60fps video — RealtimeDepthSource infers at ~30Hz and
-        // holds the map for the in-between frame (≤1 frame of depth age);
-        // slow inference still gates its own tick, so this degrades to the
-        // old 30fps cadence when the model can't keep up. Faster than 1× it
-        // shows no more frames a second than the video has at 1×, so the
-        // inference does the same work at any speed (StereoPump's frame cap).
+        // Realtime: also 60fps video — RealtimeDepthSource infers at ~30Hz on
+        // its own queue while the pump draws, and the in-between frame reuses
+        // the map before it (≤1 frame of depth age, never across a cut); a
+        // frame whose map isn't ready waits, so a slow model shows fewer
+        // frames, never older depth. Faster than 1× it shows no more frames a
+        // second than the video has at 1×, so the inference does the same
+        // work at any speed (StereoPump's frame cap).
         let depthSource: PumpDepthSource?
         if packedStereo != nil {
             depthSource = nil
