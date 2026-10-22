@@ -249,6 +249,8 @@ public final class Pseudo3DStereoEngine {
     @ObservationIgnored public var startMuted = true
     /// Volume (0…1) a newly made player starts at; `setVolume` changes it live.
     @ObservationIgnored public var startVolume: Float = 1
+    /// Playback speed a newly made player plays at; `setRate` changes it live.
+    @ObservationIgnored public var startRate: Float = 1
     /// Restart at the top when playback reaches the end.
     @ObservationIgnored public var loops = true
 
@@ -769,6 +771,8 @@ public final class Pseudo3DStereoEngine {
         player.applySpatialAudioPolicy(for: asset)
         player.isMuted = startMuted
         player.volume = startVolume
+        // `play()` starts at the default rate, so every resume keeps the speed.
+        player.defaultRate = startRate
         player.automaticallyWaitsToMinimizeStalling = true
 
         self.player = player
@@ -998,6 +1002,15 @@ public final class Pseudo3DStereoEngine {
     public func setVolume(_ volume: Float) {
         startVolume = volume
         player?.volume = volume
+    }
+
+    /// Plays at `rate` (1 is normal speed), now if playing and from every
+    /// later `play()`. The pitch is kept (the item's default time-pitch).
+    public func setRate(_ rate: Float) {
+        startRate = rate
+        guard let player else { return }
+        player.defaultRate = rate
+        if player.rate != 0 { player.rate = rate }
     }
 
     public func setLoopBounds(a: Double?, b: Double?) { loopA = a; loopB = b }
