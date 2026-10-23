@@ -11,9 +11,16 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
     /// 0…1, or nil for a host with no volume of its own (mute only).
     public var volume: Double?
     public var markers: [Double]
+    /// What is playing, in a few words ("1920×1080 · 23.976 fps"). The strip
+    /// shows it beside the transport and at the top of its More popover.
+    public var details: String?
+    /// Stretches of the timeline marked under the scrubber: an intro, the
+    /// credits, a sponsor segment.
+    public var markedRanges: [ClosedRange<Double>]
 
     public init(currentTime: Double, duration: Double, bufferedUntil: Double = 0,
-                isPlaying: Bool, isMuted: Bool, volume: Double? = nil, markers: [Double] = []) {
+                isPlaying: Bool, isMuted: Bool, volume: Double? = nil, markers: [Double] = [],
+                details: String? = nil, markedRanges: [ClosedRange<Double>] = []) {
         self.currentTime = currentTime
         self.duration = duration
         self.bufferedUntil = bufferedUntil
@@ -21,6 +28,8 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
         self.isMuted = isMuted
         self.volume = volume
         self.markers = markers
+        self.details = details
+        self.markedRanges = markedRanges
     }
 
     public var isSeekable: Bool { duration.isFinite && duration > 0 }
@@ -41,6 +50,40 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
     }
 }
 
+/// Previous and next beside the transport, for a host playing through a
+/// list. A nil action shows its button disabled (the first or last item).
+public struct RAVEPlayerNavigation {
+    public var previous: (() -> Void)?
+    public var next: (() -> Void)?
+    public var previousTitle: String
+    public var nextTitle: String
+
+    public init(previous: (() -> Void)?, next: (() -> Void)?,
+                previousTitle: String = "Previous", nextTitle: String = "Next") {
+        self.previous = previous
+        self.next = next
+        self.previousTitle = previousTitle
+        self.nextTitle = nextTitle
+    }
+}
+
+/// How the bar is laid out.
+public enum RAVEPlayerControlsLayout: Sendable {
+    /// Timeline, transport and the accessory row stacked in three rows.
+    case stacked
+    /// Two rows for a bar hung under (or laid over the foot of) a window: the
+    /// timeline across the whole width, then previous/next around the
+    /// transport, volume (a popover), the picture's details and the host's
+    /// accessories, with a More popover at the end.
+    ///
+    /// Accessories carry a priority from 0 (kept longest) to 3; the strip
+    /// keeps the ones its width has room for and moves the rest into More,
+    /// the least needed first (read `ravePlayerAccessoryRoom`). Anything
+    /// above 3 is only ever in More. On a bar that has no More (`stacked`)
+    /// every accessory is on the bar.
+    case strip
+}
+
 /// Native SwiftUI timeline and transport, with host-supplied feature buttons.
 /// On visionOS mount this in an ornament for a RealityKit picture: an overlay
 /// inside that picture's depth region floats away from the window's glass.
@@ -53,17 +96,8 @@ public struct RAVEPlayerControlState: Equatable, Sendable {
 /// no size and takes the content's ideal, which a bare `Slider` and scroller
 /// put at a couple of hundred points: the whole bar collapsed, mute landed on
 /// the skip button and every accessory scrolled out of sight. See
-/// `PlayerControlsWidth` for how the ideal is resolved per platform.
-/// How the bar is laid out.
-public enum RAVEPlayerControlsLayout: Sendable {
-    /// Timeline, transport and the accessory row stacked in three rows.
-    case stacked
-    /// One row: transport, timeline, volume (a popover), then the accessories inline, or
-    /// behind a "More" menu (a popover outside tvOS) when they don't fit. For a bar hung under a
-    /// window, where every row of height is window the picture doesn't get.
-    case compact
-}
-
+/// `PlayerControlsWidth` for how the ideal is resolved per platform. A host
+/// that wants the strip as wide as its window frames it to that width.
 public struct RAVEPlayerControls<Accessories: View>: View {
     private let state: RAVEPlayerControlState
     private let layout: RAVEPlayerControlsLayout
@@ -75,9 +109,9 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     private let menuDismissal: Int
     private let onInteraction: () -> Void
     private let onScrubbingChanged: (Bool) -> Void
+    private let navigation: RAVEPlayerNavigation?
     private let accessories: Accessories
-    /// Always on the bar, beside the volume, even when the accessories
-    /// collapse into "More".
+    /// Always on the bar, beside More, whatever else moves into it.
     private let pinned: AnyView?
     @State private var scrubSeconds: Double?
     @State private var isScrubbing = false
@@ -93,6 +127,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 onMenuChanged: @escaping (Bool) -> Void = { _ in },
                 setVolume: ((Double) -> Void)? = nil,
                 menuDismissal: Int = 0,
+                navigation: RAVEPlayerNavigation? = nil,
                 pinned: AnyView? = nil,
                 @ViewBuilder accessories: () -> Accessories) {
         self.state = state
@@ -105,6 +140,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         self.menuDismissal = menuDismissal
         self.onInteraction = onInteraction
         self.onScrubbingChanged = onScrubbingChanged
+        self.navigation = navigation
         self.accessories = accessories()
         self.pinned = pinned
     }
@@ -113,14 +149,14 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         Group {
             switch layout {
             case .stacked: stackedBar
-            case .compact: compactBar
+            case .strip: strip
             }
         }
         .background {
             #if os(visionOS)
-            RoundedRectangle(cornerRadius: layout == .compact ? 40 : 24).fill(.clear).glassBackgroundEffect()
+            RoundedRectangle(cornerRadius: layout == .strip ? 36 : 24).fill(.clear).glassBackgroundEffect()
             #else
-            RoundedRectangle(cornerRadius: 20).fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: layout == .strip ? 24 : 20).fill(.regularMaterial)
             #endif
         }
         .onChange(of: showsMore || showsVolume) { _, shown in onMenuChanged(shown) }
@@ -141,89 +177,193 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         }
     }
 
-    // MARK: Compact
+    // MARK: Strip
 
-    private var compactBar: some View {
-        PlayerControlsWidth(maxWidth: PlayerControlsWidth.compactMaxWidth) {
-            // The first row whose ideal width fits: everything inline, else
-            // the accessories behind one menu.
-            ViewThatFits(in: .horizontal) {
-                compactRow(overflow: false)
-                compactRow(overflow: true)
+    /// One way of filling the strip's second row: the accessories up to a
+    /// priority, whether the details and previous/next are on it.
+    private struct StripFit {
+        var room: Int
+        var details: Bool
+        var navigation: Bool
+    }
+
+    /// Tried in order, most on the strip first. Narrowing, the accessories
+    /// go first, the least needed of them first, then the details, then
+    /// previous/next; the priority-0 accessories, the transport, volume, the
+    /// pinned control and More always stay.
+    private static var stripFits: [StripFit] {
+        [
+            StripFit(room: 3, details: true, navigation: true),
+            StripFit(room: 2, details: true, navigation: true),
+            StripFit(room: 1, details: true, navigation: true),
+            StripFit(room: 1, details: false, navigation: true),
+            StripFit(room: 0, details: false, navigation: true),
+            StripFit(room: 0, details: false, navigation: false),
+        ]
+    }
+
+    private var strip: some View {
+        PlayerControlsWidth(maxWidth: PlayerControlsWidth.stripMaxWidth) {
+            VStack(spacing: Self.stripRowSpacing) {
+                timelineRow(showsRemaining: true)
+                    .padding(.horizontal, Self.stripTimelineInset)
+                // The first fit whose ideal width fits the strip. Written out
+                // rather than a ForEach so each is a child of its own.
+                let fits = Self.stripFits
+                ViewThatFits(in: .horizontal) {
+                    stripRow(fits[0])
+                    stripRow(fits[1])
+                    stripRow(fits[2])
+                    stripRow(fits[3])
+                    stripRow(fits[4])
+                    stripRow(fits[5])
+                }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .padding(.horizontal, Self.stripHorizontalPadding)
+            .padding(.top, Self.stripTopPadding)
+            .padding(.bottom, Self.stripBottomPadding)
         }
     }
 
-    private func compactRow(overflow: Bool) -> some View {
-        HStack(spacing: 6) {
-            // Apart from each other and from the timeline, so the gaze settles
-            // on the intended one: at 6 pt the three 60 pt targets touched and
-            // a look between them snapped to the neighbour.
+    private func stripRow(_ fit: StripFit) -> some View {
+        HStack(spacing: Self.stripSpacing) {
+            // Apart from each other, so the gaze settles on the intended one:
+            // at 6 pt the 60 pt targets touched and a look between them
+            // snapped to the neighbour.
             HStack(spacing: Self.transportSpacing) {
-                control("Back 10 seconds", "gobackward.10") { skip(-10) }
-                    .disabled(!state.isSeekable)
-                control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
-                control("Forward 10 seconds", "goforward.10") { skip(10) }
-                    .disabled(!state.isSeekable)
+                if fit.navigation, let navigation {
+                    navigationControl(navigation.previousTitle, "backward.end.fill", navigation.previous)
+                }
+                transport
+                if fit.navigation, let navigation {
+                    navigationControl(navigation.nextTitle, "forward.end.fill", navigation.next)
+                }
             }
-            .padding(.trailing, Self.transportSpacing - 6)
-            timelineRow
-                .frame(minWidth: Self.compactTimelineMinWidth, maxWidth: .infinity)
-            compactVolume
+            .padding(.trailing, Self.transportSpacing - Self.stripSpacing)
+            volumeButton
+            if fit.details, let details = state.details {
+                detailsText(details)
+                    .padding(.leading, 8)
+            }
+            Spacer(minLength: 12)
+            if Accessories.self != EmptyView.self {
+                HStack(spacing: Self.stripSpacing) { accessories }
+                    .environment(\.ravePlayerAccessoryRoom, fit.room)
+                    .ravePlayerButtonStyle()
+                    .fixedSize()
+            }
             if let pinned {
                 pinned
                     .ravePlayerButtonStyle()
                     .fixedSize()
             }
-            if Accessories.self != EmptyView.self {
-                if overflow {
-                    #if os(tvOS)
-                    Menu {
-                        Group { accessories }
-                            .environment(\.ravePlayerControlsInMenu, true)
-                            .onAppear { onMenuChanged(true) }
-                            .onDisappear { onMenuChanged(false) }
-                    } label: {
-                        moreLabel
-                    }
-                    .ravePlayerButtonStyle()
-                    .help("More")
-                    #else
-                    // A popover, not a Menu: a Menu holding submenus keeps its
-                    // content alive after it closes, so its appear/disappear
-                    // reported the first opening and nothing after (device,
-                    // 2026-10-07). The popover's binding is exact.
-                    Button { showsMore.toggle() } label: { moreLabel }
-                        .ravePlayerButtonStyle()
-                        .help("More")
-                        .popover(isPresented: $showsMore, arrowEdge: .bottom) {
-                            VStack(alignment: .leading, spacing: 4) { accessories }
-                                .environment(\.ravePlayerControlsInMenu, true)
-                                .buttonStyle(.borderless)
-                                .padding(16)
-                                // Without it the popover swallows every tap in
-                                // the window, so one on the picture couldn't
-                                // close it (device, 2026-10-07).
-                                .presentationBackgroundInteraction(.enabled)
-                        }
-                    #endif
-                } else {
-                    Divider().frame(height: 28)
-                    HStack(spacing: 6) { accessories }
-                        .ravePlayerButtonStyle()
-                        .fixedSize()
-                }
+            if Accessories.self != EmptyView.self || (!fit.navigation && navigation != nil) {
+                moreControl(fit)
             }
         }
     }
 
-    /// One speaker button where the slider would take 140 points of the
-    /// row: it opens a popover holding mute and the slider. Reported to the
-    /// host like "More", so the chrome stays up while it is open. Without a
-    /// host volume (and on tvOS) it is the mute button itself.
-    @ViewBuilder private var compactVolume: some View {
+    private func detailsText(_ details: String) -> some View {
+        Text(details)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .contentTransition(.numericText())
+            .animation(.smooth(duration: 0.3), value: details)
+            .accessibilityLabel("Now playing: \(details)")
+    }
+
+    @ViewBuilder private func moreControl(_ fit: StripFit) -> some View {
+        #if os(tvOS)
+        Menu {
+            moreContent(fit)
+                .onAppear { onMenuChanged(true) }
+                .onDisappear { onMenuChanged(false) }
+        } label: {
+            moreLabel
+        }
+        .ravePlayerButtonStyle()
+        .help("More")
+        #else
+        // A popover, not a Menu: a Menu holding submenus keeps its content
+        // alive after it closes, so its appear/disappear reported the first
+        // opening and nothing after (device, 2026-10-07). The popover's
+        // binding is exact.
+        Button {
+            onInteraction()
+            showsMore.toggle()
+        } label: { moreLabel }
+            .ravePlayerButtonStyle()
+            .help("More")
+            .popover(isPresented: $showsMore, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 4) { moreContent(fit) }
+                    .buttonStyle(.borderless)
+                    // Rows read as a menu's, not as accent-coloured links (iOS).
+                    .tint(.primary)
+                    .padding(16)
+                    // Without it the popover swallows every tap in the
+                    // window, so one on the picture couldn't close it
+                    // (device, 2026-10-07).
+                    .presentationBackgroundInteraction(.enabled)
+                    // A popover on iPhone too, not a sheet over the picture.
+                    .presentationCompactAdaptation(.popover)
+            }
+        #endif
+    }
+
+    /// The details, previous/next when the strip had no room for them, then
+    /// whatever accessories it had no room for (the host reads the room and
+    /// `ravePlayerControlsInMenu`).
+    @ViewBuilder private func moreContent(_ fit: StripFit) -> some View {
+        Group {
+            if let details = state.details {
+                Text(details)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 4)
+            }
+            if !fit.navigation, let navigation {
+                navigationRow(navigation.previousTitle, "backward.end.fill", navigation.previous)
+                navigationRow(navigation.nextTitle, "forward.end.fill", navigation.next)
+            }
+            accessories
+        }
+        .environment(\.ravePlayerControlsInMenu, true)
+        .environment(\.ravePlayerAccessoryRoom, fit.room)
+    }
+
+    private func navigationControl(_ title: String, _ symbol: String, _ action: (() -> Void)?) -> some View {
+        control(title, symbol) { action?() }
+            .disabled(action == nil)
+    }
+
+    private func navigationRow(_ title: String, _ symbol: String, _ action: (() -> Void)?) -> some View {
+        Button {
+            onInteraction()
+            action?()
+        } label: {
+            Label(title, systemImage: symbol)
+        }
+        .disabled(action == nil)
+    }
+
+    private var transport: some View {
+        Group {
+            control("Back 10 seconds", "gobackward.10") { skip(-10) }
+                .disabled(!state.isSeekable)
+            control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
+            control("Forward 10 seconds", "goforward.10") { skip(10) }
+                .disabled(!state.isSeekable)
+        }
+    }
+
+    /// One speaker button where a slider would take 140 points of the row:
+    /// it opens a popover holding mute and the slider. Reported to the host
+    /// like "More", so the chrome stays up while it is open. Without a host
+    /// volume (and on tvOS) it is the mute button itself.
+    @ViewBuilder private var volumeButton: some View {
         #if os(tvOS)
         muteControl
         #else
@@ -235,6 +375,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 Label("Volume", systemImage: Self.speakerSymbol(muted: state.isMuted, volume: state.volume))
                     .labelStyle(.iconOnly).ravePlayerControlLabel()
                     .font(.title2)
+                    .contentTransition(.symbolEffect(.replace))
             }
             .ravePlayerButtonStyle()
             .help("Volume")
@@ -248,6 +389,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 .padding(.vertical, 8)
                 // A tap on the picture must still reach it (see "More").
                 .presentationBackgroundInteraction(.enabled)
+                .presentationCompactAdaptation(.popover)
             }
         } else {
             muteControl
@@ -304,14 +446,20 @@ public struct RAVEPlayerControls<Accessories: View>: View {
 
     #if os(visionOS)
     private static var transportSpacing: CGFloat { 16 }
+    private static var stripSpacing: CGFloat { 6 }
+    private static var stripRowSpacing: CGFloat { 2 }
+    private static var stripHorizontalPadding: CGFloat { 16 }
+    private static var stripTimelineInset: CGFloat { 10 }
+    private static var stripTopPadding: CGFloat { 14 }
+    private static var stripBottomPadding: CGFloat { 8 }
     #else
     private static var transportSpacing: CGFloat { 8 }
-    #endif
-
-    #if os(visionOS) || os(tvOS)
-    private static var compactTimelineMinWidth: CGFloat { 480 }
-    #else
-    private static var compactTimelineMinWidth: CGFloat { 160 }
+    private static var stripSpacing: CGFloat { 4 }
+    private static var stripRowSpacing: CGFloat { 2 }
+    private static var stripHorizontalPadding: CGFloat { 10 }
+    private static var stripTimelineInset: CGFloat { 8 }
+    private static var stripTopPadding: CGFloat { 10 }
+    private static var stripBottomPadding: CGFloat { 4 }
     #endif
 
     // MARK: Stacked
@@ -327,11 +475,13 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                     Color.clear.frame(width: Self.controlSide, height: 1)
                     Spacer(minLength: 0)
                     HStack(spacing: 12) {
-                        control("Back 10 seconds", "gobackward.10") { skip(-10) }
-                            .disabled(!state.isSeekable)
-                        control(state.isPlaying ? "Pause" : "Play", state.isPlaying ? "pause.fill" : "play.fill", action: togglePlayback)
-                        control("Forward 10 seconds", "goforward.10") { skip(10) }
-                            .disabled(!state.isSeekable)
+                        if let navigation {
+                            navigationControl(navigation.previousTitle, "backward.end.fill", navigation.previous)
+                        }
+                        transport
+                        if let navigation {
+                            navigationControl(navigation.nextTitle, "forward.end.fill", navigation.next)
+                        }
                     }
                     Spacer(minLength: 0)
                     muteControl
@@ -379,24 +529,26 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     #endif
 
     private var timeline: some View {
-        timelineRow.padding(.horizontal, 12)
+        timelineRow(showsRemaining: false).padding(.horizontal, 12)
     }
 
-    /// Position, scrubber, duration. Live only for an endless stream: while a
-    /// player is still loading its duration reads 0, and that is shown as an
-    /// inert scrubber rather than flashing "Live" until the length arrives.
-    @ViewBuilder private var timelineRow: some View {
+    /// Position, scrubber, and the duration, or on the strip the time left.
+    /// Live only for an endless stream: while a player is still loading its
+    /// duration reads 0, and that is shown as an inert scrubber rather than
+    /// flashing "Live" until the length arrives.
+    @ViewBuilder private func timelineRow(showsRemaining: Bool) -> some View {
         if state.isLive {
             Label("Live", systemImage: "dot.radiowaves.left.and.right")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
         } else {
+            let position = state.clampedTime(scrubSeconds ?? state.currentTime)
             HStack(spacing: 10) {
-                Text(state.isSeekable ? RAVEPlayerControlState.timecode(scrubSeconds ?? state.currentTime) : "–:––")
+                Text(state.isSeekable ? RAVEPlayerControlState.timecode(position) : "–:––")
                 #if !os(tvOS)
                 Slider(value: Binding(
-                    get: { state.clampedTime(scrubSeconds ?? state.currentTime) },
+                    get: { position },
                     set: { scrubSeconds = $0; onInteraction() }
                 ), in: 0...(state.isSeekable ? state.duration : 1), onEditingChanged: { editing in
                     isScrubbing = editing
@@ -411,27 +563,45 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 .accessibilityLabel("Playback position")
                 .background { if state.isSeekable { timelineMarks } }
                 #else
-                ProgressView(value: state.clampedTime(state.currentTime), total: state.isSeekable ? state.duration : 1)
+                ProgressView(value: position, total: state.isSeekable ? state.duration : 1)
                     .accessibilityLabel("Playback position")
+                    .background { if state.isSeekable { timelineMarks } }
                 #endif
-                Text(state.isSeekable ? RAVEPlayerControlState.timecode(state.duration) : "–:––")
+                Text(durationLabel(position: position, showsRemaining: showsRemaining))
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
         }
     }
 
+    private func durationLabel(position: Double, showsRemaining: Bool) -> String {
+        guard state.isSeekable else { return "–:––" }
+        guard showsRemaining else { return RAVEPlayerControlState.timecode(state.duration) }
+        return "−" + RAVEPlayerControlState.timecode(max(0, state.duration - position))
+    }
+
+    /// The buffered stretch and loop markers behind the track, and the marked
+    /// ranges (skippable segments) just under it, where the track can't
+    /// cover them.
     private var timelineMarks: some View {
         GeometryReader { geometry in
+            let width = geometry.size.width
+            let x = { (time: Double) in width * state.clampedTime(time) / state.duration }
             ZStack(alignment: .leading) {
                 Capsule().fill(.secondary.opacity(0.25))
-                    .frame(width: geometry.size.width * state.clampedTime(state.bufferedUntil) / state.duration, height: 3)
+                    .frame(width: x(state.bufferedUntil), height: 3)
+                ForEach(Array(state.markedRanges.enumerated()), id: \.offset) { _, range in
+                    Capsule()
+                        .fill(Color.yellow.opacity(0.75))
+                        .frame(width: max(x(range.upperBound) - x(range.lowerBound), 3), height: 3)
+                        .position(x: (x(range.lowerBound) + x(range.upperBound)) / 2,
+                                  y: geometry.size.height / 2 + Self.markedRangeOffset)
+                }
                 ForEach(Array(state.markers.enumerated()), id: \.offset) { index, time in
                     RoundedRectangle(cornerRadius: 1)
                         .fill(index == 0 ? Color.green : Color.red)
                         .frame(width: 3, height: 14)
-                        .position(x: geometry.size.width * state.clampedTime(time) / state.duration,
-                                  y: geometry.size.height / 2)
+                        .position(x: x(time), y: geometry.size.height / 2)
                 }
             }
             .frame(maxHeight: .infinity)
@@ -439,6 +609,12 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
+
+    #if os(visionOS)
+    private static var markedRangeOffset: CGFloat { 13 }
+    #else
+    private static var markedRangeOffset: CGFloat { 9 }
+    #endif
 
     private func skip(_ seconds: Double) { seek(state.clampedTime(state.currentTime + seconds)) }
 
@@ -449,6 +625,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         } label: {
             Label(title, systemImage: symbol).labelStyle(.iconOnly).ravePlayerControlLabel()
                 .font(.title2)
+                .contentTransition(.symbolEffect(.replace))
         }
         .ravePlayerButtonStyle()
         .help(title)
@@ -471,13 +648,17 @@ public extension View {
 }
 
 extension EnvironmentValues {
-    /// True inside the compact bar's "More", where an accessory's label
-    /// needs its title as well as its icon.
+    /// True inside the strip's "More", where an accessory's label needs its
+    /// title as well as its icon.
     @Entry public var ravePlayerControlsInMenu = false
+    /// The highest accessory priority the strip has room for: an accessory
+    /// of a higher one is in More instead. `Int.max` on a bar without More,
+    /// where every accessory is on the bar.
+    @Entry public var ravePlayerAccessoryRoom = Int.max
 }
 
 /// An accessory's label: icon only with the padded hit target on the bar,
-/// title and icon inside the compact bar's "More".
+/// title and icon inside the strip's "More".
 private struct PlayerAccessoryLabel: ViewModifier {
     @Environment(\.ravePlayerControlsInMenu) private var inMenu
 
@@ -491,10 +672,10 @@ private struct PlayerAccessoryLabel: ViewModifier {
 }
 
 /// Reports a menu's content appearing and disappearing. Silent inside the
-/// compact bar's "More" only on tvOS, where "More" is still a Menu: one
-/// nested in it materialises its content when "More" opens and never reports
-/// it going, which left phantom open menus (Hypnos, device 2026-10-07).
-/// Elsewhere "More" is a popover and a menu in it opens like any other.
+/// strip's "More" only on tvOS, where "More" is still a Menu: one nested in
+/// it materialises its content when "More" opens and never reports it going,
+/// which left phantom open menus (Hypnos, device 2026-10-07). Elsewhere
+/// "More" is a popover and a menu in it opens like any other.
 private struct PlayerMenuReporting: ViewModifier {
     @Environment(\.ravePlayerControlsInMenu) private var inMenu
     let onChange: (Bool) -> Void
@@ -538,7 +719,7 @@ public extension View {
     }
 }
 
-/// Resolves the bar's width, capped at `maxWidth` (820 points; 1180 for the compact bar).
+/// Resolves the bar's width, capped at `maxWidth` (820 points; 1180 for the strip).
 ///
 /// A real width proposal is honoured as is. A missing one is the host asking
 /// for the ideal size, and the right answer differs by platform:
@@ -553,8 +734,8 @@ public extension View {
 ///   let the real proposal decide.
 struct PlayerControlsWidth: Layout {
     static let maxWidth: CGFloat = 820
-    /// The one-row bar holds what three rows did, so it may run wider.
-    static let compactMaxWidth: CGFloat = 1180
+    /// The strip holds what three rows did, so it may run wider.
+    static let stripMaxWidth: CGFloat = 1180
     var maxWidth: CGFloat = Self.maxWidth
     #if os(visionOS)
     static let preferredWidth: CGFloat = 600

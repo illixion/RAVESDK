@@ -464,7 +464,22 @@ an ornament, not a 2D overlay inside the picture's depth region.
 The control sizes itself, so hosts need no width: an ornament proposes none and
 takes the ideal, which once collapsed the bar to ~237pt (`PlayerControlsWidth`
 answers natural width on visionOS, a compact one elsewhere so measure-then-fit
-hosts such as Hypnos's iOS ornament shim lay it at full width).
+hosts such as Hypnos's iOS ornament shim lay it at full width). A host that
+wants it as wide as its window frames it.
+
+Two layouts. `.stacked` (Raven, tvOS) is timeline, transport, accessory row.
+`.strip` (Hypnos's players, 2026-10-23) is two rows: the timeline across the
+whole width with the time left, then previous/next (`RAVEPlayerNavigation`)
+around the transport, volume, the state's `details` readout ("1920×1080 ·
+23.976 fps", `VideoPictureFormat` in RAVEMediaCore) and the accessories, then
+`pinned` and More. Accessories carry a priority 0…3 and read
+`ravePlayerAccessoryRoom`: the strip tries six fits (`StripFit`) from most to
+least, dropping accessories by priority, then the details, then
+previous/next, and More shows what the chosen fit left out (the host reads
+the same room with `ravePlayerControlsInMenu`). It replaced a one-row
+`.compact` bar whose accessories collapsed into More all at once, which is
+what hid most of Hypnos's buttons. `markedRanges` draws skippable segments
+just under the track.
 
 ### RAVEConsole — separate from RAVEUI on purpose
 

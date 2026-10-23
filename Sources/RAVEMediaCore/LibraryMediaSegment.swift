@@ -39,21 +39,27 @@ public struct LibraryMediaSegment: Codable, Hashable, Sendable {
         self.endSeconds = endSeconds
     }
 
-    public var skipTitle: String {
+    /// What the segment is called: "Intro", "Credits".
+    public var name: String {
         switch kind {
-        case .intro: "Skip Intro"
-        case .recap: "Skip Recap"
-        case .preview: "Skip Preview"
-        case .outro: "Skip Credits"
-        case .commercial: "Skip Ad"
+        case .intro: "Intro"
+        case .recap: "Recap"
+        case .preview: "Preview"
+        case .outro: "Credits"
+        case .commercial: "Ad"
         }
     }
+
+    public var skipTitle: String { "Skip \(name)" }
 }
 
 /// Common visibility and landing rules for skip-intro/credits controls.
 public enum LibrarySegmentSkipPolicy {
     public static let promptSeconds: Double = 8
     public static let minimumLength: Double = 4
+    /// How long after a skip it can be undone: long enough to see that a
+    /// SponsorBlock segment was marked wrongly, short enough not to linger.
+    public static let undoSeconds: Double = 10
 
     public static func eligible(_ segment: LibraryMediaSegment) -> Bool {
         segment.endSeconds - segment.startSeconds >= minimumLength

@@ -158,6 +158,38 @@ public enum LibraryStreamQuality: String, CaseIterable, Codable, Sendable {
         let ceiling = current?.maxBitrate ?? sourceBitrate ?? Int.max
         return capped.first { ($0.maxBitrate ?? 0) < ceiling }
     }
+
+    /// The picture class of a `width`×`height` source, as its height in the
+    /// usual ladder (2160, 1440, 1080, 720, 480, 360). By either side, so a
+    /// 1920×800 scope film is 1080p and a 1080×1920 portrait clip too.
+    public static func pictureClass(width: Int, height: Int) -> Int {
+        let long = max(width, height)
+        let short = min(width, height)
+        let ladder: [(long: Int, short: Int, height: Int)] = [
+            (3200, 1800, 2160), (2200, 1300, 1440), (1700, 950, 1080), (1100, 650, 720), (700, 420, 480),
+        ]
+        return ladder.first { long >= $0.long || short >= $0.short }?.height ?? 360
+    }
+
+    /// The choices a player offers for a source: Auto and the original, and
+    /// each capped level that would actually send something different. A
+    /// level whose picture class is above the source's would only send the
+    /// source's own picture under that level's name (a 1080p film offered
+    /// as "4K"), and one whose cap is above the source's bitrate plays the
+    /// original anyway (`caps(sourceBitrate:)`); neither is offered. With the
+    /// source's size unknown, every level that caps its bitrate is.
+    public static func offered(sourceWidth: Int?, sourceHeight: Int?, sourceBitrate: Int?) -> [LibraryStreamQuality] {
+        let sourceClass: Int? = if let sourceWidth, let sourceHeight, sourceWidth > 0, sourceHeight > 0 {
+            pictureClass(width: sourceWidth, height: sourceHeight)
+        } else {
+            nil
+        }
+        return [.auto, .original] + capped.filter { level in
+            guard level.caps(sourceBitrate: sourceBitrate) else { return false }
+            guard let sourceClass, let height = level.maxHeight else { return true }
+            return height <= sourceClass
+        }
+    }
 }
 
 /// Watches a Library stream for the two ways a too-fast stream shows itself
