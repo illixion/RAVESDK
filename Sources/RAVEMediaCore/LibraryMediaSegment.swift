@@ -59,7 +59,7 @@ public enum LibrarySegmentSkipPolicy {
     public static let minimumLength: Double = 4
     /// How long after a skip it can be undone: long enough to see that a
     /// SponsorBlock segment was marked wrongly, short enough not to linger.
-    public static let undoSeconds: Double = 10
+    public static let undoSeconds: Double = 5
 
     public static func eligible(_ segment: LibraryMediaSegment) -> Bool {
         segment.endSeconds - segment.startSeconds >= minimumLength

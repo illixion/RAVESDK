@@ -562,6 +562,9 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 .disabled(!state.isSeekable)
                 .accessibilityLabel("Playback position")
                 .background { if state.isSeekable { timelineMarks } }
+                #if os(visionOS)
+                .overlay { if state.isSeekable { markedRangeTrack } }
+                #endif
                 #else
                 ProgressView(value: position, total: state.isSeekable ? state.duration : 1)
                     .accessibilityLabel("Playback position")
@@ -590,6 +593,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(.secondary.opacity(0.25))
                     .frame(width: x(state.bufferedUntil), height: 3)
+                #if !os(visionOS)
                 ForEach(Array(state.markedRanges.enumerated()), id: \.offset) { _, range in
                     Capsule()
                         .fill(Color.yellow.opacity(0.75))
@@ -597,6 +601,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                         .position(x: (x(range.lowerBound) + x(range.upperBound)) / 2,
                                   y: geometry.size.height / 2 + Self.markedRangeOffset)
                 }
+                #endif
                 ForEach(Array(state.markers.enumerated()), id: \.offset) { index, time in
                     RoundedRectangle(cornerRadius: 1)
                         .fill(index == 0 ? Color.green : Color.red)
@@ -611,7 +616,28 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     }
 
     #if os(visionOS)
-    private static var markedRangeOffset: CGFloat { 13 }
+    /// The marked ranges (skippable segments) on the visionOS slider, whose
+    /// track is a pill as tall as the slider itself: a line inside it, near
+    /// its bottom, cut by the pill's rounded ends where a segment runs to
+    /// either end of the film.
+    private var markedRangeTrack: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let x = { (time: Double) in width * state.clampedTime(time) / state.duration }
+            ZStack(alignment: .bottomLeading) {
+                ForEach(Array(state.markedRanges.enumerated()), id: \.offset) { _, range in
+                    Rectangle()
+                        .fill(Color.yellow.opacity(0.85))
+                        .frame(width: max(x(range.upperBound) - x(range.lowerBound), 3), height: 4)
+                        .offset(x: x(range.lowerBound), y: -5)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .clipShape(Capsule())
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
     #else
     private static var markedRangeOffset: CGFloat { 9 }
     #endif

@@ -479,7 +479,8 @@ previous/next, and More shows what the chosen fit left out (the host reads
 the same room with `ravePlayerControlsInMenu`). It replaced a one-row
 `.compact` bar whose accessories collapsed into More all at once, which is
 what hid most of Hypnos's buttons. `markedRanges` draws skippable segments
-just under the track.
+just under the track (iOS, macOS), or on visionOS, whose slider track is a pill as tall as the slider, as a line inside
+it clipped to its rounded ends, so a segment running to either end of the film is cut by the curve.
 
 ### RAVEConsole — separate from RAVEUI on purpose
 
