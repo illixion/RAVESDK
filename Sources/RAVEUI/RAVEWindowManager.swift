@@ -190,6 +190,40 @@ public final class RAVEWindowRegistry {
 
     public func unregister(token: UUID) {
         windows.removeAll { $0.id == token }
+        scenes[token] = nil
+    }
+
+    /// Each entry's scene, learned once its window is in one (weak).
+    @ObservationIgnored private var scenes: [UUID: WeakScene] = [:]
+    @ObservationIgnored private var disconnectObserver: NSObjectProtocol?
+
+    private final class WeakScene {
+        weak var scene: UIScene?
+        init(_ scene: UIScene) { self.scene = scene }
+    }
+
+    /// A window leaves the list when its scene disconnects, too. SwiftUI
+    /// gives a scene the system disconnects (a summon's recycle, a window
+    /// dropped at restore) no `onDisappear`, so its row stayed listed beside
+    /// the fresh window's, and a summon waiting for teardown waited its full
+    /// timeout (Convolution on visionOS 27, 2026-10-25).
+    fileprivate func attach(token: UUID, to scene: UIScene) {
+        scenes[token] = WeakScene(scene)
+        guard disconnectObserver == nil else { return }
+        disconnectObserver = NotificationCenter.default.addObserver(
+            forName: UIScene.didDisconnectNotification, object: nil, queue: .main
+        ) { notification in
+            guard let scene = notification.object as? UIScene else { return }
+            let identifier = ObjectIdentifier(scene)
+            MainActor.assumeIsolated {
+                RAVEWindowRegistry.shared.sceneDidDisconnect(identifier)
+            }
+        }
+    }
+
+    private func sceneDidDisconnect(_ scene: ObjectIdentifier) {
+        let gone = scenes.filter { $0.value.scene.map(ObjectIdentifier.init) == scene }.map(\.key)
+        for token in gone { unregister(token: token) }
     }
 
     public func update(token: UUID, label: RAVEWindowLabel) {
@@ -312,12 +346,39 @@ private struct RAVEManageWindowModifier: ViewModifier {
             .onDisappear {
                 RAVEWindowRegistry.shared.unregister(token: token)
             }
+            .background {
+                RAVESceneReader { scene in
+                    RAVEWindowRegistry.shared.attach(token: token, to: scene)
+                }
+            }
             .onChange(of: scenePhase) { _, phase in
                 RAVEWindowRegistry.shared.setActiveRoom(token: token, phase == .active)
             }
             .onChange(of: window.label) { _, label in
                 RAVEWindowRegistry.shared.update(token: token, label: label)
             }
+    }
+}
+
+/// Reports the UIKit scene its view lands in.
+private struct RAVESceneReader: UIViewRepresentable {
+    let onScene: (UIScene) -> Void
+
+    func makeUIView(context: Context) -> ReaderView {
+        let view = ReaderView()
+        view.onScene = onScene
+        return view
+    }
+
+    func updateUIView(_ view: ReaderView, context: Context) {}
+
+    final class ReaderView: UIView {
+        var onScene: ((UIScene) -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if let scene = window?.windowScene { onScene?(scene) }
+        }
     }
 }
 
