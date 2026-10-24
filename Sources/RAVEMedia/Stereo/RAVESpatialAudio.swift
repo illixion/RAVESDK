@@ -70,9 +70,14 @@ extension AVPlayer {
         intendedSpatialAudioExperience = .bypassed
         let item = currentItem
         Task { [weak self] in
-            let surround = await asset.detectMultichannelAudio(item: item)
-            guard surround, let self, self.currentItem === item else { return }
+            let found = await asset.detectMultichannelAudio(item: item)
+            guard let self, self.currentItem === item else { return }
+            guard let found else {
+                RAVEMediaLog.spatialAudio.info("Stereo or mono: spatial audio bypassed")
+                return
+            }
             self.intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience
+            RAVEMediaLog.spatialAudio.info("Multichannel (\(found, privacy: .public)): \(RAVEMediaPolicy.headLockedSurround ? "head-locked" : "head-tracked", privacy: .public) spatial audio")
         }
     }
 
@@ -135,15 +140,16 @@ extension AVURLAsset {
 
     /// Layered multichannel detection: see `AVPlayer.applySpatialAudioPolicy(for:)`.
     /// When `item` is given and nothing earlier answers, waits (bounded) for it to
-    /// become ready and inspects its tracks.
-    func detectMultichannelAudio(item: AVPlayerItem?) async -> Bool {
-        if (try? await hasMultichannelAudio()) == true { return true }
-        if await hasMultichannelVariant() { return true }
-        guard let item else { return false }
-        guard await item.waitUntilReady(timeout: 30) else { return false }
-        if await item.hasMultichannelItemTrack() { return true }
+    /// become ready and inspects its tracks. Names the probe that found it; nil
+    /// when none did.
+    func detectMultichannelAudio(item: AVPlayerItem?) async -> String? {
+        if (try? await hasMultichannelAudio()) == true { return "file track" }
+        if await hasMultichannelVariant() { return "HLS rendition" }
+        guard let item else { return nil }
+        guard await item.waitUntilReady(timeout: 30) else { return nil }
+        if await item.hasMultichannelItemTrack() { return "item track" }
         // Tracks of an HLS asset often only resolve once the item is playing it.
-        return (try? await hasMultichannelAudio()) == true
+        return (try? await hasMultichannelAudio()) == true ? "file track, once ready" : nil
     }
 }
 

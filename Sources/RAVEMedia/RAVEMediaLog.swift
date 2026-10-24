@@ -27,6 +27,9 @@ public enum RAVEMediaLog {
     /// and timings.
     public static let stills = DebugLogger(subsystem: subsystem, category: "StillDepth")
 
+    /// Which spatial-audio experience each player gets, and what said so.
+    public static let spatialAudio = DebugLogger(subsystem: subsystem, category: "SpatialAudio")
+
     /// Per-stage intervals for the fake-3D pipeline (inference, stabilize, warp,
     /// transfer) — view in Instruments' os_signpost track to see where a pump
     /// tick or a depth-conversion frame spends its time.
