@@ -15,8 +15,9 @@
  - The model is released after a short idle, since a gallery that is only
    being looked at needs none of its memory.
 
- Uses the real-time model role: the small, fast model is the right trade for
- a ~1000 px picture, and it is the one every installed setup has.
+ Thumbnail jobs use the real-time model role. `photoQuality` jobs use the
+ pre-process role when available and retain floating-point normalized depth.
+ Both go through the same serialized queue and idle model release.
  */
 
 import CoreGraphics
@@ -33,8 +34,9 @@ public final class RAVEStillDepthEstimator {
     /// carry it back onto the main actor.
     private final class Job: @unchecked Sendable {
         let image: CGImage
+        let photoQuality: Bool
         var continuation: CheckedContinuation<StillDepthMap?, Never>?
-        init(image: CGImage) { self.image = image }
+        init(image: CGImage, photoQuality: Bool) { self.image = image; self.photoQuality = photoQuality }
 
         func finish(_ map: StillDepthMap?) {
             continuation?.resume(returning: map)
@@ -61,8 +63,8 @@ public final class RAVEStillDepthEstimator {
 
     /// Depth for `image`, or nil when there is no model, inference failed, or
     /// the calling task was cancelled while waiting its turn.
-    public func depth(for image: CGImage) async -> StillDepthMap? {
-        let job = Job(image: image)
+    public func depth(for image: CGImage, photoQuality: Bool = false) async -> StillDepthMap? {
+        let job = Job(image: image, photoQuality: photoQuality)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 guard !Task.isCancelled else {
@@ -89,7 +91,7 @@ public final class RAVEStillDepthEstimator {
         running = true
         let image = job.image
         Task {
-            let map = await worker.infer(image)
+            let map = await worker.infer(image, photoQuality: job.photoQuality)
             job.finish(map)
             running = false
             pump()
@@ -106,15 +108,15 @@ public final class RAVEStillDepthEstimator {
         /// gallery left on screen doesn't keep a model resident.
         private static let idleRelease: TimeInterval = 20
 
-        func infer(_ image: CGImage) async -> StillDepthMap? {
+        func infer(_ image: CGImage, photoQuality: Bool) async -> StillDepthMap? {
             await withCheckedContinuation { continuation in
                 queue.async {
-                    continuation.resume(returning: self.inferOnQueue(image))
+                    continuation.resume(returning: self.inferOnQueue(image, photoQuality: photoQuality))
                 }
             }
         }
 
-        private func inferOnQueue(_ image: CGImage) -> StillDepthMap? {
+        private func inferOnQueue(_ image: CGImage, photoQuality: Bool) -> StillDepthMap? {
             generation += 1
             let mine = generation
             defer {
@@ -127,21 +129,23 @@ public final class RAVEStillDepthEstimator {
             }
             // Follow the Settings choice: a model swap takes effect on the
             // next thumbnail instead of needing a relaunch.
-            guard let name = CoreMLDepthProvider.resolvedModelName(role: .realtime) else {
+            let role: DepthModelRole = photoQuality && CoreMLDepthProvider.hasAvailableModel(role: .preprocess) ? .preprocess : .realtime
+            guard let name = CoreMLDepthProvider.resolvedModelName(role: role) else {
                 provider = nil
                 modelName = nil
                 return nil
             }
             if provider == nil || modelName != name {
                 guard let device = MTLCreateSystemDefaultDevice() else { return nil }
+                provider = nil
                 let start = Date()
-                provider = CoreMLDepthProvider(device: device, role: .realtime)
+                provider = CoreMLDepthProvider(device: device, role: role)
                 modelName = name
                 RAVEMediaLog.stills.info("Still depth model loaded in \(Int(Date().timeIntervalSince(start) * 1000), privacy: .public) ms")
             }
             guard let provider else { return nil }
             let start = Date()
-            let map = provider.stillDepth(for: image)
+            let map = provider.stillDepth(for: image, preservePrecision: photoQuality)
             RAVEMediaLog.stills.debug("Still depth \(image.width, privacy: .public)x\(image.height, privacy: .public) in \(Int(Date().timeIntervalSince(start) * 1000), privacy: .public) ms")
             return map
         }

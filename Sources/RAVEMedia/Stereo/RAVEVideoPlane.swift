@@ -46,9 +46,9 @@ public enum RAVEVideoPlane {
     public static let viewRecess: CGFloat = -90
 
     /// Centres `entity` on `bounds` (scene space), `planeDepthTrim` back.
-    public static func place(_ entity: Entity, in bounds: BoundingBox) {
+    public static func place(_ entity: Entity, in bounds: BoundingBox, depthTrim: Float = planeDepthTrim) {
         var center = bounds.center
-        center.z -= planeDepthTrim
+        center.z -= depthTrim
         entity.setPosition(center, relativeTo: nil)
     }
 
@@ -66,6 +66,14 @@ public enum RAVEVideoPlane {
 /// `VideoPlayerComponent` the caller owns (and keeps feeding while the view
 /// comes and goes).
 public struct RAVEVideoPlaneView: View {
+    public enum Placement: Sendable, Equatable {
+        /// The established recipe for a video window that offers 3D depth.
+        case videoWindow
+        /// A zero-depth overlay in a photo/other 2D window. No video recess.
+        case windowSurface
+    }
+    var placement: Placement
+    @State private var displayedOpacity: Float
     let entity: Entity
     /// Width over height of the picture; nil until known (the plane then
     /// fills the view's height as a square).
@@ -79,8 +87,11 @@ public struct RAVEVideoPlaneView: View {
     /// - Parameter onAttach: the entity is in the view's content, so a
     ///   renderer its component holds can take samples.
     public init(entity: Entity, aspect: Float?, squareCorners: Bool = false, opacity: Float = 1,
-                takesInput: Bool = true, onTap: @escaping () -> Void = {}, onAttach: @escaping () -> Void = {}) {
+                takesInput: Bool = true, placement: Placement = .videoWindow,
+                onTap: @escaping () -> Void = {}, onAttach: @escaping () -> Void = {}) {
         self.entity = entity
+        self.placement = placement
+        self._displayedOpacity = State(initialValue: opacity)
         self.aspect = aspect
         self.squareCorners = squareCorners
         self.opacity = opacity
@@ -96,7 +107,11 @@ public struct RAVEVideoPlaneView: View {
                 onAttach()
             } update: { content in
                 let bounds = content.convert(geometry.frame(in: .local), from: .local, to: .scene)
-                RAVEVideoPlane.place(entity, in: bounds)
+                RAVEVideoPlane.place(entity, in: bounds,
+                    depthTrim: placement == .videoWindow ? RAVEVideoPlane.planeDepthTrim : -0.001)
+                // Read state inside RealityView's update closure so opacity
+                // changes invalidate the entity even through an animatable view.
+                let opacity = displayedOpacity
                 // Hidden, the plane also shrinks to nothing: another plane (a
                 // stereo picture) may sit exactly where it is, and a
                 // transparent plane could still fight it for depth. It stays in
@@ -119,7 +134,8 @@ public struct RAVEVideoPlaneView: View {
             .frame(depth: 0, alignment: .front)
             .gesture(SpatialTapGesture().targetedToEntity(entity).onEnded { _ in onTap() })
         }
-        .offset(z: RAVEVideoPlane.viewRecess)
+        .offset(z: placement == .videoWindow ? RAVEVideoPlane.viewRecess : 0)
+        .onChange(of: opacity) { _, value in displayedOpacity = value }
     }
 }
 #endif

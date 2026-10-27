@@ -729,6 +729,18 @@ one-caller-at-a-time rule as the video entry points, which is why apps go throug
 one inference at a time, newest request first, cancelled requests dropped before
 they reach the model, model released after 20 s idle.
 
+**Stereo still photos: `RAVEStereoPhotoView`** (visionOS) uses Vergence's shared
+mesh warp and a tagged 10-bit PQ frame in `RAVEVideoPlaneView`. It keeps extended-P3
+half-float colour through adjustments/warp. `onReady` lets the caller hide its flat
+fallback only after enqueue; hide stereo / show flat for menus and transitions.
+Bakes are serialized across windows and bounded by `StillStereoResolution` after
+the host's own dynamic/global/per-image resolution rules. Photo-quality estimator
+requests use the pre-process model role and preserve floating-point depth; thumbnails
+keep the byte-map real-time path. `aiPhotoSeparateBoundaries` is a debug A/B default
+for the antialiased disconnected renderer, off until headset validation. Hypnos's
+photo viewer and photo slideshows use this view. Rebuild on content/depth/resolution
+or settled adjustment changes, never per frame.
+
 **AI 3D for stills: `RAVEAIDepthPhotoView`** (visionOS, `Stills/`) shows a picture as a
 mesh displaced by its `StillDepthMap` (`RAVEDepthMesh`): one inference and one
 RealityKit mesh, the cheap alternative to `ImagePresentationComponent`. The host lays
