@@ -100,6 +100,24 @@ public struct RAVEColorAdjustments: Equatable, Sendable {
     public static let neutral = RAVEColorAdjustments()
 }
 
+/// What the engine is doing before the first 3D frame shows, for a host's
+/// loading indicator. Nil once the picture is up.
+public enum Pseudo3DPreparation: Equatable, Sendable {
+    /// The depth model is loading (and on its first use, compiling). Core ML
+    /// reports no progress, so `progress` follows the time the last load took
+    /// on this device; it stops short of 1 until the load returns.
+    case loadingModel(progress: Double)
+    /// Working out depth for the first frames; `progress` is how much of what
+    /// playback waits for is ready.
+    case preparingPicture(progress: Double)
+
+    public var progress: Double {
+        switch self {
+        case .loadingModel(let progress), .preparingPicture(let progress): return progress
+        }
+    }
+}
+
 /// Why the stereo engine gave up, where the host has something to tell the
 /// viewer beyond "it failed".
 public enum Pseudo3DFailure: Sendable, Equatable {
@@ -124,7 +142,18 @@ public final class Pseudo3DStereoEngine {
     private var analysisBuffering = false
     public var onProcessingBufferingChanged: ((Bool) -> Void)?
     private var depthBuffering = false
-    private var isAnalysisHeld: Bool { analysisBuffering || depthBuffering }
+    /// The real-time model is loading off the main actor; the player waits.
+    private var modelLoading = false
+    private var isAnalysisHeld: Bool { analysisBuffering || depthBuffering || modelLoading }
+    /// See `Pseudo3DPreparation`. Observable, for the host's loading card.
+    public private(set) var preparation: Pseudo3DPreparation?
+    /// Bumped per load and teardown, so a model load that finishes after the
+    /// video changed starts nothing.
+    @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var modelProgressTask: Task<Void, Never>?
+    /// The first 3D frame was shown for this load; later holds keep the last
+    /// frame on screen and need no loading card.
+    @ObservationIgnored private var hasShownPicture = false
     public func setAnalysisBuffering(_ held: Bool) {
         analysisBuffering = held
         applyAnalysisHold()
@@ -134,6 +163,38 @@ public final class Pseudo3DStereoEngine {
         depthBuffering = held
         onProcessingBufferingChanged?(held)
         applyAnalysisHold()
+        updatePreparation()
+    }
+
+    /// The loading card's state, from the model load, the pump's hold and
+    /// whether a frame has come yet.
+    private func updatePreparation(pictureProgress: Double? = nil) {
+        guard !hasShownPicture, loadedURL != nil else {
+            preparation = nil
+            return
+        }
+        if modelLoading { return } // the progress task owns it
+        if knownVideoSize != nil, !depthBuffering {
+            hasShownPicture = true
+            preparation = nil
+            return
+        }
+        let current = preparation.flatMap { if case .preparingPicture(let p) = $0 { p } else { nil } } ?? 0
+        preparation = .preparingPicture(progress: pictureProgress ?? current)
+    }
+
+    /// Seconds the last real-time model load took here, per model; what the
+    /// load bar paces itself by. A first load (compiling) has no history.
+    private static let modelLoadHistoryKey = "RAVEMedia.realtimeDepthModelLoadSeconds"
+    private static func expectedModelLoadSeconds(_ model: String?) -> Double {
+        let history = UserDefaults.standard.dictionary(forKey: modelLoadHistoryKey) as? [String: Double]
+        return model.flatMap { history?[$0] } ?? 3
+    }
+    private static func recordModelLoad(_ model: String?, seconds: Double) {
+        guard let model else { return }
+        var history = UserDefaults.standard.dictionary(forKey: modelLoadHistoryKey) as? [String: Double] ?? [:]
+        history[model] = seconds
+        UserDefaults.standard.set(history, forKey: modelLoadHistoryKey)
     }
     private func applyAnalysisHold() {
         if isAnalysisHeld { player?.pause() }
@@ -865,6 +926,7 @@ public final class Pseudo3DStereoEngine {
                 self?.onVideoSizeKnown?(size)
                 self?.scheduleRefitBurst()
                 self?.pushSubtitles()
+                self?.updatePreparation()
             }
         }
         // Cached depth: 60fps warp of pre-computed PTS-matched depth, no ANE.
@@ -875,39 +937,43 @@ public final class Pseudo3DStereoEngine {
         // frames, never older depth. Faster than 1× it shows no more frames a
         // second than the video has at 1×, so the inference does the same
         // work at any speed (StereoPump's frame cap).
-        let depthSource: PumpDepthSource?
+        let frameSource = AVPlayerFrameSource(output: output, item: item)
+        let startPump: (PumpDepthSource?) -> Void = { [weak self] depthSource in
+            guard let self else { return }
+            guard let pump = StereoPump(
+                videoRenderer: self.videoRenderer,
+                frameSource: frameSource,
+                warp: warp,
+                startHostTime: startHostTime,
+                depthSource: depthSource,
+                frameInterval: 1.0 / 60.0,
+                packedLayout: packedStereo,
+                onVideoSizeKnown: sizeCallback
+            ) else {
+                Task { @MainActor in self.onPlaybackError?() }
+                return
+            }
+            self.install(pump)
+        }
+        updatePreparation()
         if packedStereo != nil {
-            depthSource = nil
+            startPump(nil)
         } else if let cacheEntry {
-            depthSource = CachedDepthSource(entry: cacheEntry, device: warp.device)
+            startPump(CachedDepthSource(entry: cacheEntry, device: warp.device))
         } else {
-            depthSource = RealtimeDepthSource(device: warp.device)
-        }
-        guard let pump = StereoPump(
-            videoRenderer: videoRenderer,
-            frameSource: AVPlayerFrameSource(output: output, item: item),
-            warp: warp,
-            startHostTime: startHostTime,
-            depthSource: depthSource,
-            frameInterval: 1.0 / 60.0,
-            packedLayout: packedStereo,
-            onVideoSizeKnown: sizeCallback
-        ) else {
-            Task { @MainActor in self.onPlaybackError?() }
-            return
-        }
-        pump.onPerformance = performanceForwarder()
-        pump.onUnshowablePicture = unshowablePictureForwarder()
-        pump.onProcessingBuffering = { [weak self, weak pump] held in
-            Task { @MainActor in
-                guard let self, let pump, self.pump === pump else { return }
-                self.setDepthBuffering(held)
+            // Off the main actor: loading the model takes ~60 ms warm, but
+            // seconds the first time a model is compiled or the Neural Engine
+            // hasn't seen it, and the window froze for all of it. The player
+            // is made and held meanwhile, so seeks and pauses still apply.
+            loadRealtimeDepth(device: warp.device) { [weak self] source in
+                guard let self else { return }
+                guard let source else {
+                    self.onPlaybackError?()
+                    return
+                }
+                startPump(source)
             }
         }
-        pump.updateConfig(makePumpConfig())
-        pump.start()
-        self.pump = pump
-        pushSubtitles()
 
         // Resume where the previous (2D) player left off when the caller says
         // so — engaging fake-3D mid-watch shouldn't restart the video.
@@ -923,6 +989,72 @@ public final class Pseudo3DStereoEngine {
         } else if isRoomActive {
             play()
         }
+    }
+
+    /// Loads the real-time depth source on a background thread, then calls
+    /// `completion` on the main actor, unless another load or a teardown came
+    /// first. The player stays held while it runs (`modelLoading`).
+    private func loadRealtimeDepth(device: MTLDevice, completion: @escaping @MainActor (PumpDepthSource?) -> Void) {
+        let generation = loadGeneration
+        let model = CoreMLDepthProvider.resolvedModelName(role: .realtime)
+        let expected = Self.expectedModelLoadSeconds(model)
+        modelLoading = true
+        applyAnalysisHold()
+        preparation = .loadingModel(progress: 0)
+        modelProgressTask?.cancel()
+        modelProgressTask = Task { @MainActor [weak self] in
+            let began = CACurrentMediaTime()
+            while !Task.isCancelled, let self, self.modelLoading {
+                // Eases toward 0.95 over the expected time and keeps creeping
+                // past it, so a slower load still moves without reaching 1.
+                let ratio = (CACurrentMediaTime() - began) / max(expected, 0.1)
+                self.preparation = .loadingModel(progress: 0.95 * (1 - exp(-2.5 * ratio)))
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        let wrappedDevice = UncheckedSendableBox(device)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let began = CACurrentMediaTime()
+            let source = RealtimeDepthSource(device: wrappedDevice.value)
+            let seconds = CACurrentMediaTime() - began
+            let box = UncheckedSendableBox(source)
+            await MainActor.run { [weak self] in
+                guard let self, self.loadGeneration == generation else {
+                    box.value?.invalidate()
+                    return
+                }
+                RAVEMediaLog.pipeline.info("Real-time depth model ready in \(Int(seconds * 1000), privacy: .public) ms")
+                if box.value != nil { Self.recordModelLoad(model, seconds: seconds) }
+                self.modelProgressTask?.cancel()
+                self.modelProgressTask = nil
+                completion(box.value)
+                self.modelLoading = false
+                self.applyAnalysisHold()
+                self.updatePreparation(pictureProgress: 0)
+            }
+        }
+    }
+
+    /// Wires a new pump's callbacks to this engine and starts it.
+    private func install(_ pump: StereoPump) {
+        pump.onPerformance = performanceForwarder()
+        pump.onUnshowablePicture = unshowablePictureForwarder()
+        pump.onProcessingBuffering = { [weak self, weak pump] held in
+            Task { @MainActor in
+                guard let self, let pump, self.pump === pump else { return }
+                self.setDepthBuffering(held)
+            }
+        }
+        pump.onProcessingProgress = { [weak self, weak pump] progress in
+            Task { @MainActor in
+                guard let self, let pump, self.pump === pump else { return }
+                self.updatePreparation(pictureProgress: progress)
+            }
+        }
+        pump.updateConfig(makePumpConfig())
+        pump.start()
+        self.pump = pump
+        pushSubtitles()
     }
 
     /// Mount an externally-driven frame source instead of opening a player.
@@ -971,6 +1103,7 @@ public final class Pseudo3DStereoEngine {
                 self?.onVideoSizeKnown?(size)
                 self?.scheduleRefitBurst()
                 self?.pushSubtitles()
+                self?.updatePreparation()
             }
         }
 
@@ -987,18 +1120,7 @@ public final class Pseudo3DStereoEngine {
             Task { @MainActor in self.onPlaybackError?() }
             return false
         }
-        pump.onPerformance = performanceForwarder()
-        pump.onUnshowablePicture = unshowablePictureForwarder()
-        pump.onProcessingBuffering = { [weak self, weak pump] held in
-            Task { @MainActor in
-                guard let self, let pump, self.pump === pump else { return }
-                self.setDepthBuffering(held)
-            }
-        }
-        pump.updateConfig(makePumpConfig())
-        pump.start()
-        self.pump = pump
-        pushSubtitles()
+        install(pump)
         return true
     }
 
@@ -1151,6 +1273,12 @@ public final class Pseudo3DStereoEngine {
         timeControlObservation?.invalidate()
         timeControlObservation = nil
         intendsToPlay = false
+        loadGeneration += 1
+        modelLoading = false
+        modelProgressTask?.cancel()
+        modelProgressTask = nil
+        hasShownPicture = false
+        preparation = nil
         setDepthBuffering(false)
         involuntaryResumeCount = 0
         player?.pause()
@@ -1167,6 +1295,13 @@ public final class Pseudo3DStereoEngine {
         loopB = nil
         didReportDuration = false
     }
+}
+
+/// Carries a value the compiler can't prove `Sendable` across one hop; the
+/// value is only used on the side it lands on.
+private struct UncheckedSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
 }
 
 #endif
