@@ -16,8 +16,10 @@ import CoreMedia
 import os
 
 extension AVPlayerItem {
-    /// Apply the spatial-audio policy: spatialize only genuine multichannel
-    /// (5.1/7.1) audio, and play mono/stereo non-spatialized.
+    /// Apply the spatial-audio policy. When a custom-rendered video has an
+    /// owning scene, permit all channel layouts so its stereo and surround
+    /// audio can be anchored to that scene. Else preserve the app's default
+    /// of spatializing only true multichannel audio.
     ///
     /// visionOS defaults video items to `.monoStereoAndMultichannel`, so it
     /// head-tracks even plain stereo — anchoring the sound to a window position
@@ -30,9 +32,9 @@ extension AVPlayerItem {
     ///
     /// Call once per item right after creation. Not KVO-compliant, so setting
     /// it eagerly (before playback) is the intended usage.
-    public func applySpatialAudioPolicy() {
+    public func applySpatialAudioPolicy(sceneIdentifier: String? = nil) {
         guard !RAVEMediaPolicy.spatializeStereo else { return }
-        allowedAudioSpatializationFormats = .multichannel
+        allowedAudioSpatializationFormats = sceneIdentifier == nil ? .multichannel : .monoStereoAndMultichannel
     }
 }
 
@@ -42,41 +44,53 @@ extension AVPlayer {
     /// `allowedAudioSpatializationFormats` only gates the stereo→spatial upmix,
     /// not the anchoring that makes audio seem to come from the wrong window).
     ///
-    /// visionOS 26 defaults a player to `CAAutomaticSpatialAudio`, which
-    /// spatializes even plain stereo and anchors it to a window position — often
-    /// the wrong one with several player windows open. This bypasses
-    /// spatialization for mono/stereo and keeps head-tracked spatial audio for
-    /// genuine multichannel (5.1/7.1). Being per-player (not the process-global
-    /// `AVAudioSession` intended experience), simultaneous stereo and surround
-    /// windows each behave correctly.
+    /// A custom Metal player doesn't provide AVPlayer with a visual counterpart
+    /// for automatic anchoring. When given the owning scene ID, this explicitly
+    /// anchors mono/stereo and surround sound to that scene; otherwise it keeps
+    /// the prior bypass for mono/stereo and head-tracks genuine multichannel.
     ///
-    /// `.bypassed` is applied immediately (fixes the common stereo case with no
-    /// startup race); the policy upgrades to `.headTracked` once the audio is
-    /// confirmed multichannel. Confirmation is layered because no single probe
+    /// The scene anchor (or bypass without a scene ID) is applied immediately;
+    /// when there is no scene ID, the policy upgrades once audio is confirmed
+    /// multichannel. Confirmation is layered because no single probe
     /// covers every source: file tracks, then HLS variant/rendition channel
     /// counts, then (HLS media playlists such as Jellyfin's `main.m3u8` expose
     /// neither) the item's own tracks once it is `.readyToPlay`. The last
-    /// probe is why a surround HLS stream no longer stays pinned to
-    /// `.bypassed` — the asset-level track load alone returns nothing for it.
+    /// probe is why a surround HLS stream doesn't stay in its initial mode —
+    /// the asset-level track load alone returns nothing for it.
     ///
     /// Genuine multichannel is head-tracked, or head-locked (`.fixed`) under
     /// `RAVEMediaPolicy.headLockedSurround`, which a live player follows.
-    public func applySpatialAudioPolicy(for asset: AVURLAsset) {
-        RAVESpatialAudioPlayers.register(self)
-        guard !RAVEMediaPolicy.spatializeStereo else {
-            if RAVEMediaPolicy.headLockedSurround { intendedSpatialAudioExperience = .fixed(soundStageSize: .automatic) }
-            return
+    public func applySpatialAudioPolicy(for asset: AVURLAsset, sceneIdentifier: String? = nil) {
+        RAVESpatialAudioPlayers.register(self, sceneIdentifier: sceneIdentifier)
+        if RAVEMediaPolicy.headLockedSurround && RAVEMediaPolicy.spatializeStereo {
+            intendedSpatialAudioExperience = .fixed(soundStageSize: .automatic)
+        } else if RAVEMediaPolicy.headLockedSurround {
+            if let sceneIdentifier {
+                intendedSpatialAudioExperience = .headTracked(.scene(identifier: sceneIdentifier), soundStageSize: .automatic)
+            } else {
+                intendedSpatialAudioExperience = .bypassed
+            }
+        } else if let sceneIdentifier {
+            // Custom Metal rendering doesn't give AVPlayer a visual view to
+            // anchor against. Name the window explicitly so concurrent
+            // players don't all anchor their sound to the first scene.
+            intendedSpatialAudioExperience = .headTracked(.scene(identifier: sceneIdentifier), soundStageSize: .automatic)
+        } else if !RAVEMediaPolicy.spatializeStereo {
+            intendedSpatialAudioExperience = .bypassed
         }
-        intendedSpatialAudioExperience = .bypassed
+        guard !RAVEMediaPolicy.spatializeStereo else { return }
         let item = currentItem
         Task { [weak self] in
             let found = await asset.detectMultichannelAudio(item: item)
             guard let self, self.currentItem === item else { return }
             guard let found else {
-                RAVEMediaLog.spatialAudio.info("Stereo or mono: spatial audio bypassed")
+                RAVEMediaLog.spatialAudio.info(sceneIdentifier == nil
+                    ? "Stereo or mono: spatial audio bypassed"
+                    : "Stereo or mono: audio anchored to its scene")
                 return
             }
-            self.intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience
+            RAVESpatialAudioPlayers.markMultichannel(self)
+            self.intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience(sceneIdentifier: sceneIdentifier)
             RAVEMediaLog.spatialAudio.info("Multichannel (\(found, privacy: .public)): \(RAVEMediaPolicy.headLockedSurround ? "head-locked" : "head-tracked", privacy: .public) spatial audio")
         }
     }
@@ -85,7 +99,9 @@ extension AVPlayer {
     /// changed. Bypassed (stereo) players stay bypassed.
     fileprivate func refreshSurroundAnchoring() {
         guard !(intendedSpatialAudioExperience is BypassedSpatialAudio) else { return }
-        intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience
+        intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience(
+            sceneIdentifier: RAVESpatialAudioPlayers.sceneIdentifier(for: self)
+        )
     }
 }
 
@@ -93,21 +109,50 @@ extension AVPlayer {
 /// `RAVEMediaPolicy.headLockedSurround` reaches the ones playing.
 enum RAVESpatialAudioPlayers {
     private static let players = OSAllocatedUnfairLock(uncheckedState: NSHashTable<AVPlayer>.weakObjects())
+    private static let sceneIdentifiers = OSAllocatedUnfairLock(uncheckedState: [ObjectIdentifier: String]())
+    private static let multichannelPlayers = OSAllocatedUnfairLock(uncheckedState: Set<ObjectIdentifier>())
 
-    static var surroundExperience: any SpatialAudioExperience {
+    static func surroundExperience(sceneIdentifier: String? = nil) -> any SpatialAudioExperience {
         if RAVEMediaPolicy.headLockedSurround { return .fixed(soundStageSize: .automatic) }
+        if let sceneIdentifier { return .headTracked(.scene(identifier: sceneIdentifier), soundStageSize: .automatic) }
         return RAVEMediaPolicy.spatializeStereo
             ? AutomaticSpatialAudio.automatic
             : .headTracked(.automatic, soundStageSize: .automatic)
     }
 
-    static func register(_ player: AVPlayer) {
+    static func register(_ player: AVPlayer, sceneIdentifier: String?) {
         players.withLockUnchecked { _ = $0.add(player) }
+        let identifier = ObjectIdentifier(player)
+        let liveIDs = Set(players.withLockUnchecked { $0.allObjects.map(ObjectIdentifier.init) })
+        sceneIdentifiers.withLockUnchecked { values in
+            values = values.filter { liveIDs.contains($0.key) }
+            if let sceneIdentifier { values[identifier] = sceneIdentifier }
+            else { values.removeValue(forKey: identifier) }
+        }
+        multichannelPlayers.withLockUnchecked { values in
+            values = values.intersection(liveIDs)
+            values.remove(identifier)
+        }
+    }
+
+    static func markMultichannel(_ player: AVPlayer) {
+        multichannelPlayers.withLockUnchecked { $0.insert(ObjectIdentifier(player)) }
+    }
+
+    static func sceneIdentifier(for player: AVPlayer) -> String? {
+        sceneIdentifiers.withLockUnchecked { $0[ObjectIdentifier(player)] }
     }
 
     static func refreshSurroundAnchoring() {
         let live = players.withLockUnchecked { $0.allObjects }
-        for player in live { player.refreshSurroundAnchoring() }
+        let liveIDs = Set(live.map(ObjectIdentifier.init))
+        sceneIdentifiers.withLockUnchecked { values in values = values.filter { liveIDs.contains($0.key) } }
+        multichannelPlayers.withLockUnchecked { values in values = values.intersection(liveIDs) }
+        let multichannel = multichannelPlayers.withLockUnchecked { $0 }
+        let shouldRefresh = RAVEMediaPolicy.spatializeStereo ? liveIDs : multichannel
+        for player in live where shouldRefresh.contains(ObjectIdentifier(player)) {
+            player.refreshSurroundAnchoring()
+        }
     }
 }
 

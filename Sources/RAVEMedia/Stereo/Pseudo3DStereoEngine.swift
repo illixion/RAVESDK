@@ -202,6 +202,7 @@ public final class Pseudo3DStereoEngine {
         reportPlaybackState()
     }
     private var player: AVPlayer?
+    private var spatialAudioSceneIdentifier: String?
     private var playerItem: AVPlayerItem? {
         didSet { playerItem?.preferredMaximumResolution = preferredMaximumResolution }
     }
@@ -771,7 +772,8 @@ public final class Pseudo3DStereoEngine {
     /// - Parameter packedStereo: the video is already stereo, packed this way.
     ///   It plays as real 3D, cropped per eye, and needs no depth model;
     ///   `depthMode` is ignored. Nil is the fake-3D warp of a mono video.
-    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false, httpHeaderFields: [String: String]? = nil, packedStereo: PackedStereoLayout? = nil) {
+    public func load(url: URL, roomActive: Bool, depthMode requestedMode: Pseudo3DDepthMode? = nil, startAt: Double? = nil, startPaused: Bool = false, httpHeaderFields: [String: String]? = nil, packedStereo: PackedStereoLayout? = nil, spatialAudioSceneIdentifier: String? = nil) {
+        updateSpatialAudioSceneIdentifier(spatialAudioSceneIdentifier)
         if let requestedMode { depthMode = requestedMode }
         if let httpHeaderFields { self.httpHeaderFields = httpHeaderFields }
         guard loadedURL != url || packedLayout != packedStereo else { return }
@@ -844,7 +846,7 @@ public final class Pseudo3DStereoEngine {
             ? AVURLAsset(url: url)
             : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": self.httpHeaderFields])
         let item = AVPlayerItem(asset: asset)
-        item.applySpatialAudioPolicy()
+        item.applySpatialAudioPolicy(sceneIdentifier: self.spatialAudioSceneIdentifier)
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey as String: true
@@ -852,7 +854,7 @@ public final class Pseudo3DStereoEngine {
         item.add(output)
 
         let player = AVPlayer(playerItem: item)
-        player.applySpatialAudioPolicy(for: asset)
+        player.applySpatialAudioPolicy(for: asset, sceneIdentifier: self.spatialAudioSceneIdentifier)
         player.isMuted = startMuted
         player.volume = startVolume
         // `play()` starts at the default rate, so every resume keeps the speed.
@@ -989,6 +991,17 @@ public final class Pseudo3DStereoEngine {
         } else if isRoomActive {
             play()
         }
+    }
+
+    /// Update the scene anchor after SwiftUI has connected its owning window.
+    /// Scene delegates can publish the identifier just after the first render.
+    public func updateSpatialAudioSceneIdentifier(_ identifier: String?) {
+        guard spatialAudioSceneIdentifier != identifier else { return }
+        spatialAudioSceneIdentifier = identifier
+        guard let player, let item = player.currentItem,
+              let asset = item.asset as? AVURLAsset else { return }
+        item.applySpatialAudioPolicy(sceneIdentifier: identifier)
+        player.applySpatialAudioPolicy(for: asset, sceneIdentifier: identifier)
     }
 
     /// Loads the real-time depth source on a background thread, then calls
