@@ -22,6 +22,7 @@ public struct RAVEExternalStereoVideoView: View {
     private let packedStereo: PackedStereoLayout?
     private let squareCorners: Bool
     private let subtitles: StereoSubtitleFrame?
+    private let onProcessingBuffering: ((Bool) -> Void)?
     private let onPerformance: ((StereoPerformance) -> Void)?
     @State private var engine = Pseudo3DStereoEngine()
 
@@ -32,7 +33,9 @@ public struct RAVEExternalStereoVideoView: View {
                 subtitles: StereoSubtitleFrame? = nil,
                 onUnavailable: @escaping (Pseudo3DFailure?) -> Void,
                 onToggleChrome: @escaping () -> Void = {},
-                onPerformance: ((StereoPerformance) -> Void)? = nil) {
+                onPerformance: ((StereoPerformance) -> Void)? = nil,
+                onProcessingBuffering: ((Bool) -> Void)? = nil) {
+        self.onProcessingBuffering = onProcessingBuffering
         self.onPerformance = onPerformance
         self.packedStereo = packedStereo
         self.squareCorners = squareCorners
@@ -53,6 +56,7 @@ public struct RAVEExternalStereoVideoView: View {
                 engine.setSquareCorners(squareCorners)
                 engine.onPlaybackError = { [engine] in onUnavailable(engine.failure) }
                 engine.onPerformance = onPerformance
+                engine.onProcessingBufferingChanged = onProcessingBuffering
                 engine.setSubtitles(subtitles)
                 content.add(engine.makeVideoEntity())
                 engine.observeVideoSize(content: content)

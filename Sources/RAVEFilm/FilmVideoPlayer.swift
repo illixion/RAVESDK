@@ -524,7 +524,7 @@ public final class FilmVideoPlayer {
             for sample in segment.samples {
                 // A suspended renderer may never report ready, so check
                 // while waiting, not after.
-                while !canEnqueue || !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
+                while !canEnqueue || (onSampleBuffer == nil && !renderer.isReadyForMoreMediaData), decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(5))
                 }
                 guard !Task.isCancelled else { return }
@@ -535,7 +535,7 @@ public final class FilmVideoPlayer {
                                                          doNotDisplay: hidden)
                 else { continue }
                 onSampleBuffer?(buffer)
-                renderer.enqueue(buffer)
+                if onSampleBuffer == nil { renderer.enqueue(buffer) }
                 bufferedUntil = max(bufferedUntil, Double(sample.presentationTime + sample.duration) / Double(timescale))
 
                 // Start from the first frame that will be shown. Waiting for the
@@ -574,14 +574,14 @@ public final class FilmVideoPlayer {
                 while primed, !Task.isCancelled, queuedUntil - currentTime > pictureAheadSeconds * max(1, rate) {
                     try? await Task.sleep(for: .milliseconds(10))
                 }
-                while !canEnqueue || !renderer.isReadyForMoreMediaData, decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
+                while !canEnqueue || (onSampleBuffer == nil && !renderer.isReadyForMoreMediaData), decoderRecovery?.checkRenderer() != true, !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(5))
                 }
                 guard !Task.isCancelled else { return }
                 if decoderRecovery?.checkRenderer() == true { return }
                 if format == nil { format = CMSampleBufferGetFormatDescription(frame.picture) }
-                if let stereo = frame.stereo { onSampleBuffer?(stereo) }
-                renderer.enqueue(frame.picture)
+                onSampleBuffer?(frame.stereo ?? frame.picture)
+                if onSampleBuffer == nil { renderer.enqueue(frame.picture) }
                 let end = CMSampleBufferGetPresentationTimeStamp(frame.picture) + CMSampleBufferGetDuration(frame.picture)
                 queuedUntil = max(queuedUntil, end.seconds)
                 if queuedUntil - bufferedUntil >= 0.5 { bufferedUntil = queuedUntil }
@@ -592,6 +592,9 @@ public final class FilmVideoPlayer {
                     }
                 }
             }
+            // Publish the last partial interval too, so EOF is not mistaken
+            // for missing picture data by the common transport governor.
+            bufferedUntil = max(bufferedUntil, queuedUntil)
         } catch {
             guard !Task.isCancelled else { return }
             status = "Picture failed: \(error.localizedDescription)"
@@ -604,7 +607,7 @@ public final class FilmVideoPlayer {
     /// ahead of the target are out of the way.
     private func startWhenPrimed(target: Double, resume: Bool, requested: Date) async {
         let deadline = Date().addingTimeInterval(2)
-        while !Task.isCancelled, !renderer.hasSufficientMediaDataForReliablePlaybackStart,
+        while !Task.isCancelled, onSampleBuffer == nil, !renderer.hasSufficientMediaDataForReliablePlaybackStart,
               renderer.isReadyForMoreMediaData, Date() < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }

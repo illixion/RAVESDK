@@ -122,6 +122,7 @@ public final class Pseudo3DStereoEngine {
     // Source / clock
     public var onAnalysisPlayerChanged: ((AVPlayer?) -> Void)?
     private var analysisBuffering = false
+    public var onProcessingBufferingChanged: ((Bool) -> Void)?
     private var depthBuffering = false
     private var isAnalysisHeld: Bool { analysisBuffering || depthBuffering }
     public func setAnalysisBuffering(_ held: Bool) {
@@ -129,7 +130,9 @@ public final class Pseudo3DStereoEngine {
         applyAnalysisHold()
     }
     private func setDepthBuffering(_ held: Bool) {
+        guard depthBuffering != held else { return }
         depthBuffering = held
+        onProcessingBufferingChanged?(held)
         applyAnalysisHold()
     }
     private func applyAnalysisHold() {
@@ -882,7 +885,7 @@ public final class Pseudo3DStereoEngine {
         }
         guard let pump = StereoPump(
             videoRenderer: videoRenderer,
-            frameSource: AVPlayerFrameSource(output: output),
+            frameSource: AVPlayerFrameSource(output: output, item: item),
             warp: warp,
             startHostTime: startHostTime,
             depthSource: depthSource,
@@ -895,8 +898,11 @@ public final class Pseudo3DStereoEngine {
         }
         pump.onPerformance = performanceForwarder()
         pump.onUnshowablePicture = unshowablePictureForwarder()
-        pump.onProcessingBuffering = { [weak self] held in
-            Task { @MainActor in self?.setDepthBuffering(held) }
+        pump.onProcessingBuffering = { [weak self, weak pump] held in
+            Task { @MainActor in
+                guard let self, let pump, self.pump === pump else { return }
+                self.setDepthBuffering(held)
+            }
         }
         pump.updateConfig(makePumpConfig())
         pump.start()
@@ -983,8 +989,11 @@ public final class Pseudo3DStereoEngine {
         }
         pump.onPerformance = performanceForwarder()
         pump.onUnshowablePicture = unshowablePictureForwarder()
-        pump.onProcessingBuffering = { [weak self] held in
-            Task { @MainActor in self?.setDepthBuffering(held) }
+        pump.onProcessingBuffering = { [weak self, weak pump] held in
+            Task { @MainActor in
+                guard let self, let pump, self.pump === pump else { return }
+                self.setDepthBuffering(held)
+            }
         }
         pump.updateConfig(makePumpConfig())
         pump.start()
@@ -1086,7 +1095,7 @@ public final class Pseudo3DStereoEngine {
                 paused: isAnalysisHeld ? !intendsToPlay : player.timeControlStatus != .playing,
                 muted: player.isMuted,
                 buffered: buffered,
-                waiting: isAnalysisHeld || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                waiting: !isAnalysisHeld && player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             )
         )
     }
@@ -1142,7 +1151,7 @@ public final class Pseudo3DStereoEngine {
         timeControlObservation?.invalidate()
         timeControlObservation = nil
         intendsToPlay = false
-        depthBuffering = false
+        setDepthBuffering(false)
         involuntaryResumeCount = 0
         player?.pause()
         if let videoOutput { playerItem?.remove(videoOutput) }

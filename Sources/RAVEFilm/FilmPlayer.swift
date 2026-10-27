@@ -55,11 +55,59 @@ public final class FilmPlayer {
     public var onCaptionSourceChanged: (() -> Void)?
     var captionSource: (any FilmAudioSource)? { client }
     public private(set) var analysisBuffering = false
+    private var captionsHeld = false
+    private var depthHeld = false
+    private var mediaHeld = false
+    @ObservationIgnored private var readinessTask: Task<Void, Never>?
+
     public func setAnalysisBuffering(_ held: Bool) {
+        captionsHeld = held
+        applyReadinessHold()
+    }
+    public func setDepthBuffering(_ held: Bool) {
+        depthHeld = held
+        applyReadinessHold()
+    }
+    private func applyReadinessHold() {
+        let held = captionsHeld || depthHeld || mediaHeld
         guard analysisBuffering != held else { return }
         analysisBuffering = held
-        if held { startTask?.cancel(); audio?.pause(); video.pause() }
+        if held {
+            startTask?.cancel()
+            audio?.pause()
+            streamer?.focus(on: currentFrame)
+            video.pause()
+        }
         else if isPlaying { resume() }
+    }
+
+    /// The transport clock stops before the next missing object-audio segment
+    /// is heard. The streamer and picture feed keep filling while stopped.
+    private func monitorReadiness() {
+        readinessTask?.cancel()
+        readinessTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                guard let self else { return }
+                guard self.isPlaying, self.video.isPrimed else { continue }
+                let time = self.currentTime
+                let margin = (self.mediaHeld ? 0.5 : 0.15) * self.speed
+                var ready = self.video.bufferedUntil >= min(self.duration - 0.05, time + margin)
+                if let audio = self.audio, let scene = self.scene {
+                    // The audio renderer leads the visible picture by route
+                    // latency. Inspect its actual read position at boundaries.
+                    let audioFrame = max(self.currentFrame, self.frame(for: time, in: scene))
+                    let first = audioFrame / scene.segmentFrames
+                    let last = min(scene.segmentCount - 1, first + (self.streamer?.lookahead ?? 0),
+                        (audioFrame + Int(margin * Double(scene.sampleRate))) / scene.segmentFrames)
+                    if first <= last {
+                        ready = ready && (first...last).allSatisfy { audio.isResident($0) }
+                    }
+                }
+                self.mediaHeld = !ready
+                self.applyReadinessHold()
+            }
+        }
     }
 
     // Tuning, read by the stage every tick.
@@ -179,6 +227,7 @@ public final class FilmPlayer {
 
         if let scene, let client { install(scene, client: client, at: seconds) }
         status = video.status
+        monitorReadiness()
     }
 
     private func install(_ scene: AtmosScene, client: any FilmAudioSource, at seconds: Double) {
@@ -270,6 +319,7 @@ public final class FilmPlayer {
         startTask?.cancel()
         isPlaying = false
         audio?.pause()
+        streamer?.focus(on: currentFrame)
         video.pause()
     }
 
@@ -293,6 +343,8 @@ public final class FilmPlayer {
         scene = nil
         lastState = [:]
         isPlaying = false
+        readinessTask?.cancel(); readinessTask = nil
+        captionsHeld = false; depthHeld = false; mediaHeld = false
         analysisBuffering = false
         client = nil
     }
