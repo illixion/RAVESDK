@@ -730,8 +730,10 @@ one inference at a time, newest request first, cancelled requests dropped before
 they reach the model, model released after 20 s idle.
 
 **Stereo still photos: `RAVEStereoPhotoView`** (visionOS) uses Vergence's shared
-mesh warp and a tagged 10-bit PQ frame in `RAVEVideoPlaneView`. It keeps extended-P3
-half-float colour through adjustments/warp. `onReady` lets the caller hide its flat
+mesh warp and a 10-bit frame in `RAVEVideoPlaneView`, tagged SDR (P3 primaries,
+BT.709 transfer). It keeps extended-P3 half-float colour through adjustments/warp.
+Not PQ: Core Image puts SDR white at 203 nits in PQ, which visionOS shows as HDR,
+visibly brighter than the window's white. `onReady` lets the caller hide its flat
 fallback only after enqueue; hide stereo / show flat for menus and transitions.
 Bakes are serialized across windows and bounded by `StillStereoResolution` after
 the host's own dynamic/global/per-image resolution rules. Photo-quality estimator

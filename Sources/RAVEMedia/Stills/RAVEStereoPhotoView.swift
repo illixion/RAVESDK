@@ -252,7 +252,6 @@ public struct RAVEStereoPhotoView: View {
                 }
                 let result = try engine.render(image: source, depth: depth, strength: strength, separatesBoundaries: separatesBoundaries, mirror: mirror)
                 try Task.checkCancellation()
-                let pq = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
                 func buffer(_ texture: MTLTexture) throws -> CVReadOnlyPixelBuffer {
                     var pixelBuffer: CVPixelBuffer?
                     let attributes: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:],
@@ -266,14 +265,22 @@ public struct RAVEStereoPhotoView: View {
                     // The warp uses top-left texture UVs; Core Image uses bottom-left.
                     let oriented = ci.transformed(by: CGAffineTransform(translationX: 0,
                         y: CGFloat(texture.height)).scaledBy(x: 1, y: -1))
+                    // SDR, wide gamut, 10-bit. A PQ tag put the photo's white at
+                    // 203 nits, which visionOS shows as HDR, brighter than the
+                    // window's own white. Encode with the space the tags decode
+                    // to, so the two can't disagree.
                     CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
-                        kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
+                        kCVImageBufferColorPrimaries_P3_D65, .shouldPropagate)
                     CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
-                        kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, .shouldPropagate)
+                        kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)
                     CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
-                        kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+                        kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
+                    guard let attachments = CVBufferCopyAttachments(pixelBuffer, .shouldPropagate),
+                          let sdr = CVImageBufferCreateColorSpaceFromAttachments(attachments)?.takeRetainedValue() else {
+                        throw StillStereoRenderer.Failure.allocation
+                    }
                     context.render(oriented, to: pixelBuffer, bounds: CGRect(x: 0, y: 0,
-                        width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer)), colorSpace: pq)
+                        width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer)), colorSpace: sdr)
                     return CVReadOnlyPixelBuffer(CVMutablePixelBuffer(unsafeBuffer: pixelBuffer))
                 }
                 let tagged: [CMTaggedDynamicBuffer] = [
