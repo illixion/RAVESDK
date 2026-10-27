@@ -65,11 +65,10 @@ extension AVPlayer {
         if RAVEMediaPolicy.headLockedSurround && RAVEMediaPolicy.spatializeStereo {
             intendedSpatialAudioExperience = .fixed(soundStageSize: .automatic)
         } else if RAVEMediaPolicy.headLockedSurround {
-            if let sceneIdentifier {
-                intendedSpatialAudioExperience = .headTracked(.scene(identifier: sceneIdentifier), soundStageSize: .automatic)
-            } else {
-                intendedSpatialAudioExperience = .bypassed
-            }
+            // Head-locked sound is for surround. Stereo stays unspatialized
+            // even in a custom-rendered window, or it would still be anchored
+            // to that scene; genuine multichannel upgrades to `.fixed` below.
+            intendedSpatialAudioExperience = .bypassed
         } else if let sceneIdentifier {
             // Custom Metal rendering doesn't give AVPlayer a visual view to
             // anchor against. Name the window explicitly so concurrent
@@ -96,12 +95,19 @@ extension AVPlayer {
     }
 
     /// Re-applies the surround policy after `RAVEMediaPolicy.headLockedSurround`
-    /// changed. Bypassed (stereo) players stay bypassed.
-    fileprivate func refreshSurroundAnchoring() {
-        guard !(intendedSpatialAudioExperience is BypassedSpatialAudio) else { return }
-        intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience(
-            sceneIdentifier: RAVESpatialAudioPlayers.sceneIdentifier(for: self)
-        )
+    /// changed. Bypassed (stereo) players stay bypassed, except that a stereo
+    /// player anchored to its scene is bypassed once sound is head-locked and
+    /// re-anchored when it is not.
+    fileprivate func refreshSurroundAnchoring(multichannel: Bool) {
+        let sceneIdentifier = RAVESpatialAudioPlayers.sceneIdentifier(for: self)
+        if multichannel || RAVEMediaPolicy.spatializeStereo {
+            guard !(intendedSpatialAudioExperience is BypassedSpatialAudio) else { return }
+            intendedSpatialAudioExperience = RAVESpatialAudioPlayers.surroundExperience(sceneIdentifier: sceneIdentifier)
+        } else if RAVEMediaPolicy.headLockedSurround {
+            intendedSpatialAudioExperience = .bypassed
+        } else if let sceneIdentifier {
+            intendedSpatialAudioExperience = .headTracked(.scene(identifier: sceneIdentifier), soundStageSize: .automatic)
+        }
     }
 }
 
@@ -149,9 +155,8 @@ enum RAVESpatialAudioPlayers {
         sceneIdentifiers.withLockUnchecked { values in values = values.filter { liveIDs.contains($0.key) } }
         multichannelPlayers.withLockUnchecked { values in values = values.intersection(liveIDs) }
         let multichannel = multichannelPlayers.withLockUnchecked { $0 }
-        let shouldRefresh = RAVEMediaPolicy.spatializeStereo ? liveIDs : multichannel
-        for player in live where shouldRefresh.contains(ObjectIdentifier(player)) {
-            player.refreshSurroundAnchoring()
+        for player in live {
+            player.refreshSurroundAnchoring(multichannel: multichannel.contains(ObjectIdentifier(player)))
         }
     }
 }
