@@ -52,6 +52,15 @@ public final class FilmPlayer {
     /// The track playing; see `selectAudioTrack(_:)`.
     public private(set) var audioStream: Int?
     @ObservationIgnored private var client: (any FilmAudioSource)?
+    public var onCaptionSourceChanged: (() -> Void)?
+    var captionSource: (any FilmAudioSource)? { client }
+    public private(set) var analysisBuffering = false
+    public func setAnalysisBuffering(_ held: Bool) {
+        guard analysisBuffering != held else { return }
+        analysisBuffering = held
+        if held { startTask?.cancel(); audio?.pause(); video.pause() }
+        else if isPlaying { resume() }
+    }
 
     // Tuning, read by the stage every tick.
     /// Mute is independent of saved gain tuning and keeps the clock running.
@@ -183,6 +192,7 @@ public final class FilmPlayer {
         levels = Array(repeating: 0, count: scene.elements.count)
         streamTask = Task.detached(priority: .userInitiated) { await streamer.run() }
         logger.info("Atmos: \(scene.elements.count) elements, \(scene.segmentCount) segments, start \(scene.startSeconds)s, stream \(client.audioStream ?? -1)")
+        onCaptionSourceChanged?()
     }
 
     /// Switches the audio to track `index` (from `audioTracks`) at the
@@ -283,6 +293,7 @@ public final class FilmPlayer {
         scene = nil
         lastState = [:]
         isPlaying = false
+        analysisBuffering = false
         client = nil
     }
 
@@ -311,13 +322,13 @@ public final class FilmPlayer {
             video.pause()
         }
         guard let audio, let streamer, let scene else {
-            if isPlaying { video.play() }
+            if isPlaying, !analysisBuffering { video.play() }
             return
         }
         let frame = frame(for: filmTime, in: scene)
         streamer.focus(on: frame)
         audio.playhead.store(frame, ordering: .relaxed)
-        guard isPlaying else { return }
+        guard isPlaying, !analysisBuffering else { return }
 
         startTask = Task { [weak self] in
             guard let self else { return }

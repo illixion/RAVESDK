@@ -120,6 +120,23 @@ public final class Pseudo3DStereoEngine {
     private var didStartSynchronizer = false
 
     // Source / clock
+    public var onAnalysisPlayerChanged: ((AVPlayer?) -> Void)?
+    private var analysisBuffering = false
+    private var depthBuffering = false
+    private var isAnalysisHeld: Bool { analysisBuffering || depthBuffering }
+    public func setAnalysisBuffering(_ held: Bool) {
+        analysisBuffering = held
+        applyAnalysisHold()
+    }
+    private func setDepthBuffering(_ held: Bool) {
+        depthBuffering = held
+        applyAnalysisHold()
+    }
+    private func applyAnalysisHold() {
+        if isAnalysisHeld { player?.pause() }
+        else if intendsToPlay, isRoomActive { player?.play() }
+        reportPlaybackState()
+    }
     private var player: AVPlayer?
     private var playerItem: AVPlayerItem? {
         didSet { playerItem?.preferredMaximumResolution = preferredMaximumResolution }
@@ -781,6 +798,7 @@ public final class Pseudo3DStereoEngine {
         self.player = player
         self.playerItem = item
         self.videoOutput = output
+        onAnalysisPlayerChanged?(player)
 
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
@@ -877,6 +895,9 @@ public final class Pseudo3DStereoEngine {
         }
         pump.onPerformance = performanceForwarder()
         pump.onUnshowablePicture = unshowablePictureForwarder()
+        pump.onProcessingBuffering = { [weak self] held in
+            Task { @MainActor in self?.setDepthBuffering(held) }
+        }
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump
@@ -962,6 +983,9 @@ public final class Pseudo3DStereoEngine {
         }
         pump.onPerformance = performanceForwarder()
         pump.onUnshowablePicture = unshowablePictureForwarder()
+        pump.onProcessingBuffering = { [weak self] held in
+            Task { @MainActor in self?.setDepthBuffering(held) }
+        }
         pump.updateConfig(makePumpConfig())
         pump.start()
         self.pump = pump
@@ -972,7 +996,7 @@ public final class Pseudo3DStereoEngine {
     public func play() {
         isRoomActive = true
         intendsToPlay = true
-        player?.play()
+        if !isAnalysisHeld { player?.play() }
     }
 
     public func pause() {
@@ -983,7 +1007,7 @@ public final class Pseudo3DStereoEngine {
     /// See `intendsToPlay`. Leaves a finished, non-looping item parked on its
     /// last frame.
     private func resumeAfterInvoluntaryPause() {
-        guard let player, let item = player.currentItem else { return }
+        guard !isAnalysisHeld, let player, let item = player.currentItem else { return }
         let duration = item.duration.seconds
         if duration.isFinite, duration > 0, player.currentTime().seconds >= duration - 0.25 { return }
         guard involuntaryResumeCount < Self.maxInvoluntaryResumes else {
@@ -1032,7 +1056,7 @@ public final class Pseudo3DStereoEngine {
             // `!= .paused`: a still-buffering player (.waitingToPlay…) counts
             // as playing, so the transient inactive flap at window open
             // doesn't capture it as "paused" and kill autoplay.
-            wasPlayingBeforeRoomExit = player?.timeControlStatus != .paused
+            wasPlayingBeforeRoomExit = isAnalysisHeld ? intendsToPlay : player?.timeControlStatus != .paused
             pause()
         }
     }
@@ -1059,10 +1083,10 @@ public final class Pseudo3DStereoEngine {
             .init(
                 currentTime: currentTime ?? player.currentTime().seconds,
                 duration: duration.isFinite ? duration : 0,
-                paused: player.timeControlStatus != .playing,
+                paused: isAnalysisHeld ? !intendsToPlay : player.timeControlStatus != .playing,
                 muted: player.isMuted,
                 buffered: buffered,
-                waiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                waiting: isAnalysisHeld || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             )
         )
     }
@@ -1118,12 +1142,14 @@ public final class Pseudo3DStereoEngine {
         timeControlObservation?.invalidate()
         timeControlObservation = nil
         intendsToPlay = false
+        depthBuffering = false
         involuntaryResumeCount = 0
         player?.pause()
         if let videoOutput { playerItem?.remove(videoOutput) }
         timeObserver = nil
         endObserver = nil
         failureObserver = nil
+        onAnalysisPlayerChanged?(nil)
         player = nil
         playerItem = nil
         videoOutput = nil
