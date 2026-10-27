@@ -732,8 +732,17 @@ they reach the model, model released after 20 s idle.
 **Stereo still photos: `RAVEStereoPhotoView`** (visionOS) uses Vergence's shared
 mesh warp and a 10-bit frame in `RAVEVideoPlaneView`, tagged SDR (P3 primaries,
 BT.709 transfer). It keeps extended-P3 half-float colour through adjustments/warp.
-Not PQ: Core Image puts SDR white at 203 nits in PQ, which visionOS shows as HDR,
-visibly brighter than the window's white. `onReady` lets the caller hide its flat
+An SDR still is never PQ: Core Image puts SDR white at 203 nits in PQ, which visionOS
+shows as HDR, visibly brighter than the window's white. An HDR still (`headroom` above
+1, a source the host tone mapped to the display's headroom) is encoded **HLG**
+(BT.2020, no static metadata; Core Image writes linear 1.0 at signal 0.75, so SDR white
+stays the window's own and highlights sit above it) with a mid-tone power of 1.09
+(`aiPhotoHDRMidGamma`; HLG renders mid-tones brighter than the flat view). PQ was tried
+first and abandoned (device, 2026-10-27): absolute nits needed a guessed white level,
+and the player's tone mapping followed the declared peak (CLLI 312 dimmed the sun,
+1000 dimmed and flattened the whole picture), washing saturated highlights toward
+white. The pixels were exact (decoded back on the Mac), so the loss is in the player.
+`onReady` lets the caller hide its flat
 fallback only after enqueue; hide stereo / show flat for menus and transitions.
 Bakes are serialized across windows and bounded by `StillStereoResolution` after
 the host's own dynamic/global/per-image resolution rules. Photo-quality estimator

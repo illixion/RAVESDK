@@ -25,9 +25,17 @@ public struct RAVEStereoPhotoView: View {
     var isFlipped: Bool
     var opacity: Double
     var fadeDuration: TimeInterval
+    /// Brightest value in `image`, in multiples of SDR white (an HDR still the
+    /// host has tone mapped to the display's headroom). Above 1 the frame is HDR.
+    var headroom: Float
     var onReady: (Bool) -> Void
     /// Debug A/B only until the disconnected renderer is checked on device.
     @AppStorage("aiPhotoSeparateBoundaries") private var separatesBoundaries = false
+    /// Power applied to an HDR still's linear picture before HLG encoding, anchored at
+    /// SDR white. HLG's own rendering showed mid-tones (water, sky) brighter than the
+    /// flat view; 1.06 was still slightly bright and 1.12 slightly dark (device,
+    /// 2026-10-27). Debug knob.
+    @AppStorage("aiPhotoHDRMidGamma") private var hdrMidGamma = 1.09
     @State private var presentation = Presentation()
     @Environment(\.physicalMetrics) private var metrics
     @Environment(\.scenePhase) private var scenePhase
@@ -35,18 +43,21 @@ public struct RAVEStereoPhotoView: View {
     public init(image: CGImage, depth: StillDepthMap, contentID: AnyHashable,
                 adjustments: RAVEAIDepthPhotoView.Adjustments = .neutral,
                 cornerRadius: CGFloat = 0, isFlipped: Bool = false, opacity: Double = 1, fadeDuration: TimeInterval = 0.25,
-                onReady: @escaping (Bool) -> Void = { _ in }) {
+                headroom: Float = 1, onReady: @escaping (Bool) -> Void = { _ in }) {
         self.image = image; self.depth = depth; self.contentID = contentID
         self.adjustments = adjustments; self.cornerRadius = cornerRadius
-        self.isFlipped = isFlipped; self.opacity = opacity; self.fadeDuration = fadeDuration; self.onReady = onReady
+        self.isFlipped = isFlipped; self.opacity = opacity; self.fadeDuration = fadeDuration
+        self.headroom = headroom; self.onReady = onReady
     }
 
     public var body: some View {
         GeometryReader { geometry in
             let widthMeters = Float(metrics.convert(geometry.size.width, to: .meters))
             let strength = Float(Pseudo3DSettings.default.depthStrength) / max(widthMeters, 1)
+            let hdr = headroom > 1 ? HDR(midGamma: hdrMidGamma) : nil
             let key = Key(content: contentID, image: ObjectIdentifier(image), depth: depth.id, adjustments: adjustments,
-                          strength: Int((strength * 100_000).rounded()), boundaries: separatesBoundaries, mirror: isFlipped)
+                          strength: Int((strength * 100_000).rounded()), boundaries: separatesBoundaries, mirror: isFlipped,
+                          headroom: Int((headroom * 100).rounded()), hdrGamma: Int(((hdr?.midGamma ?? 0) * 100).rounded()))
             FadingPlane(entity: presentation.entity,
                 aspect: Float(image.width) / Float(image.height), squareCorners: cornerRadius == 0,
                 opacity: Float(opacity), onAttach: { [presentation] in
@@ -63,7 +74,8 @@ public struct RAVEStereoPhotoView: View {
                     // stays visible while a replacement is built.
                     do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
                     await presentation.load(image: image, depth: depth, adjustments: adjustments,
-                                            strength: strength, separatesBoundaries: separatesBoundaries, mirror: isFlipped, key: key, onReady: onReady)
+                                            strength: strength, separatesBoundaries: separatesBoundaries, mirror: isFlipped,
+                                            hdr: hdr, key: key, onReady: onReady)
                 }
         }
         .allowsHitTesting(false)
@@ -116,6 +128,14 @@ public struct RAVEStereoPhotoView: View {
         let strength: Int
         let boundaries: Bool
         let mirror: Bool
+        let headroom: Int
+        let hdrGamma: Int
+    }
+
+    /// An HDR still, encoded as HLG: SDR white stays the window's own white and the
+    /// highlights sit above it.
+    fileprivate struct HDR: Sendable {
+        let midGamma: Double
     }
 
     @MainActor @Observable fileprivate final class Presentation {
@@ -181,14 +201,14 @@ public struct RAVEStereoPhotoView: View {
             cachedFrame = nil
         }
         func load(image: CGImage, depth: StillDepthMap, adjustments: RAVEAIDepthPhotoView.Adjustments,
-                  strength: Float, separatesBoundaries: Bool, mirror: Bool, key: RAVEStereoPhotoView.Key, onReady: @escaping (Bool) -> Void) async {
+                  strength: Float, separatesBoundaries: Bool, mirror: Bool, hdr: RAVEStereoPhotoView.HDR?, key: RAVEStereoPhotoView.Key, onReady: @escaping (Bool) -> Void) async {
             Self.live.add(self)
             generation += 1
             let token = generation
             readiness = onReady
             do {
                 let frame = try await RAVEStereoPhotoView.Worker.shared.prepareStill(image: image, depth: depth,
-                    adjustments: adjustments, strength: strength, separatesBoundaries: separatesBoundaries, mirror: mirror)
+                    adjustments: adjustments, strength: strength, separatesBoundaries: separatesBoundaries, mirror: mirror, hdr: hdr)
                 guard !Task.isCancelled, token == generation else { return }
                 if renderer.status == .failed {
                     await renderer.flush(removingDisplayedImage: true)
@@ -224,7 +244,8 @@ public struct RAVEStereoPhotoView: View {
     private actor Worker {
         static let shared = Worker()
         func prepareStill(image: CGImage, depth: StillDepthMap,
-                     adjustments: RAVEAIDepthPhotoView.Adjustments, strength: Float, separatesBoundaries: Bool, mirror: Bool) throws -> RAVEStereoPhotoView.Frame {
+                     adjustments: RAVEAIDepthPhotoView.Adjustments, strength: Float, separatesBoundaries: Bool, mirror: Bool,
+                     hdr: RAVEStereoPhotoView.HDR?) throws -> RAVEStereoPhotoView.Frame {
             try Task.checkCancellation()
             return try autoreleasepool {
                 guard let engine = StillStereoRenderer() else { throw StillStereoRenderer.Failure.unavailable }
@@ -265,22 +286,41 @@ public struct RAVEStereoPhotoView: View {
                     // The warp uses top-left texture UVs; Core Image uses bottom-left.
                     let oriented = ci.transformed(by: CGAffineTransform(translationX: 0,
                         y: CGFloat(texture.height)).scaledBy(x: 1, y: -1))
-                    // SDR, wide gamut, 10-bit. A PQ tag put the photo's white at
-                    // 203 nits, which visionOS shows as HDR, brighter than the
-                    // window's own white. Encode with the space the tags decode
-                    // to, so the two can't disagree.
-                    CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
-                        kCVImageBufferColorPrimaries_P3_D65, .shouldPropagate)
-                    CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
-                        kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)
-                    CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
-                        kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
-                    guard let attachments = CVBufferCopyAttachments(pixelBuffer, .shouldPropagate),
-                          let sdr = CVImageBufferCreateColorSpaceFromAttachments(attachments)?.takeRetainedValue() else {
-                        throw StillStereoRenderer.Failure.allocation
+                    let bounds = CGRect(x: 0, y: 0,
+                        width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+                    if let hdr {
+                        // PQ is absolute: the player tone mapped it by its declared peak, which
+                        // dimmed the sun or the whole picture, and washed saturated highlights.
+                        // HLG is relative. Core Image writes linear 1.0 at signal 0.75 (reference
+                        // white), so SDR white is the window's own and the highlights sit above
+                        // it, with no nit calibration and no static metadata.
+                        let shaped = hdr.midGamma == 1 ? oriented
+                            : oriented.applyingFilter("CIGammaAdjust", parameters: ["inputPower": hdr.midGamma])
+                        CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
+                            kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
+                        CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
+                            kCVImageBufferTransferFunction_ITU_R_2100_HLG, .shouldPropagate)
+                        CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
+                            kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
+                        context.render(shaped, to: pixelBuffer, bounds: bounds,
+                            colorSpace: CGColorSpace(name: CGColorSpace.itur_2100_HLG)!)
+                    } else {
+                        // SDR, wide gamut, 10-bit. A PQ tag put the photo's white at
+                        // 203 nits, which visionOS shows as HDR, brighter than the
+                        // window's own white. Encode with the space the tags decode
+                        // to, so the two can't disagree.
+                        CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
+                            kCVImageBufferColorPrimaries_P3_D65, .shouldPropagate)
+                        CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
+                            kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)
+                        CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
+                            kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
+                        guard let attachments = CVBufferCopyAttachments(pixelBuffer, .shouldPropagate),
+                              let sdr = CVImageBufferCreateColorSpaceFromAttachments(attachments)?.takeRetainedValue() else {
+                            throw StillStereoRenderer.Failure.allocation
+                        }
+                        context.render(oriented, to: pixelBuffer, bounds: bounds, colorSpace: sdr)
                     }
-                    context.render(oriented, to: pixelBuffer, bounds: CGRect(x: 0, y: 0,
-                        width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer)), colorSpace: sdr)
                     return CVReadOnlyPixelBuffer(CVMutablePixelBuffer(unsafeBuffer: pixelBuffer))
                 }
                 let tagged: [CMTaggedDynamicBuffer] = [
