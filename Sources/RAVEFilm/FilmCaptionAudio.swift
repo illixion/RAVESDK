@@ -52,6 +52,9 @@ private actor FilmCaptionReader {
             throw URLError(.cannotDecodeContentData)
         }
         mono.frameLength = mono.frameCapacity
+        // AVAudioPCMBuffer does not guarantee that newly allocated samples are
+        // zeroed. The mix below accumulates into every output frame.
+        destination.initialize(repeating: 0, count: Int(mono.frameLength))
         let excluded = Set(scene.elements.filter { $0.bedChannel?.uppercased() == "LFE" }.map(\.channel))
         var channels = 0
         for (group, buffer) in zip(scene.groups, content.buffers) {
