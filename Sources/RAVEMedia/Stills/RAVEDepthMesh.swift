@@ -1,11 +1,10 @@
 /*
  RAVEMedia - Depth Mesh
 
- The pieces of a depth-displaced picture: a grid mesh pushed toward the
- viewer by a still's depth map, and the texture that goes on it. Shared by
- Hypnos's "3D Depth" thumbnails and every AI 3D picture
- (`RAVEAIDepthPhotoView`), which differ only in scale: a thumbnail is 32 pt
- deep on a 112-vertex grid, a photo window a few times that on a denser one.
+ The pieces of a depth-displaced picture: a grid mesh positioned from a
+ still's depth map around its convergence plane, and the texture that goes on
+ it. Used by Hypnos's "3D Depth" thumbnails and the legacy relief-photo view;
+ Hypnos's full-size AI 3D uses the tagged-eye stereo renderer instead.
 
  Rules found on device (Hypnos's 3D Depth thumbnails, 2026-10-07): clamp the
  texture (the default repeat pulled the opposite edge in as a 1-px line),
@@ -31,11 +30,15 @@ public enum RAVEDepthMesh {
         public var edgeFalloff: CGFloat
         /// Vertices along the long edge.
         public var gridLongSide: Int
+        /// Depth value that lies on the mesh's reference plane. Values above
+        /// it move toward the viewer; values below it recede behind the plane.
+        public var convergence: Float
 
-        public init(span: CGFloat, edgeFalloff: CGFloat, gridLongSide: Int) {
+        public init(span: CGFloat, edgeFalloff: CGFloat, gridLongSide: Int, convergence: Float = 0) {
             self.span = span
             self.edgeFalloff = edgeFalloff
             self.gridLongSide = gridLongSide
+            self.convergence = min(max(convergence, 0), 1)
         }
     }
 
@@ -191,7 +194,7 @@ public enum RAVEDepthMesh {
                 positions.append(SIMD3(
                     (u - 0.5) * widthMeters,
                     (0.5 - v) * heightMeters,
-                    baseMeters + d * fade * spanMeters
+                    baseMeters + (d - shape.convergence) * fade * spanMeters
                 ))
                 uvs.append(SIMD2(u, 1 - v))
             }
