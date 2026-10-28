@@ -152,6 +152,7 @@ public enum RAVEDepthMesh {
         // Softened first: a hard depth step lands on the vertex grid as a
         // staircase along the subject's outline (device, 2026-10-07). Spread
         // over a few texels, it reads as a slope at any grid density.
+        let preciseDepth = depth.preciseValues == nil ? nil : depth
         let depth = softened(depth)
         let longSide = shape.gridLongSide
         let cols = cell.width >= cell.height
@@ -180,9 +181,13 @@ public enum RAVEDepthMesh {
                 )
                 let t = min(max(edge / falloff, 0), 1)
                 let fade = t * t * (3 - 2 * t)
-                let d = sample(depth,
-                               u: Float(crop.minX) + u * Float(crop.width),
-                               v: Float(crop.minY) + v * Float(crop.height))
+                let sampleU = Float(crop.minX) + u * Float(crop.width)
+                let sampleV = Float(crop.minY) + v * Float(crop.height)
+                // Photo-quality estimates retain normalized floats. Use
+                // those for the mesh instead of quantizing them back to 8-bit;
+                // the fast thumbnail path keeps its softened byte map.
+                let d = preciseDepth.map { sample($0, u: sampleU, v: sampleV) }
+                    ?? sample(depth, u: sampleU, v: sampleV)
                 positions.append(SIMD3(
                     (u - 0.5) * widthMeters,
                     (0.5 - v) * heightMeters,
@@ -245,10 +250,13 @@ public enum RAVEDepthMesh {
         let x0 = Int(x), y0 = Int(y)
         let x1 = min(x0 + 1, map.width - 1), y1 = min(y0 + 1, map.height - 1)
         let fx = x - Float(x0), fy = y - Float(y0)
-        func at(_ x: Int, _ y: Int) -> Float { Float(map.values[y * map.width + x]) }
+        func at(_ x: Int, _ y: Int) -> Float {
+            let index = y * map.width + x
+            return map.preciseValues?[index] ?? (Float(map.values[index]) / 255)
+        }
         let top = at(x0, y0) * (1 - fx) + at(x1, y0) * fx
         let bottom = at(x0, y1) * (1 - fx) + at(x1, y1) * fx
-        return (top * (1 - fy) + bottom * fy) / 255
+        return top * (1 - fy) + bottom * fy
     }
 }
 #endif
