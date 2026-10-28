@@ -241,6 +241,8 @@ public final class Pseudo3DStereoEngine {
     /// active is that involuntary one, and is undone. Same fix as Hypnos's
     /// flat `NativeMetalVideoPlayerView`, which already had it; this engine
     /// didn't, so turning on auto-3D brought the frozen first frame back.
+    /// Slideshow hosts can recover automatically; interactive viewers respect interrupts.
+    public var resumesAfterInterruptions = true
     private var intendsToPlay = false
     /// Caps the involuntary resume so a system that insists on pausing can't
     /// drive a play/pause loop. Reset whenever playback actually runs.
@@ -912,8 +914,10 @@ public final class Pseudo3DStereoEngine {
                 self.reportPlaybackState()
                 if status == .playing {
                     self.involuntaryResumeCount = 0
-                } else if status == .paused, self.intendsToPlay, self.isRoomActive {
+                } else if status == .paused, self.intendsToPlay, self.isRoomActive, self.resumesAfterInterruptions {
                     self.resumeAfterInvoluntaryPause()
+                } else if status == .paused, !self.resumesAfterInterruptions, !self.isAnalysisHeld {
+                    self.intendsToPlay = false
                 }
             }
         }
@@ -1195,7 +1199,7 @@ public final class Pseudo3DStereoEngine {
         if active {
             // Restore the state from room exit — a manual pause sticks across
             // focus/room flaps; a playing (e.g. wall-snapped) window resumes.
-            if wasPlayingBeforeRoomExit { play() }
+            if resumesAfterInterruptions, wasPlayingBeforeRoomExit { play() }
         } else {
             // `!= .paused`: a still-buffering player (.waitingToPlay…) counts
             // as playing, so the transient inactive flap at window open
