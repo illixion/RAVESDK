@@ -20,6 +20,15 @@ import VergenceApple
 public enum RAVEMediaLog {
     private static let subsystem = VergenceLog.subsystem
 
+    // Vergence emits from the real-time depth-inference queue. Keep OS logging
+    // off that stack: a Vision Pro crash showed the queue's 512 KB stack
+    // reaching its guard while os_log was formatting a routed depth event.
+    // Bound pending work so a noisy producer cannot turn logging into an
+    // unbounded queue or retain an arbitrary number of frame diagnostics.
+    private static let routingQueue = DispatchQueue(label: "com.rave.media-log-routing")
+    private static let routingSlots = DispatchSemaphore(value: 64)
+    private static let routingThreadKey = "RAVEMediaLog.isRoutingVergenceEvent"
+
     /// The live player: engage decisions, playback fit.
     public static let pipeline = DebugLogger(subsystem: subsystem, category: "Pseudo3D")
 
@@ -47,14 +56,35 @@ public enum RAVEMediaLog {
             VergenceLog.pipeline.category: pipeline,
         ]
         VergenceLog.sink = { event in
-            let logger = loggers[event.category] ?? DebugLogger(subsystem: subsystem, category: event.category)
-            let message = debugMessage(event.message)
-            switch event.level {
-            case .debug: logger.debug(message)
-            case .info: logger.info(message)
-            case .notice: logger.notice(message)
-            case .error: logger.error(message)
-            case .fault: logger.fault(message)
+            // DebugLogger writes to os_log. If that path ever feeds back into
+            // VergenceLog, drop the nested event instead of recursing until
+            // the producer's thread stack is exhausted.
+            guard Thread.current.threadDictionary[routingThreadKey] == nil else { return }
+            // The depth path can produce diagnostics continuously. Never make
+            // that real-time queue wait for the log writer or accumulate an
+            // unbounded backlog when the system logger is under pressure.
+            guard routingSlots.wait(timeout: .now()) == .success else { return }
+            routingQueue.async {
+                let threadDictionary = Thread.current.threadDictionary
+                guard threadDictionary[routingThreadKey] == nil else {
+                    routingSlots.signal()
+                    return
+                }
+                threadDictionary[routingThreadKey] = true
+                defer {
+                    threadDictionary.removeObject(forKey: routingThreadKey)
+                    routingSlots.signal()
+                }
+
+                let logger = loggers[event.category] ?? DebugLogger(subsystem: subsystem, category: event.category)
+                let message = debugMessage(event.message)
+                switch event.level {
+                case .debug: logger.debug(message)
+                case .info: logger.info(message)
+                case .notice: logger.notice(message)
+                case .error: logger.error(message)
+                case .fault: logger.fault(message)
+                }
             }
         }
     }()
