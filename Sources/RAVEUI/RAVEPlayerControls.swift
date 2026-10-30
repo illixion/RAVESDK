@@ -296,7 +296,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         } label: { moreLabel }
             .ravePlayerButtonStyle()
             .help("More")
-            .popover(isPresented: $showsMore, arrowEdge: .bottom) {
+            .ravePlayerPopover(isPresented: $showsMore, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 4) { moreContent(fit) }
                     .buttonStyle(.borderless)
                     // Rows read as a menu's, not as accent-coloured links (iOS).
@@ -380,7 +380,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             .ravePlayerButtonStyle()
             .help("Volume")
             .accessibilityLabel("Volume")
-            .popover(isPresented: $showsVolume, arrowEdge: .bottom) {
+            .ravePlayerPopover(isPresented: $showsVolume, arrowEdge: .bottom) {
                 HStack(spacing: 12) {
                     muteControl
                     volumeSlider
