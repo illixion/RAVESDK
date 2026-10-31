@@ -6,7 +6,7 @@
  (nonce ‖ ciphertext ‖ tag) of a JSON `Reply`.
  */
 
-import DebugTrace
+import DebugLog
 import CryptoKit
 import Foundation
 import Network

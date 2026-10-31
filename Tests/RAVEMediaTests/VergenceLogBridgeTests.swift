@@ -1,4 +1,4 @@
-import DebugTrace
+import DebugLog
 import Testing
 @testable import RAVEMedia
 

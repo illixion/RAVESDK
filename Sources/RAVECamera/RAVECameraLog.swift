@@ -7,7 +7,7 @@
  in-app console and debug traces; unannotated values are private.
  */
 
-import DebugTrace
+import DebugLog
 import Foundation
 import os
 

@@ -38,7 +38,7 @@
  Coordinates are the listener's: −z forward, +x right, +y up, metres.
  */
 
-import DebugTrace
+import DebugLog
 import AVFAudio
 import Foundation
 import os

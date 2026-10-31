@@ -35,7 +35,7 @@
  The view draws nothing.
  */
 
-import DebugTrace
+import DebugLog
 import AVFAudio
 import os
 import RAVESpatialAudio

@@ -34,7 +34,7 @@
  the last.
  */
 
-import DebugTrace
+import DebugLog
 import Foundation
 import os
 

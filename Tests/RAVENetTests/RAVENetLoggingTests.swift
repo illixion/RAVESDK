@@ -1,6 +1,4 @@
-#if canImport(DebugTrace)
-import DebugTrace
-#endif
+import DebugLog
 import Foundation
 import Testing
 @testable import RAVENet
@@ -17,28 +15,27 @@ struct RAVENetLoggingTests {
         #expect(!endpoint.contains("pw"))
     }
 
-    #if canImport(DebugTrace)
     @Test("The default sink keeps each value's privacy instead of publishing the line")
     func defaultSinkKeepsPrivacy() {
         let buffer = DebugLogBuffer(mode: .development)
-        let logger = DebugLogger(subsystem: "pro.rave.tests.net", category: "websocket", buffer: buffer)
+        let logger = DebugLogger(subsystem: "pro.rave.tests.net", category: "websocket",
+                                 hub: DebugLogHub(sinks: [buffer], privacyMode: .development))
         let host = "home.example"
         logger.info("connecting to wss://\(host, privacy: .private(mask: .hash)) attempt \(3)")
         let record = buffer.records().first
         #expect(record?.redactedMessage.hasPrefix("connecting to wss://<hash:") == true)
         #expect(record?.redactedMessage.hasSuffix("attempt 3") == true)
     }
-    #else
-    @Test("The stand-in message withholds every value that is not public")
-    func standInWithholdsPrivateValues() {
+
+    @Test("A transport message withholds every value that is not public")
+    func messageWithholdsPrivateValues() {
         let host = "home.example"
         let token = "abc123"
         let message: RAVENetLogMessage = "wss://\(host, privacy: .private(mask: .hash)) \(token, privacy: .sensitive) \(token) attempt \(3) \("ready", privacy: .public)"
-        let text = message.description
+        let text = message.redacted
         #expect(text.hasPrefix("wss://<hash:"))
         #expect(text.hasSuffix(" <private> <private> attempt 3 ready"))
         #expect(!text.contains(host))
         #expect(!text.contains(token))
     }
-    #endif
 }

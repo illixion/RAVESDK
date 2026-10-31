@@ -43,7 +43,7 @@
  the feed waits until a view has shown the entity (`pictureAttached`).
  */
 
-import DebugTrace
+import DebugLog
 import AVFoundation
 import CoreMedia
 import Foundation

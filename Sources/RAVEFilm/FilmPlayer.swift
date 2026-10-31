@@ -19,7 +19,7 @@
  Items without Atmos objects (the plugin answers 422) play picture only.
  */
 
-import DebugTrace
+import DebugLog
 import CoreMedia
 import Foundation
 import Observation

@@ -27,7 +27,7 @@
  its own copy until the film player replaces it.
  */
 
-import DebugTrace
+import DebugLog
 import AVFoundation
 import Foundation
 import os

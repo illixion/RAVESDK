@@ -14,7 +14,7 @@
  session with `.mixWithOthers` can't become the Now Playing app.
  */
 
-import DebugTrace
+import DebugLog
 import Foundation
 import MediaPlayer
 import os

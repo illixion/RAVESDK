@@ -3,16 +3,17 @@
 
  The depth pipeline now lives in Vergence, which logs through its own
  `VergenceLog` (os.Logger when nothing else is attached). `routeVergenceLogs()`
- attaches DebugTrace instead, so Vergence's lines reach the in-app console and
- debug traces like everything else. Each message arrives as segments with
- their privacy and is rebuilt as a `DebugLogMessage`, never as finished text,
- so DebugTrace applies its own rules value by value.
+ attaches `DebugLogger` (the DebugLog facility) instead, so Vergence's lines reach
+ every sink on its hub: the unified log, and in an app that links DebugTrace the
+ in-app console and debug traces like everything else. Each message arrives as
+ segments with their privacy and is rebuilt as a `DebugLogMessage`, never as
+ finished text, so the hub applies its privacy rules value by value.
 
  **The subsystem stays `Bundle.main.bundleIdentifier`**, so these lines sort
  with the host app's in Console.app and in traces.
  */
 
-import DebugTrace
+import DebugLog
 import Foundation
 import os
 import VergenceApple
@@ -44,7 +45,7 @@ public enum RAVEMediaLog {
     /// tick or a depth-conversion frame spends its time.
     public static var signposter: OSSignposter { VergenceLog.signposter }
 
-    /// Sends Vergence's log lines through DebugTrace. Idempotent; the stereo
+    /// Sends Vergence's log lines through DebugLog. Idempotent; the stereo
     /// engine calls it, and hosts that convert without playing call it at launch.
     public static func routeVergenceLogs() {
         _ = routing
@@ -89,7 +90,7 @@ public enum RAVEMediaLog {
         }
     }()
 
-    /// The same message for DebugTrace, value by value with its privacy.
+    /// The same message as a `DebugLogMessage`, value by value with its privacy.
     static func debugMessage(_ message: VergenceLogMessage) -> DebugLogMessage {
         var out: DebugLogMessage = ""
         for segment in message.segments {

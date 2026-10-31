@@ -11,8 +11,6 @@ let needsVergence: Set<String> = [
     "RAVEMedia", "RAVEMediaTests", "RAVESlideshow", "RAVEFilm", "RAVEFilmTests", "RAVEFilmLab",
 ]
 
-let applePlatforms: [Platform] = [.macOS, .iOS, .tvOS, .visionOS]
-
 let package = Package(
     name: "RAVESDK",
     // visionOS is the product focus. macOS is declared because nothing in
@@ -47,17 +45,20 @@ let package = Package(
     ],
     // The two sibling packages, neither depending on a RAVE package, so
     // neither adds a cycle or a RAVESDK <-> RAVEEngine edge (see
-    // ~/Projects/CLAUDE.md). Targets that log do it through DebugTrace's
-    // `DebugLogger`, so their lines reach the in-app console and debug
-    // traces; the console also hosts its capture button. Vergence is the
+    // ~/Projects/CLAUDE.md). Targets that only log depend on DebugTrace's
+    // small `DebugLog` product (`DebugLogger` and its sinks; no dependencies,
+    // builds on Linux): their lines reach the in-app console and debug traces
+    // whenever the app links DebugTrace, without these targets pulling it in.
+    // The two that use more of DebugTrace link the whole product: RAVEConsole
+    // (the log buffer's reader, `DebugTraceUI`'s capture button) and RAVEBrowser
+    // (its tool surface is a set of `DebugEndpoint`s). Vergence is the
     // public stereo 3D pipeline RAVEMedia is moving into.
     dependencies: [.package(path: "../DebugTrace")] + (hasVergence ? [.package(path: "../vergence")] : []),
     targets: [
-        // DebugTrace only where it builds (Apple platforms): RAVENet and the
-        // targets above it also build on Linux for RoboFrame's Pi kiosk, and
-        // log there through RAVENet's stderr stand-in.
-        .target(name: "RAVENet", dependencies: [.product(name: "DebugTrace", package: "DebugTrace", condition: .when(platforms: applePlatforms))]),
-        .testTarget(name: "RAVENetTests", dependencies: ["RAVENet", .product(name: "DebugTrace", package: "DebugTrace", condition: .when(platforms: applePlatforms))]),
+        // DebugLog on every platform: RAVENet and the targets above it also build
+        // on Linux for RoboFrame's Pi kiosk, where the facility logs to stderr.
+        .target(name: "RAVENet", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
+        .testTarget(name: "RAVENetTests", dependencies: ["RAVENet", .product(name: "DebugLog", package: "DebugTrace")]),
         .target(name: "RAVEUI", dependencies: ["RAVEMediaCore"]),
         .target(name: "RAVEMediaCore"),
         .target(name: "RAVEQuestCore", dependencies: ["RAVEMediaCore"]),
@@ -85,7 +86,7 @@ let package = Package(
         // which is why nothing here reads the app's default library. (The
         // SwiftPM CLI ignores `.metal` altogether — see VergenceMetal.)
         .target(name: "RAVEMedia", dependencies: [
-            .product(name: "DebugTrace", package: "DebugTrace"),
+            .product(name: "DebugLog", package: "DebugTrace"),
             .product(name: "VergenceApple", package: "vergence"),
         ]),
         .testTarget(name: "RAVEMediaTests", dependencies: ["RAVEMedia"]),
@@ -97,7 +98,7 @@ let package = Package(
         // to encode a screen. Builds on macOS so `swift test` reaches the
         // container arithmetic; the interruption notifications are iOS-family
         // only and guarded.
-        .target(name: "RAVECamera", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
+        .target(name: "RAVECamera", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVECameraTests", dependencies: ["RAVECamera"]),
         // Source-agnostic slideshow lifecycle, local sync payloads, display
         // settings, and render hooks. Apps provide their own data adapters and
@@ -121,11 +122,11 @@ let package = Package(
         // Also: `RAVEChannelFeed` (live multichannel PCM → host-aligned
         // per-channel pull streams, Longwave's Moonlight surround) and the
         // host-clock alignment RAVEFilm's Atmos objects use.
-        .target(name: "RAVESpatialAudio", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
+        .target(name: "RAVESpatialAudio", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVESpatialAudioTests", dependencies: ["RAVESpatialAudio"]),
         .target(
             name: "RAVEFilm",
-            dependencies: ["RAVESpatialAudio", "RAVEMedia", .product(name: "DebugTrace", package: "DebugTrace")],
+            dependencies: ["RAVESpatialAudio", "RAVEMedia", .product(name: "DebugLog", package: "DebugTrace")],
             // UIWindow.avDisplayManager is an AVKit category; Swift's autolink
             // drops the framework when nothing else from it is used.
             linkerSettings: [.linkedFramework("AVKit", .when(platforms: [.tvOS, .visionOS]))]
@@ -135,7 +136,7 @@ let package = Package(
         // another device: the receiver shows a QR code carrying a fresh
         // public key, the sender seals the payload to it with HPKE and sends
         // it over Bonjour. First consumer is Hypnos provisioning an Apple TV.
-        .target(name: "RAVEDeviceSetup", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
+        .target(name: "RAVEDeviceSetup", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVEDeviceSetupTests", dependencies: ["RAVEDeviceSetup"]),
         // A tool surface over a WKWebView the app already shows — navigate,
         // read (Mozilla's Readability, bundled), numbered elements, marked
@@ -147,7 +148,8 @@ let package = Package(
         // that owns its WKWebView, the page-feature seam, hibernation,
         // profiles, and the opt-in call layer. The camera proxy relays
         // RAVECamera's feeds, hence that dependency; RAVECamera builds on every
-        // platform this does, so it is unconditional. DebugTrace for logging.
+        // platform this does, so it is unconditional. DebugTrace for its tool
+        // endpoints (`DebugEndpoint`), which is why it is not on DebugLog.
         // A language model as the apps use one (messages in, text out, a JSON
         // schema, streaming) and Ollama behind it. Foundation only, so it
         // builds everywhere; PCC or the on-device model become further
@@ -158,8 +160,9 @@ let package = Package(
         // (what, where to, a preview of the payload), the 15-minute grants,
         // and where it appears (a window on visionOS/macOS, a sheet on
         // iOS/tvOS). Here and not in DebugTrace: it ships in App Store builds,
-        // and DebugTrace cannot import RAVESDK, which depends on it.
-        .target(name: "RAVEConsent", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
+        // and DebugTrace cannot import RAVESDK, which depends on it. Logs
+        // through DebugLog alone: no registry, trace or server comes with it.
+        .target(name: "RAVEConsent", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVEConsentTests", dependencies: ["RAVEConsent"]),
         .target(
             name: "RAVEBrowser",

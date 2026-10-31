@@ -8,7 +8,7 @@
 //  is never logged at all.
 //
 
-import DebugTrace
+import DebugLog
 import Foundation
 
 enum RAVEConsentLog {

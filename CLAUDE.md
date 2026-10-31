@@ -100,7 +100,7 @@ is easy to skip.
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
 | `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/keys/hover/drag/select/check/upload/scroll/find/wait, dismiss overlays, tiered JavaScript (`RAVEScriptPolicy`), real input on the Mac (`RAVENativeInput`, `RAVEBackgroundWindow`); `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
-| `RAVEConsent` | Asking before personal data leaves an app's hands: `RAVEConsentCenter` (rules: grants keyed by kind and destination, "for 15 Minutes", supersede, history, a `status` with ids and decisions only), `RAVEConsentRequest` (kind, destination, title, detail, a `RAVEConsentPreview` of the exact payload: image or text), `RAVEConsentKind` (open: each app names its own). `RAVEConsentWindow` + `.raveConsentPrompts()` show it in a utility-panel window on visionOS/macOS (an immersive space has nothing a system alert could attach to) and a sheet on iOS/tvOS. Grants are in memory only. First consumer is spatial-ai-character (screenshots; Health next). In SDK, not DebugTrace: it ships in App Store builds, and DebugTrace cannot import RAVESDK, which depends on it |
+| `RAVEConsent` | Asking before personal data leaves an app's hands: `RAVEConsentCenter` (rules: grants keyed by kind and destination, "for 15 Minutes", supersede, history, a `status` with ids and decisions only), `RAVEConsentRequest` (kind, destination, title, detail, a `RAVEConsentPreview` of the exact payload: image or text), `RAVEConsentKind` (open: each app names its own). `RAVEConsentWindow` + `.raveConsentPrompts()` show it in a utility-panel window on visionOS/macOS (an immersive space has nothing a system alert could attach to) and a sheet on iOS/tvOS. Grants are in memory only. First consumer is spatial-ai-character (screenshots; Health next). In SDK, not DebugTrace: it ships in App Store builds, and DebugTrace cannot import RAVESDK, which depends on it. Logs through the small `DebugLog` product only (no trace builder, registry or server linked) |
 
 ### Linux: the portable targets
 
@@ -111,11 +111,13 @@ manifest is evaluated on Linux it drops every other target and product (the
 `#if os(Linux)` block at the end of `Package.swift`), so a plain `swift build` /
 `swift test` there works; add a target to that list only once it builds there.
 
-- DebugTrace is Apple-only, so `RAVENet` links it on Apple platforms only.
-  `RAVENetLogMessage` is `DebugLogMessage` there; on Linux it is a stand-in
-  with the same interpolation spellings that withholds every non-`.public`
-  value, and `RAVENetOSLogger` writes to stderr, info and up unless
-  `RAVE_LOG_DEBUG=1`.
+- Logging goes through DebugTrace's dependency-free `DebugLog` product, which builds on
+  Linux: `RAVENetLogMessage` is `DebugLogMessage` on every platform and `RAVENetOSLogger`
+  is a `DebugLogger`. On Linux the facility's system sink writes to stderr (info and up
+  unless `RAVE_LOG_DEBUG=1`, every non-`.public` value withheld unless
+  `RAVE_LOG_PRIVATE=1`). It replaced RAVENet's own stand-in message type and stderr
+  logger (2026-10-31). The package manifest keeps `DebugLog` in the Linux target set
+  because DebugTrace's own manifest drops everything but `DebugLog` there.
 - `ws://` on Linux goes through `RAVEPOSIXWebSocket`, RAVENet's own RFC 6455
   client on a plain TCP socket: FoundationNetworking's `URLSessionWebSocketTask`
   (libcurl) keeps most of a core busy while a socket is open, even an idle
@@ -509,9 +511,16 @@ appear in the console. Debug traces carry them in `system-log.txt`, in developme
   development mode). Copy exports `exportMessage` (private values withheld, redactor
   applied), because a clipboard usually ends up in an LLM chat.
 
-The toolbar carries DebugTrace's `DebugTraceButton`. The logging targets (`RAVENet`,
-`RAVEMedia`, `RAVECamera`, `RAVESpatialAudio`, `RAVEFilm`, `RAVEDeviceSetup`, `RAVEConsole`,
-`RAVEBrowser`) depend on `../DebugTrace`. DebugTrace links neither RAVE package, so this adds no cycle.
+The toolbar carries DebugTrace's `DebugTraceButton`. `RAVEConsole` links the whole DebugTrace
+product (it reads `DebugLogBuffer` and the redactor, and hosts `DebugTraceUI`), and so does
+`RAVEBrowser` (its tool surface is a set of `DebugEndpoint`s). **The other logging targets
+(`RAVENet`, `RAVEMedia`, `RAVECamera`, `RAVESpatialAudio`, `RAVEFilm`, `RAVEDeviceSetup`,
+`RAVEConsent`) link only DebugTrace's `DebugLog` product**: `DebugLogger`, the privacy labels
+and the sink hub, with no dependencies. Their lines reach the in-app console and traces
+because the app links DebugTrace, which adds its sinks to the same hub; a new target that
+only logs does the same, and one that needs `DebugSurface`, the redactor or the UI links
+`DebugTrace`. This is why `RAVEConsent` is not weighed down by the trace builder. Neither
+product links a RAVE package, so this adds no cycle.
 
 **`RAVESystemMonitor`/`RAVESystemMonitorView` are Spatial Stash's GPU memory monitor,
 generalised.** That app built it to compare lossy against lossless texture storage — a
@@ -543,7 +552,7 @@ store, pump, frame sources, subtitles, Metal warp and shaders, decoder recovery;
 (`Pseudo3DStereoEngine`, `RAVEExternalStereoVideoView`), the audio policy and EQ,
 and re-exports Vergence, so the type names below still resolve through
 `import RAVEMedia`. Vergence logs through `VergenceLog`; `RAVEMediaLog.routeVergenceLogs()`
-(called by the engine's init and by Hypnos at launch) sends those lines to DebugTrace
+(called by the engine's init and by Hypnos at launch) sends those lines to DebugLog's `DebugLogger`
 with each value's privacy intact. The depth cache's cap is `VergencePolicy.depthCacheCap`.
 
 This is Spatial Stash's fake-3D pipeline, moved wholesale: monocular depth (Depth

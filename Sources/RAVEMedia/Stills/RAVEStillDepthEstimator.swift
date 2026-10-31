@@ -21,7 +21,7 @@
  */
 
 import CoreGraphics
-import DebugTrace
+import DebugLog
 import Foundation
 import Metal
 import VergenceApple

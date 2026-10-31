@@ -46,7 +46,7 @@
  Moved from the app's Atmos spike (AtmosSpikeStageView).
  */
 
-import DebugTrace
+import DebugLog
 import AudioToolbox
 import AVFAudio
 import os
