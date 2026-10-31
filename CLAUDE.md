@@ -100,6 +100,7 @@ is easy to skip.
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
 | `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/keys/hover/drag/select/check/upload/scroll/find/wait, dismiss overlays, tiered JavaScript (`RAVEScriptPolicy`), real input on the Mac (`RAVENativeInput`, `RAVEBackgroundWindow`); `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
+| `RAVEConsent` | Asking before personal data leaves an app's hands: `RAVEConsentCenter` (rules: grants keyed by kind and destination, "for 15 Minutes", supersede, history, a `status` with ids and decisions only), `RAVEConsentRequest` (kind, destination, title, detail, a `RAVEConsentPreview` of the exact payload: image or text), `RAVEConsentKind` (open: each app names its own). `RAVEConsentWindow` + `.raveConsentPrompts()` show it in a utility-panel window on visionOS/macOS (an immersive space has nothing a system alert could attach to) and a sheet on iOS/tvOS. Grants are in memory only. First consumer is spatial-ai-character (screenshots; Health next). In SDK, not DebugTrace: it ships in App Store builds, and DebugTrace cannot import RAVESDK, which depends on it |
 
 ### Linux: the portable targets
 
@@ -1039,7 +1040,7 @@ the link list.
 | `xrTimer` | `RAVEUI`, `RAVEConsole` |
 | `Oneiros` (visionOS + macOS) | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `halflife-visionos/LambdaVision` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics`, `RAVERig` |
-| `spatial-ai-character` | `RAVEUI`, `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
+| `spatial-ai-character` | `RAVEUI`, `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, `RAVEConsent`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
 
 Read this from `productName = RAVE…` in each `project.pbxproj`, not from `import RAVE…` —
 re-exports and typealiases hide a dependency from the import list.

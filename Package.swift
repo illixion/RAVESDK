@@ -43,6 +43,7 @@ let package = Package(
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
         .library(name: "RAVELLM", targets: ["RAVELLM"]),
+        .library(name: "RAVEConsent", targets: ["RAVEConsent"]),
     ],
     // The two sibling packages, neither depending on a RAVE package, so
     // neither adds a cycle or a RAVESDK <-> RAVEEngine edge (see
@@ -153,6 +154,13 @@ let package = Package(
         // implementations of the same protocol.
         .target(name: "RAVELLM"),
         .testTarget(name: "RAVELLMTests", dependencies: ["RAVELLM"]),
+        // Asking before personal data leaves an app's hands: the question
+        // (what, where to, a preview of the payload), the 15-minute grants,
+        // and where it appears (a window on visionOS/macOS, a sheet on
+        // iOS/tvOS). Here and not in DebugTrace: it ships in App Store builds,
+        // and DebugTrace cannot import RAVESDK, which depends on it.
+        .target(name: "RAVEConsent", dependencies: [.product(name: "DebugTrace", package: "DebugTrace")]),
+        .testTarget(name: "RAVEConsentTests", dependencies: ["RAVEConsent"]),
         .target(
             name: "RAVEBrowser",
             dependencies: ["RAVELLM", "RAVECamera", .product(name: "DebugTrace", package: "DebugTrace")],
