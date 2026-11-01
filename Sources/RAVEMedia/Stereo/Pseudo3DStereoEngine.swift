@@ -209,6 +209,8 @@ public final class Pseudo3DStereoEngine {
     /// to the system. A host states it with `UIWindow.avDisplayManager`.
     public private(set) var displayCriteria: AVDisplayCriteria?
     @ObservationIgnored private var displayCriteriaTask: Task<Void, Never>?
+    /// The pump's source doubles the frames (Smooth Motion).
+    @ObservationIgnored private var showsDoubledFrames = false
     private var spatialAudioSceneIdentifier: String?
     private var playerItem: AVPlayerItem? {
         didSet { playerItem?.preferredMaximumResolution = preferredMaximumResolution }
@@ -1020,7 +1022,8 @@ public final class Pseudo3DStereoEngine {
         // work at any speed (StereoPump's frame cap).
         let playerSource = AVPlayerFrameSource(output: output, item: item)
         let frameSource = interpolating(playerSource, packedStereo: packedStereo)
-        updateDisplayCriteria(item: item, doubled: frameSource is InterpolatingFrameSource)
+        showsDoubledFrames = frameSource is InterpolatingFrameSource
+        updateDisplayCriteria(item: item, doubled: showsDoubledFrames)
         let startPump: (PumpDepthSource?) -> Void = { [weak self] depthSource in
             guard let self else { return }
             guard let pump = StereoPump(
@@ -1029,7 +1032,7 @@ public final class Pseudo3DStereoEngine {
                 warp: warp,
                 startHostTime: startHostTime,
                 depthSource: depthSource,
-                frameInterval: 1.0 / 60.0,
+                frameInterval: pumpFrameInterval,
                 packedLayout: packedStereo,
                 onVideoSizeKnown: sizeCallback
             ) else {
@@ -1129,10 +1132,13 @@ public final class Pseudo3DStereoEngine {
         }
     }
 
+    /// A doubled picture, or one at another speed, states the rate it shows
+    /// so the display can show it evenly; otherwise the display stays as it is.
     private func updateDisplayCriteria(item: AVPlayerItem, doubled: Bool) {
         displayCriteriaTask?.cancel()
         displayCriteria = nil
-        guard doubled else { return }
+        let speed = Double(startRate)
+        guard doubled || speed != 1 else { return }
         // The fields' own rate, when they say: HLS measures 23.976 as ~24.
         let hint = sharedFields?.frameRate
         displayCriteriaTask = Task { @MainActor [weak self, weak item] in
@@ -1140,10 +1146,11 @@ public final class Pseudo3DStereoEngine {
             // plays, so ask for a while.
             for _ in 0 ..< 30 {
                 guard let item, !Task.isCancelled else { return }
-                if let (criteria, hertz) = await Self.doubledCriteria(for: item, rateHint: hint) {
+                if let (criteria, hertz) = await Self.criteria(for: item, rateHint: hint, doubled: doubled, speed: speed) {
                     guard !Task.isCancelled, let self else { return }
                     self.displayCriteria = criteria
-                    RAVEMediaLog.pipeline.notice("Smooth Motion: display at \(hertz, format: .fixed(precision: 3), privacy: .public) Hz")
+                    RAVEMediaLog.pipeline.notice(
+                        "\(doubled ? "Smooth Motion" : "Speed", privacy: .public): display at \(hertz, format: .fixed(precision: 3), privacy: .public) Hz")
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(500))
@@ -1151,21 +1158,30 @@ public final class Pseudo3DStereoEngine {
         }
     }
 
-    private static func doubledCriteria(for item: AVPlayerItem, rateHint: Double?) async -> (AVDisplayCriteria, Double)? {
+    private static func criteria(for item: AVPlayerItem, rateHint: Double?, doubled: Bool,
+                                 speed: Double) async -> (AVDisplayCriteria, Double)? {
         guard let track = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return nil }
-        var rate = Double(track.currentVideoFrameRate)
+        var rate = 0.0
         var format: CMFormatDescription?
         if let assetTrack = track.assetTrack {
             format = try? await assetTrack.load(.formatDescriptions).first
-            if rate <= 0, let nominal = try? await assetTrack.load(.nominalFrameRate) { rate = Double(nominal) }
+            if let nominal = try? await assetTrack.load(.nominalFrameRate), nominal > 0 { rate = Double(nominal) }
+        }
+        // What the player measures (all HLS has) is the rate shown, which
+        // the speed multiplies.
+        if rate <= 0, item.timebase.map({ CMTimebaseGetRate($0) }) ?? 0 > 0 {
+            rate = Double(track.currentVideoFrameRate) / (item.timebase.map { CMTimebaseGetRate($0) } ?? 1)
         }
         guard rate > 0 else { return nil }
-        let standard: [Double] = [24000.0 / 1001, 24, 25, 30000.0 / 1001, 30]
         // A hint close to the measure wins: 24 and 23.976 are too close for
         // a measured rate to tell apart.
         if let rateHint, abs(rateHint - rate) < 0.5 { rate = rateHint }
-        let snapped = standard.min { abs($0 - rate) < abs($1 - rate) } ?? rate
-        guard abs(snapped - rate) < 0.5, snapped < InterpolatingFrameSource.maxSourceFrameRate else { return nil }
+        let snapped = PlaybackFrameRate.snapped(rate)
+        guard abs(snapped - rate) < 0.5 else { return nil }
+        // A source too fast to double passes through as it came.
+        let doubles = doubled && snapped < InterpolatingFrameSource.maxSourceFrameRate
+        guard doubles || speed != 1 else { return nil }
+        let shown = PlaybackFrameRate.shown(source: snapped, doubled: doubles, speed: speed)
         if format == nil {
             // HLS describes no format for its tracks: a plain one of the
             // picture's size (the rate is what this states).
@@ -1178,7 +1194,7 @@ public final class Pseudo3DStereoEngine {
             format = plain
         }
         guard let format else { return nil }
-        return (AVDisplayCriteria(refreshRate: Float(2 * snapped), formatDescription: format), 2 * snapped)
+        return (AVDisplayCriteria(refreshRate: Float(shown), formatDescription: format), shown)
     }
 
     /// Wires a new pump's callbacks to this engine and starts it.
@@ -1284,7 +1300,7 @@ public final class Pseudo3DStereoEngine {
             warp: warp,
             startHostTime: startHostTime,
             depthSource: packedStereo == nil ? RealtimeDepthSource(device: warp.device) : nil,
-            frameInterval: 1.0 / 60.0,
+            frameInterval: pumpFrameInterval,
             packedLayout: packedStereo,
             onVideoSizeKnown: sizeCallback
         ) else {
@@ -1338,11 +1354,25 @@ public final class Pseudo3DStereoEngine {
 
     /// Plays at `rate` (1 is normal speed), now if playing and from every
     /// later `play()`. The pitch is kept (the item's default time-pitch).
+    /// Speed changes the frame rate: a 60 fps video at 2× shows all 120 of
+    /// its frames a second, so the pump ticks faster and the display is asked
+    /// for the rate shown (`PlaybackFrameRate`).
     public func setRate(_ rate: Float) {
+        let changed = startRate != rate
         startRate = rate
+        if changed {
+            pump?.setFrameInterval(pumpFrameInterval)
+            if let item = player?.currentItem { updateDisplayCriteria(item: item, doubled: showsDoubledFrames) }
+        }
         guard let player else { return }
         player.defaultRate = rate
         if player.rate != 0 { player.rate = rate }
+    }
+
+    /// How often the pump ticks at the speed playing: 60 a second at normal
+    /// speed or slower, that many times more faster, up to 120.
+    private var pumpFrameInterval: Double {
+        1 / PlaybackFrameRate.drawRate(speed: Double(startRate))
     }
 
     public func setLoopBounds(a: Double?, b: Double?) { loopA = a; loopB = b }

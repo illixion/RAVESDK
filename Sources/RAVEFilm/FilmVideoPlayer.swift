@@ -194,18 +194,24 @@ public final class FilmVideoPlayer {
 
     #if os(tvOS) || os(visionOS)
     /// What the picture is, for the display: its dynamic range (from the
-    /// format, HDR metadata included) and its frame rate snapped to the
-    /// standard rate it approximates. `FilmVideoView` hands this to its
+    /// format, HDR metadata included) and the frame rate it shows: the film's
+    /// snapped to the standard rate it approximates, doubled by Smooth Motion,
+    /// times the speed on visionOS (speed changes the frame rate: 60 fps at 2×
+    /// is 120; a TV would switch mode at each speed change, so tvOS keeps the
+    /// film's). `FilmVideoView` hands this to its
     /// window's AVDisplayManager: tvOS switches the TV's mode with it, and
     /// on visionOS it is how a player declares HDR video, as AVKit's player
     /// does on its own.
     public var displayCriteria: AVDisplayCriteria? {
         guard let format else { return nil }
-        let measured = frameRate ?? 24
-        let standard: [Double] = [24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60]
-        let rate = standard.min { abs($0 - measured) < abs($1 - measured) } ?? measured
-        let doubled = doublesFrameRate && rate < 40
-        return AVDisplayCriteria(refreshRate: Float(doubled ? 2 * rate : rate), formatDescription: format)
+        let film = PlaybackFrameRate.snapped(frameRate ?? 24)
+        #if os(visionOS)
+        let speed = rate
+        #else
+        let speed = 1.0
+        #endif
+        let shown = PlaybackFrameRate.shown(source: film, doubled: doublesFrameRate && film < 40, speed: speed)
+        return AVDisplayCriteria(refreshRate: Float(shown), formatDescription: format)
     }
 
     /// The picture shown has twice the film's frames (Smooth Motion in the

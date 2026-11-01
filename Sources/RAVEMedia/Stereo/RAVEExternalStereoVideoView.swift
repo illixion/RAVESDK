@@ -17,6 +17,9 @@ import SwiftUI
 /// frames (`Pseudo3DStereoEngine.interpolatesFrames`), and a packed pair too
 /// when `sharedFields` has fields computed ahead for it; like `packedStereo`
 /// both are read when a source attaches.
+///
+/// `speed` is the host clock's playback speed: the pump ticks faster with it
+/// so a faster speed shows more frames a second (60 fps at 2×, 120).
 public struct RAVEExternalStereoVideoView: View {
     private let source: any PumpFrameSource
     private let settings: Pseudo3DSettings
@@ -28,6 +31,7 @@ public struct RAVEExternalStereoVideoView: View {
     private let squareCorners: Bool
     private let subtitles: StereoSubtitleFrame?
     private let interpolatesFrames: Bool
+    private let speed: Double
     private let sharedFields: SharedFieldProvider?
     private let onProcessingBuffering: ((Bool) -> Void)?
     private let onPerformance: ((StereoPerformance) -> Void)?
@@ -39,6 +43,7 @@ public struct RAVEExternalStereoVideoView: View {
                 squareCorners: Bool = false,
                 subtitles: StereoSubtitleFrame? = nil,
                 interpolatesFrames: Bool = false,
+                speed: Double = 1,
                 sharedFields: SharedFieldProvider? = nil,
                 onUnavailable: @escaping (Pseudo3DFailure?) -> Void,
                 onToggleChrome: @escaping () -> Void = {},
@@ -50,6 +55,7 @@ public struct RAVEExternalStereoVideoView: View {
         self.squareCorners = squareCorners
         self.subtitles = subtitles
         self.interpolatesFrames = interpolatesFrames
+        self.speed = speed
         self.sharedFields = sharedFields
         self.source = source
         self.settings = settings
@@ -73,6 +79,7 @@ public struct RAVEExternalStereoVideoView: View {
                 engine.observeVideoSize(content: content)
                 engine.interpolatesFrames = interpolatesFrames
                 engine.sharedFields = sharedFields
+                engine.setRate(Float(speed))
                 engine.attach(frameSource: source, packedStereo: packedStereo)
             } update: { content in
                 engine.updateViewBounds(content.convert(geometry.frame(in: .local), from: .local, to: .scene))
@@ -92,6 +99,7 @@ public struct RAVEExternalStereoVideoView: View {
         }
         .onChange(of: chromeOpen) { _, value in engine.setChromeOpen(value, takesInput: chromeTakesInput) }
         .onChange(of: chromeTakesInput) { _, value in engine.setChromeOpen(chromeOpen, takesInput: value) }
+        .onChange(of: speed) { _, value in engine.setRate(Float(value)) }
         .onChange(of: squareCorners) { _, value in engine.setSquareCorners(value) }
         .onChange(of: subtitles) { _, value in engine.setSubtitles(value) }
         .onDisappear { engine.cleanup() }
