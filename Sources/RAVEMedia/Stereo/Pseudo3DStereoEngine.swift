@@ -340,6 +340,12 @@ public final class Pseudo3DStereoEngine {
     @ObservationIgnored public var startRate: Float = 1
     /// Restart at the top when playback reaches the end.
     @ObservationIgnored public var loops = true
+    /// Put an interpolated frame between each two of a 24-30 fps mono source
+    /// (Vergence's `InterpolatingFrameSource`), before depth and warp, so both
+    /// eyes come from the same picture. Read when a pipeline starts, so set it
+    /// before `load`/`attach` and reload to apply a change. Packed stereo
+    /// passes through: its eyes would be interpolated apart.
+    @ObservationIgnored public var interpolatesFrames = false
 
     // Callbacks
     @ObservationIgnored public var onVideoSizeKnown: ((CGSize) -> Void)?
@@ -943,7 +949,9 @@ public final class Pseudo3DStereoEngine {
         // frames, never older depth. Faster than 1× it shows no more frames a
         // second than the video has at 1×, so the inference does the same
         // work at any speed (StereoPump's frame cap).
-        let frameSource = AVPlayerFrameSource(output: output, item: item)
+        let playerSource = AVPlayerFrameSource(output: output, item: item)
+        let frameSource = interpolatesFrames && packedStereo == nil
+            ? InterpolatingFrameSource.wrappingIfSupported(playerSource) : playerSource
         let startPump: (PumpDepthSource?) -> Void = { [weak self] depthSource in
             guard let self else { return }
             guard let pump = StereoPump(
@@ -1124,6 +1132,10 @@ public final class Pseudo3DStereoEngine {
             }
         }
 
+        var frameSource = frameSource
+        if interpolatesFrames, packedStereo == nil, let lookahead = frameSource as? LookaheadFrameSource {
+            frameSource = InterpolatingFrameSource.wrappingIfSupported(lookahead)
+        }
         guard let pump = StereoPump(
             videoRenderer: videoRenderer,
             frameSource: frameSource,
