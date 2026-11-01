@@ -98,6 +98,7 @@ is easy to skip.
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `FilmPlayer.setSpeed` plays at another speed with the objects time-stretched at their own pitch (`FilmTimeStretch`: WSOLA whose splices every channel's callback shares, so the objects stay sample-locked). `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
 | `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
+| `RAVECompanion` | Pair a device with a companion computer and talk to it over authenticated channels: Bonjour announcement and knock (ports open only while a paired device asks), numeric-comparison pairing, a token per device with grants, TLS-PSK channels with per-connection identity proofs, the address link, the host's pairing server, presence (macOS) and port listener. Lifted from Longwave; its wire format, which the Windows Companion shares, is pinned by golden vectors |
 | `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/keys/hover/drag/select/check/upload/scroll/find/wait, dismiss overlays, tiered JavaScript (`RAVEScriptPolicy`), real input on the Mac (`RAVENativeInput`, `RAVEBackgroundWindow`); `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
 | `RAVEConsent` | Asking before personal data leaves an app's hands: `RAVEConsentCenter` (rules: grants keyed by kind and destination, "for 15 Minutes", supersede, history, a `status` with ids and decisions only), `RAVEConsentRequest` (kind, destination, title, detail, a `RAVEConsentPreview` of the exact payload: image or text), `RAVEConsentKind` (open: each app names its own). `RAVEConsentWindow` + `.raveConsentPrompts()` show it in a utility-panel window on visionOS/macOS (an immersive space has nothing a system alert could attach to) and a sheet on iOS/tvOS. Grants are in memory only. First consumer is spatial-ai-character (screenshots; Health next). In SDK, not DebugTrace: it ships in App Store builds, and DebugTrace cannot import RAVESDK, which depends on it. Logs through the small `DebugLog` product only (no trace builder, registry or server linked) |
@@ -515,7 +516,7 @@ The toolbar carries DebugTrace's `DebugTraceButton`. `RAVEConsole` links the who
 product (it reads `DebugLogBuffer` and the redactor, and hosts `DebugTraceUI`), and so does
 `RAVEBrowser` (its tool surface is a set of `DebugEndpoint`s). **The other logging targets
 (`RAVENet`, `RAVEMedia`, `RAVECamera`, `RAVESpatialAudio`, `RAVEFilm`, `RAVEDeviceSetup`,
-`RAVEConsent`) link only DebugTrace's `DebugLog` product**: `DebugLogger`, the privacy labels
+`RAVEConsent`, `RAVECompanion`) link only DebugTrace's `DebugLog` product**: `DebugLogger`, the privacy labels
 and the sink hub, with no dependencies. Their lines reach the in-app console and traces
 because the app links DebugTrace, which adds its sinks to the same hub; a new target that
 only logs does the same, and one that needs `DebugSurface`, the redactor or the UI links
@@ -938,6 +939,40 @@ visionOS 26+: rendered in the system audio server, with its head tracking and
 personalized profile). Longwave is the first visionOS consumer and uses it;
 unheard on a headset as of 2026-10-04, so whatever it measures belongs here.
 
+### RAVECompanion — Longwave's wire format, shared
+
+Moved out of Longwave on 2026-11-01 so other apps can pair with a computer the same way:
+spatial-ai-character talks to Longwave's Companion (today through the Longwave app, see its
+`docs/codex-voice.md`), and Convolution plans a Mac worker of its own
+(`Hypnos/docs/plans/blu-ray-3d-smooth-motion.md`, "a Mac helping the headset"). What matters
+when touching it:
+
+- **The bytes are fixed.** The Windows Companion (`Longwave/CompanionWindows/backend/Devices/`)
+  implements the same knock tag, exchange, grant sealing, PSK schedule and identify proof, and
+  every paired device holds a token derived under them. `longwave-golden.json` holds values the
+  Longwave code produced before the move; `RAVECompanionTests` must keep matching them. JSON key
+  order is not part of the format (compare parsed objects), field names are (`macID`,
+  `headsetID`, `sshPublicKey` stay as Longwave named them).
+- **A namespace per host app.** `RAVECompanionNamespace` holds the Bonjour stems, the HKDF
+  labels, the link scheme and the direct pairing port. An app talking to Longwave's Companion
+  uses `.longwave`; an app with its own host defines its own, so the two never answer each other.
+  Each service type must be in the app's `NSBonjourServices`.
+- **Grants are the app's**, a `String`-backed enum; the library is generic over it
+  (`RAVEPairingMessage<Grant>`, `RAVECompanionKeyring<Grant>`, the client and server).
+- **The host's approval UI is the app's**: `RAVEPairingServer.approve` is an async callback with
+  `isPeerLost` and the deadline, so a modal dialog can close itself when the device goes away
+  (Longwave's NSAlert does). `onApprovalCancelled` fires if the exchange ends while it is up.
+- **TLS 1.2 PSK only** (`RAVECompanionChannel`): Network.framework's boringssl discards an
+  external PSK under TLS 1.3. A server can't learn which PSK a connection used, hence the
+  identify proof over an RFC 5705 exporter with an empty context.
+- Longwave keeps its names through typealiases and small adapters (`Shared/CompanionPairing.swift`,
+  `Shared/CompanionDevices.swift`, `CompanionLocator.swift`…). Its watch target compiles
+  `CompanionDevices.swift` but can't link RAVESDK (no watchOS), so that file falls back to a
+  plain `CompanionIdentify` struct under `#if !canImport(RAVECompanion)`.
+- Not moved: Longwave's device registry (legacy shared token, SSH keys in `authorized_keys`),
+  the Projects channel's own per-agent PSKs, and the audio/native/inject clients and servers.
+  The authenticated audio client is the next candidate (spatial-ai-character needs it).
+
 ### RAVEDeviceSetup — the QR code is the only channel the key travels on
 
 Written so Hypnos could provision an Apple TV (no AirDrop, no Files app, a Siri Remote
@@ -1042,7 +1077,7 @@ the link list.
 | App (directory) | Links |
 |---|---|
 | `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
-| `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), + Engine's `RAVEInput`, `RAVEDiagnostics` |
+| `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), `RAVECompanion` (the app, LongwaveMac, LongwaveiOS and the Companion), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), `RAVEBrowser`, `RAVELLM` |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia` (incl. AI 3D stills), `RAVESlideshow` |
 | `VisionProHomeAssistant` (SpatialHome) | `RAVENet`, `RAVEUI`, `RAVEConsole` |

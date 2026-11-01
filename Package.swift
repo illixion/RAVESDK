@@ -39,6 +39,7 @@ let package = Package(
         .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
         .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
+        .library(name: "RAVECompanion", targets: ["RAVECompanion"]),
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
         .library(name: "RAVELLM", targets: ["RAVELLM"]),
         .library(name: "RAVEConsent", targets: ["RAVEConsent"]),
@@ -138,6 +139,8 @@ let package = Package(
         // it over Bonjour. First consumer is Hypnos provisioning an Apple TV.
         .target(name: "RAVEDeviceSetup", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVEDeviceSetupTests", dependencies: ["RAVEDeviceSetup"]),
+        .target(name: "RAVECompanion", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
+        .testTarget(name: "RAVECompanionTests", dependencies: ["RAVECompanion"], resources: [.copy("longwave-golden.json")]),
         // A tool surface over a WKWebView the app already shows — navigate,
         // read (Mozilla's Readability, bundled), numbered elements, marked
         // snapshots, click/type/scroll — for a language model to use pages
