@@ -157,18 +157,34 @@ public struct RAVESubtitlePanel: View {
                 if showing.contains(where: { $0.image == nil }) {
                     RAVESubtitleText(cues: showing, fontSize: fontSize)
                 }
-                // Bitmaps keep their shape, fitted to the panel's height.
+                // Bitmaps keep their shape, and all of them one scale: each
+                // is as tall as its share of the picture says, a typical
+                // line being one text line. Fitting each to one line's
+                // height drew a two-line caption's lettering at half the
+                // size of a one-line one (PGS, device 2026-11-01).
                 VStack(spacing: fontSize * 0.15) {
                     ForEach(showing.compactMap(\.image), id: \.id) { image in
                         RAVESubtitleBitmap(image: image)
                             .aspectRatio(contentMode: .fit)
-                            .frame(maxHeight: fontSize * 1.45)
+                            .frame(height: bitmapHeight(image))
                     }
                 }
             }
             .frame(maxWidth: .infinity, minHeight: CGFloat(reservedLines) * fontSize * 1.45, alignment: .top)
         }
         .allowsHitTesting(false)
+    }
+
+    /// A subtitle line's share of the picture's height in a bitmap track
+    /// (lettering and outline; ~60 px at 1080p).
+    static let bitmapLineFraction: CGFloat = 0.055
+
+    /// `image`'s height on the panel: its lines at one text line each, at
+    /// most the reserved lines (a taller caption shrinks to fit).
+    private func bitmapHeight(_ image: RAVESubtitleImage) -> CGFloat {
+        let line = fontSize * 1.45
+        let lines = max(image.frame.height, 0.01) / Self.bitmapLineFraction
+        return min(lines, CGFloat(max(reservedLines, 1))) * line
     }
 }
 
