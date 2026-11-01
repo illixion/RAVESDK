@@ -1080,7 +1080,10 @@ public final class Pseudo3DStereoEngine {
             return source
         }
         RAVEMediaLog.pipeline.notice("Smooth Motion: packed pair interpolated from fields computed ahead")
-        return InterpolatingFrameSource(wrapping: source, interpolator: interpolator)
+        // No depth model: the pump takes frames only 40-80 ms ahead, so the
+        // depth pump's 200 ms reserve paused a pass that took 4 ms of 42
+        // (device, 2026-11-01). The flat player's thresholds fit.
+        return InterpolatingFrameSource(wrapping: source, interpolator: interpolator, thresholds: .flat)
     }
 
     private func install(_ pump: StereoPump) {
