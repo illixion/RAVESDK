@@ -422,6 +422,59 @@ public final class Pseudo3DStereoEngine {
         return entity
     }
 
+    // MARK: Lending the picture
+
+    /// The plane is shown elsewhere, such as an immersive space's big screen,
+    /// which places, sizes and fades it itself: the window's fit, chrome fade
+    /// and tap target leave it alone until it comes back. The renderer is
+    /// fed throughout, so the picture moves without a reload (making a second
+    /// component on a renderer while it enqueues crashes).
+    public private(set) var pictureLent = false
+    @ObservationIgnored private weak var pictureHome: Entity?
+
+    /// Takes the plane out of its view for a host to show. Nil before the
+    /// plane exists.
+    public func lendPicture() -> Entity? {
+        guard let entity = videoEntity else { return nil }
+        if !pictureLent {
+            pictureHome = entity.parent
+            pictureLent = true
+            entity.removeFromParent()
+        }
+        return entity
+    }
+
+    /// The host's plane width in metres, which AI 3D's strength follows as it
+    /// does a window's (a big screen needs less disparity for the same depth).
+    public func noteLentPlaneWidth(_ meters: Float) {
+        guard pictureLent, meters.isFinite, meters > 0, abs((planeWidthMeters ?? 0) - meters) > 0.01 else { return }
+        planeWidthMeters = meters
+        pump?.updateConfig(makePumpConfig())
+    }
+
+    /// The picture's aspect as shown (each eye's), once the pump knows it.
+    public var pictureAspect: Float? {
+        guard let size = knownVideoSize, size.width > 0, size.height > 0 else { return nil }
+        return Float(size.width / size.height)
+    }
+
+    /// Puts the plane back in its view and fits it there again.
+    public func reclaimPicture() {
+        guard pictureLent, let entity = videoEntity else { pictureLent = false; return }
+        pictureLent = false
+        entity.removeFromParent()
+        pictureHome?.addChild(entity)
+        entity.components.remove(CollisionComponent.self)
+        tapTargetInstalled = false
+        applyChromeOpacity()
+        if let bounds = lastViewBounds {
+            // Forget the host's scale: the fit only applies a changed one.
+            entity.transform = Transform()
+            fitVideo(toViewBounds: bounds)
+        }
+        installTapTarget()
+    }
+
     /// Subscribe to the video screen-size event so we re-fit once the plane has
     /// real dimensions (its visualBounds is empty until then). Call from the
     /// RealityView make closure where `content` is available.
@@ -448,7 +501,7 @@ public final class Pseudo3DStereoEngine {
     }
 
     private func refitVideo() {
-        guard let bounds = lastViewBounds else { return }
+        guard !pictureLent, let bounds = lastViewBounds else { return }
         fitVideo(toViewBounds: bounds)
         installTapTarget()
     }
@@ -486,7 +539,7 @@ public final class Pseudo3DStereoEngine {
     /// can land on it (a 2D overlay can't catch gaze over a RealityView). Sized to
     /// the video plane in local space so the entity's fit-scale maps it correctly.
     private func installTapTarget() {
-        guard let entity = videoEntity, !tapTargetInstalled else { return }
+        guard !pictureLent, let entity = videoEntity, !tapTargetInstalled else { return }
         let local = entity.visualBounds(relativeTo: entity)
         guard local.extents.x > 0.001, local.extents.y > 0.001 else { return }
         // Flat, on the plane: a 5 cm box reached 2.5 cm in front of it.
@@ -632,7 +685,7 @@ public final class Pseudo3DStereoEngine {
     ///   the hover, device 2026-10-07); a popover keeps it either way.
     public func setChromeOpen(_ open: Bool, takesInput: Bool = false) {
         chromeTakesInput = takesInput
-        videoEntity?.components[InputTargetComponent.self]?.isEnabled = !open || takesInput
+        if !pictureLent { videoEntity?.components[InputTargetComponent.self]?.isEnabled = !open || takesInput }
         guard open != chromeOpen else { return }
         chromeOpen = open
         // Some menus never report closing, and a tap on the picture is the
@@ -641,7 +694,7 @@ public final class Pseudo3DStereoEngine {
         if open {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(Self.chromeInputGrace))
-                guard let self, self.chromeOpen,
+                guard let self, self.chromeOpen, !self.pictureLent,
                       CACurrentMediaTime() - self.lastChromeTransition >= Self.chromeInputGrace - 0.05 else { return }
                 self.videoEntity?.components[InputTargetComponent.self]?.isEnabled = true
             }
@@ -716,6 +769,8 @@ public final class Pseudo3DStereoEngine {
     /// created after the first setChromeOpen (which otherwise left it desynced —
     /// the first menu wouldn't fade, later ones would).
     private func applyChromeOpacity() {
+        // A lent plane's host says how it shows (a window's menu doesn't cover it).
+        guard !pictureLent else { return }
         let opacity = contentOpacity * (1 - chromeBlend * (1 - chromeDimOpacity))
         videoEntity?.components.set(OpacityComponent(opacity: opacity))
     }
