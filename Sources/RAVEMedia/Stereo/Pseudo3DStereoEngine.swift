@@ -1073,7 +1073,9 @@ public final class Pseudo3DStereoEngine {
     private func interpolating(_ source: LookaheadFrameSource, packedStereo: PackedStereoLayout?) -> LookaheadFrameSource {
         guard interpolatesFrames else { return source }
         guard let packedStereo else { return InterpolatingFrameSource.wrappingIfSupported(source) }
-        guard let sharedFields, !packedStereo.eyesReversed, !packedStereo.isHalfResolution,
+        // Half-width or half-height eyes work as they are: fields are scaled
+        // to each eye's stored size, and the track is made from those eyes.
+        guard let sharedFields, !packedStereo.eyesReversed,
               let interpolator = SharedFieldInterpolator(
                   provider: sharedFields,
                   packing: packedStereo.arrangement == .overUnder ? .topAndBottom : .sideBySide) else {
