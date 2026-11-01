@@ -14,8 +14,9 @@ import SwiftUI
 /// `subtitles` are drawn into the picture itself (see `StereoSubtitleFrame`).
 ///
 /// `interpolatesFrames` doubles a 24-30 fps mono source with interpolated
-/// frames (`Pseudo3DStereoEngine.interpolatesFrames`); like `packedStereo` it
-/// is read when a source attaches.
+/// frames (`Pseudo3DStereoEngine.interpolatesFrames`), and a packed pair too
+/// when `sharedFields` has fields computed ahead for it; like `packedStereo`
+/// both are read when a source attaches.
 public struct RAVEExternalStereoVideoView: View {
     private let source: any PumpFrameSource
     private let settings: Pseudo3DSettings
@@ -27,6 +28,7 @@ public struct RAVEExternalStereoVideoView: View {
     private let squareCorners: Bool
     private let subtitles: StereoSubtitleFrame?
     private let interpolatesFrames: Bool
+    private let sharedFields: SharedFieldProvider?
     private let onProcessingBuffering: ((Bool) -> Void)?
     private let onPerformance: ((StereoPerformance) -> Void)?
     @State private var engine = Pseudo3DStereoEngine()
@@ -37,6 +39,7 @@ public struct RAVEExternalStereoVideoView: View {
                 squareCorners: Bool = false,
                 subtitles: StereoSubtitleFrame? = nil,
                 interpolatesFrames: Bool = false,
+                sharedFields: SharedFieldProvider? = nil,
                 onUnavailable: @escaping (Pseudo3DFailure?) -> Void,
                 onToggleChrome: @escaping () -> Void = {},
                 onPerformance: ((StereoPerformance) -> Void)? = nil,
@@ -47,6 +50,7 @@ public struct RAVEExternalStereoVideoView: View {
         self.squareCorners = squareCorners
         self.subtitles = subtitles
         self.interpolatesFrames = interpolatesFrames
+        self.sharedFields = sharedFields
         self.source = source
         self.settings = settings
         self.chromeOpen = chromeOpen
@@ -68,6 +72,7 @@ public struct RAVEExternalStereoVideoView: View {
                 content.add(engine.makeVideoEntity())
                 engine.observeVideoSize(content: content)
                 engine.interpolatesFrames = interpolatesFrames
+                engine.sharedFields = sharedFields
                 engine.attach(frameSource: source, packedStereo: packedStereo)
             } update: { content in
                 engine.updateViewBounds(content.convert(geometry.frame(in: .local), from: .local, to: .scene))
@@ -79,6 +84,7 @@ public struct RAVEExternalStereoVideoView: View {
         .offset(z: RAVEVideoPlane.viewRecess)
         .onChange(of: ObjectIdentifier(source)) { _, _ in
             engine.interpolatesFrames = interpolatesFrames
+            engine.sharedFields = sharedFields
             engine.attach(frameSource: source, packedStereo: packedStereo)
         }
         .onChange(of: settings) { _, value in

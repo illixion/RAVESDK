@@ -344,8 +344,15 @@ public final class Pseudo3DStereoEngine {
     /// (Vergence's `InterpolatingFrameSource`), before depth and warp, so both
     /// eyes come from the same picture. Read when a pipeline starts, so set it
     /// before `load`/`attach` and reload to apply a change. Packed stereo
-    /// passes through: its eyes would be interpolated apart.
+    /// passes through unless `sharedFields` has fields for it: interpolated
+    /// one eye at a time, its eyes would disagree.
     @ObservationIgnored public var interpolatesFrames = false
+    /// Fields computed ahead for a packed pair (an analysis track from
+    /// `vergence analyze`): with them and `interpolatesFrames`, a packed pair
+    /// left eye first is interpolated by Vergence's `SharedFieldInterpolator`,
+    /// both eyes from the left eye's one motion field. Read with
+    /// `interpolatesFrames`.
+    @ObservationIgnored public var sharedFields: SharedFieldProvider?
 
     // Callbacks
     @ObservationIgnored public var onVideoSizeKnown: ((CGSize) -> Void)?
@@ -950,8 +957,7 @@ public final class Pseudo3DStereoEngine {
         // second than the video has at 1×, so the inference does the same
         // work at any speed (StereoPump's frame cap).
         let playerSource = AVPlayerFrameSource(output: output, item: item)
-        let frameSource = interpolatesFrames && packedStereo == nil
-            ? InterpolatingFrameSource.wrappingIfSupported(playerSource) : playerSource
+        let frameSource = interpolating(playerSource, packedStereo: packedStereo)
         let startPump: (PumpDepthSource?) -> Void = { [weak self] depthSource in
             guard let self else { return }
             guard let pump = StereoPump(
@@ -1061,6 +1067,22 @@ public final class Pseudo3DStereoEngine {
     }
 
     /// Wires a new pump's callbacks to this engine and starts it.
+    /// `source` with Smooth Motion when it applies: a mono source through
+    /// VideoToolbox's interpolator, a packed pair only through fields computed
+    /// ahead (`sharedFields`), otherwise as it is.
+    private func interpolating(_ source: LookaheadFrameSource, packedStereo: PackedStereoLayout?) -> LookaheadFrameSource {
+        guard interpolatesFrames else { return source }
+        guard let packedStereo else { return InterpolatingFrameSource.wrappingIfSupported(source) }
+        guard let sharedFields, !packedStereo.eyesReversed, !packedStereo.isHalfResolution,
+              let interpolator = SharedFieldInterpolator(
+                  provider: sharedFields,
+                  packing: packedStereo.arrangement == .overUnder ? .topAndBottom : .sideBySide) else {
+            return source
+        }
+        RAVEMediaLog.pipeline.notice("Smooth Motion: packed pair interpolated from fields computed ahead")
+        return InterpolatingFrameSource(wrapping: source, interpolator: interpolator)
+    }
+
     private func install(_ pump: StereoPump) {
         pump.onPerformance = performanceForwarder()
         pump.onUnshowablePicture = unshowablePictureForwarder()
@@ -1133,8 +1155,8 @@ public final class Pseudo3DStereoEngine {
         }
 
         var frameSource = frameSource
-        if interpolatesFrames, packedStereo == nil, let lookahead = frameSource as? LookaheadFrameSource {
-            frameSource = InterpolatingFrameSource.wrappingIfSupported(lookahead)
+        if let lookahead = frameSource as? LookaheadFrameSource {
+            frameSource = interpolating(lookahead, packedStereo: packedStereo)
         }
         guard let pump = StereoPump(
             videoRenderer: videoRenderer,
