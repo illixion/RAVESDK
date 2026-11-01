@@ -1078,12 +1078,14 @@ public final class Pseudo3DStereoEngine {
         displayCriteriaTask?.cancel()
         displayCriteria = nil
         guard doubled else { return }
+        // The fields' own rate, when they say: HLS measures 23.976 as ~24.
+        let hint = sharedFields?.frameRate
         displayCriteriaTask = Task { @MainActor [weak self, weak item] in
             // An HLS item says its rate (and maybe its format) only once it
             // plays, so ask for a while.
             for _ in 0 ..< 30 {
                 guard let item, !Task.isCancelled else { return }
-                if let (criteria, hertz) = await Self.doubledCriteria(for: item) {
+                if let (criteria, hertz) = await Self.doubledCriteria(for: item, rateHint: hint) {
                     guard !Task.isCancelled, let self else { return }
                     self.displayCriteria = criteria
                     RAVEMediaLog.pipeline.notice("Smooth Motion: display at \(hertz, format: .fixed(precision: 3), privacy: .public) Hz")
@@ -1094,7 +1096,7 @@ public final class Pseudo3DStereoEngine {
         }
     }
 
-    private static func doubledCriteria(for item: AVPlayerItem) async -> (AVDisplayCriteria, Double)? {
+    private static func doubledCriteria(for item: AVPlayerItem, rateHint: Double?) async -> (AVDisplayCriteria, Double)? {
         guard let track = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return nil }
         var rate = Double(track.currentVideoFrameRate)
         var format: CMFormatDescription?
@@ -1104,6 +1106,9 @@ public final class Pseudo3DStereoEngine {
         }
         guard rate > 0 else { return nil }
         let standard: [Double] = [24000.0 / 1001, 24, 25, 30000.0 / 1001, 30]
+        // A hint close to the measure wins: 24 and 23.976 are too close for
+        // a measured rate to tell apart.
+        if let rateHint, abs(rateHint - rate) < 0.5 { rate = rateHint }
         let snapped = standard.min { abs($0 - rate) < abs($1 - rate) } ?? rate
         guard abs(snapped - rate) < 0.5, snapped < InterpolatingFrameSource.maxSourceFrameRate else { return nil }
         if format == nil {
