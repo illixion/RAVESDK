@@ -202,6 +202,13 @@ public final class Pseudo3DStereoEngine {
         reportPlaybackState()
     }
     private var player: AVPlayer?
+    /// What the window's display should run at while Smooth Motion doubles
+    /// the picture: twice the video's standard rate (48 fps on a 96 Hz
+    /// display, not unevenly on 90), with the video's format. Nil while the
+    /// picture is the source's own frames; the host then leaves the display
+    /// to the system. A host states it with `UIWindow.avDisplayManager`.
+    public private(set) var displayCriteria: AVDisplayCriteria?
+    @ObservationIgnored private var displayCriteriaTask: Task<Void, Never>?
     private var spatialAudioSceneIdentifier: String?
     private var playerItem: AVPlayerItem? {
         didSet { playerItem?.preferredMaximumResolution = preferredMaximumResolution }
@@ -958,6 +965,7 @@ public final class Pseudo3DStereoEngine {
         // work at any speed (StereoPump's frame cap).
         let playerSource = AVPlayerFrameSource(output: output, item: item)
         let frameSource = interpolating(playerSource, packedStereo: packedStereo)
+        updateDisplayCriteria(item: item, doubled: frameSource is InterpolatingFrameSource)
         let startPump: (PumpDepthSource?) -> Void = { [weak self] depthSource in
             guard let self else { return }
             guard let pump = StereoPump(
@@ -1064,6 +1072,53 @@ public final class Pseudo3DStereoEngine {
                 self.updatePreparation(pictureProgress: 0)
             }
         }
+    }
+
+    private func updateDisplayCriteria(item: AVPlayerItem, doubled: Bool) {
+        displayCriteriaTask?.cancel()
+        displayCriteria = nil
+        guard doubled else { return }
+        displayCriteriaTask = Task { @MainActor [weak self, weak item] in
+            // An HLS item says its rate (and maybe its format) only once it
+            // plays, so ask for a while.
+            for _ in 0 ..< 30 {
+                guard let item, !Task.isCancelled else { return }
+                if let (criteria, hertz) = await Self.doubledCriteria(for: item) {
+                    guard !Task.isCancelled, let self else { return }
+                    self.displayCriteria = criteria
+                    RAVEMediaLog.pipeline.notice("Smooth Motion: display at \(hertz, format: .fixed(precision: 3), privacy: .public) Hz")
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    private static func doubledCriteria(for item: AVPlayerItem) async -> (AVDisplayCriteria, Double)? {
+        guard let track = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return nil }
+        var rate = Double(track.currentVideoFrameRate)
+        var format: CMFormatDescription?
+        if let assetTrack = track.assetTrack {
+            format = try? await assetTrack.load(.formatDescriptions).first
+            if rate <= 0, let nominal = try? await assetTrack.load(.nominalFrameRate) { rate = Double(nominal) }
+        }
+        guard rate > 0 else { return nil }
+        let standard: [Double] = [24000.0 / 1001, 24, 25, 30000.0 / 1001, 30]
+        let snapped = standard.min { abs($0 - rate) < abs($1 - rate) } ?? rate
+        guard abs(snapped - rate) < 0.5, snapped < InterpolatingFrameSource.maxSourceFrameRate else { return nil }
+        if format == nil {
+            // HLS describes no format for its tracks: a plain one of the
+            // picture's size (the rate is what this states).
+            let size = item.presentationSize
+            guard size.width > 0, size.height > 0 else { return nil }
+            var plain: CMVideoFormatDescription?
+            CMVideoFormatDescriptionCreate(allocator: nil, codecType: kCMVideoCodecType_H264,
+                                           width: Int32(size.width), height: Int32(size.height),
+                                           extensions: nil, formatDescriptionOut: &plain)
+            format = plain
+        }
+        guard let format else { return nil }
+        return (AVDisplayCriteria(refreshRate: Float(2 * snapped), formatDescription: format), 2 * snapped)
     }
 
     /// Wires a new pump's callbacks to this engine and starts it.
@@ -1281,6 +1336,8 @@ public final class Pseudo3DStereoEngine {
     // MARK: Cleanup
 
     public func cleanup() {
+        displayCriteriaTask?.cancel()
+        displayCriteria = nil
         sizeSubscription?.cancel()
         sizeSubscription = nil
         refitBurstTask?.cancel()

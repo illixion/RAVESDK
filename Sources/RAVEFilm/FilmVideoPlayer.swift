@@ -204,8 +204,13 @@ public final class FilmVideoPlayer {
         let measured = frameRate ?? 24
         let standard: [Double] = [24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50, 60000.0 / 1001, 60]
         let rate = standard.min { abs($0 - measured) < abs($1 - measured) } ?? measured
-        return AVDisplayCriteria(refreshRate: Float(rate), formatDescription: format)
+        let doubled = doublesFrameRate && rate < 40
+        return AVDisplayCriteria(refreshRate: Float(doubled ? 2 * rate : rate), formatDescription: format)
     }
+
+    /// The picture shown has twice the film's frames (Smooth Motion in the
+    /// 3D picture): `displayCriteria` asks for twice the rate. Set by the host.
+    public var doublesFrameRate = false
     #endif
 
     /// Current film time.
