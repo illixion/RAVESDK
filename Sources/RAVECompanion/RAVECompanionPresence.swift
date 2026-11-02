@@ -107,6 +107,10 @@ public final class RAVECompanionPresence {
 
     // MARK: - Announcement
 
+    /// DNS-SD invokes this callback on `queue`, which is deliberately not the
+    /// main actor. Keep the C callback itself nonisolated; closures written
+    /// inside this @MainActor type otherwise inherit actor isolation and trap
+    /// when mDNSResponder calls them from its dispatch queue.
     private func register() {
         let txt = record()
         var ref: DNSServiceRef?
@@ -117,20 +121,7 @@ public final class RAVECompanionPresence {
                 // discard port stands in.
                 UInt16(9).bigEndian,
                 UInt16(txt.count), bytes.baseAddress,
-                { _, _, errorCode, _, _, _, context in
-                    // Asynchronous outcome: success, a rename after a name
-                    // conflict, or a failure the call itself couldn't report.
-                    if errorCode == kDNSServiceErr_NoError {
-                        RAVECompanionLog.host.info("Announced on the local network")
-                    } else {
-                        RAVECompanionLog.host.error("Announcement failed (\(errorCode, privacy: .public))")
-                    }
-                    guard let context else { return }
-                    let presence = Unmanaged<RAVECompanionPresence>.fromOpaque(context).takeUnretainedValue()
-                    let denied = errorCode == kDNSServiceErr_PolicyDenied
-                    let failed = errorCode != kDNSServiceErr_NoError
-                    Task { @MainActor in presence.registrationFinished(denied: denied, failed: failed) }
-                },
+                raveCompanionPresenceRegistrationReply,
                 Unmanaged.passUnretained(self).toOpaque()
             )
         }
@@ -145,7 +136,7 @@ public final class RAVECompanionPresence {
 
     /// After a failure the reference is dead; drop it, and try again a little
     /// later in case access was just granted.
-    private func registrationFinished(denied: Bool, failed: Bool) {
+    fileprivate func registrationFinished(denied: Bool, failed: Bool) {
         if denied { localNetworkDenied = true }
         if !failed {
             localNetworkDenied = false
@@ -319,6 +310,32 @@ public final class RAVECompanionPresence {
         guard active != knockActive else { return }
         knockActive = active
         onKnockChange?()
+    }
+}
+
+/// C callback invoked on `RAVECompanionPresence.queue`. This must stay outside
+/// the @MainActor type so Swift does not insert an actor check on DNS-SD's
+/// callback queue.
+private nonisolated func raveCompanionPresenceRegistrationReply(
+    _ service: DNSServiceRef?,
+    _ flags: DNSServiceFlags,
+    _ errorCode: DNSServiceErrorType,
+    _ name: UnsafePointer<CChar>?,
+    _ type: UnsafePointer<CChar>?,
+    _ domain: UnsafePointer<CChar>?,
+    _ context: UnsafeMutableRawPointer?
+) {
+    guard let context else { return }
+    let presence = Unmanaged<RAVECompanionPresence>.fromOpaque(context).takeUnretainedValue()
+    let denied = errorCode == kDNSServiceErr_PolicyDenied
+    let failed = errorCode != kDNSServiceErr_NoError
+    Task { @MainActor in
+        if errorCode == kDNSServiceErr_NoError {
+            RAVECompanionLog.host.info("Announced on the local network")
+        } else {
+            RAVECompanionLog.host.error("Announcement failed (\(errorCode, privacy: .public))")
+        }
+        presence.registrationFinished(denied: denied, failed: failed)
     }
 }
 #endif
