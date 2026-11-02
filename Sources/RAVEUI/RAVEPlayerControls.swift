@@ -113,6 +113,12 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     private let accessories: Accessories
     /// Always on the bar, beside More, whatever else moves into it.
     private let pinned: AnyView?
+    /// Under the volume slider in its popover (a host's sound option).
+    private let volumeAccessory: AnyView?
+    /// The slider's own value while a finger drags it: the host's volume
+    /// can come back a render late (or not at all while a host holds its
+    /// state still), and a slider bound only to it jumps back under the finger.
+    @State private var draggedVolume: Double?
     @State private var scrubSeconds: Double?
     @State private var isScrubbing = false
     @State private var isAccessoryScrolling = false
@@ -129,6 +135,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
                 menuDismissal: Int = 0,
                 navigation: RAVEPlayerNavigation? = nil,
                 pinned: AnyView? = nil,
+                volumeAccessory: AnyView? = nil,
                 @ViewBuilder accessories: () -> Accessories) {
         self.state = state
         self.layout = layout
@@ -143,6 +150,7 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         self.navigation = navigation
         self.accessories = accessories()
         self.pinned = pinned
+        self.volumeAccessory = volumeAccessory
     }
 
     public var body: some View {
@@ -381,10 +389,17 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             .help("Volume")
             .accessibilityLabel("Volume")
             .ravePlayerPopover(isPresented: $showsVolume, arrowEdge: .bottom) {
-                HStack(spacing: 12) {
-                    muteControl
-                    volumeSlider
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        muteControl
+                        volumeSlider
+                    }
+                    if let volumeAccessory {
+                        Divider()
+                        volumeAccessory
+                    }
                 }
+                .fixedSize()
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 // A tap on the picture must still reach it (see "More").
@@ -420,13 +435,19 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         #if !os(tvOS)
         if let volume = state.volume, let setVolume {
             Slider(value: Binding(
-                get: { volume },
+                get: { draggedVolume ?? volume },
                 set: { value in
                     onInteraction()
-                    if state.isMuted, value > 0 { toggleMute() }
+                    // Unmuted once per drag: the host's mute can read
+                    // stale meanwhile, and toggling on each step flickers.
+                    let unmutes = state.isMuted && value > 0 && (draggedVolume ?? 0) <= 0
+                    draggedVolume = value
+                    if unmutes { toggleMute() }
                     setVolume(value)
                 }
-            ), in: 0 ... 1)
+            ), in: 0 ... 1, onEditingChanged: { editing in
+                if !editing { draggedVolume = nil }
+            })
             .frame(width: Self.volumeSliderWidth)
             .accessibilityLabel("Volume")
         }
