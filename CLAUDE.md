@@ -741,22 +741,19 @@ one inference at a time, newest request first, cancelled requests dropped before
 they reach the model, model released after 20 s idle.
 
 **Stereo still photos: `RAVEStereoPhotoView`** (visionOS) uses Vergence's shared
-mesh warp and a 10-bit frame in `RAVEVideoPlaneView`, tagged SDR (P3 primaries,
-BT.709 transfer). It keeps extended-P3 half-float colour through adjustments/warp.
-An SDR still is never PQ: Core Image puts SDR white at 203 nits in PQ, which visionOS
-shows as HDR, visibly brighter than the window's white. An HDR still (`headroom` above
-1, a source the host tone mapped to the display's headroom) is encoded **HLG**
-(BT.2020, no static metadata; Core Image writes linear 1.0 at signal 0.75, so SDR white
-stays the window's own and highlights sit above it) with a mid-tone power of 1.09
-(`aiPhotoHDRMidGamma`; HLG renders mid-tones brighter than the flat view). PQ was tried
-first and abandoned (device, 2026-10-27): absolute nits needed a guessed white level,
-and the player's tone mapping followed the declared peak (CLLI 312 dimmed the sun,
-1000 dimmed and flattened the whole picture), washing saturated highlights toward
-white. The pixels were exact (decoded back on the Mac), so the loss is in the player.
-HLG still mutes highlights the flat view clips (device, 2026-11-02): the player rolls HLG
-off from its nominal 4.9x peak. `aiPhotoHDRHighlightPower` (default 1, off) raises
-luminance above SDR white before encoding, hue kept; a stopgap until the player's
-response is measured (Hypnos `hypnos-photo-viewer.md`, "HDR photos").
+mesh warp and keeps extended-P3 half-float colour through adjustments and warp. The two
+eyes are half-float `.hdrColor` textures on one plane whose Shader Graph material picks
+a texture per eye (Camera Index Switch into an unlit surface, tone map off;
+`StereoStillMaterial` writes the USDA at first use). `RAVEVideoPlaneView` still places
+and scales the entity; the plane draws the corner radius itself. SDR and HDR stills take
+the same path: values above 1 reach the panel as the flat EDR view's do, and SDR white is
+the window's white. Matched the flat view exactly on device (2026-11-02, `photoHDRTest
+flipRK` and a real HDR photo). **Don't go back to `VideoPlayerComponent` for stills:** its
+PQ rendering tone mapped to the declared peak (CLLI 312 dimmed the sun, 1000 flattened the
+picture), its HLG rendering rolled highlights off from a nominal 4.9x peak (muted beside
+the flat view), and an SDR frame needed transfer tags tuned against the window's white,
+while the frames themselves were exact (decoded back on the Mac). Cost: about 90 MB for a
+2309x2160 photo's two eyes (device `_memory`).
 `onReady` lets the caller hide its flat
 fallback only after enqueue; hide stereo / show flat for menus and transitions.
 Bakes are serialized across windows and bounded by `StillStereoResolution` after
