@@ -753,6 +753,10 @@ first and abandoned (device, 2026-10-27): absolute nits needed a guessed white l
 and the player's tone mapping followed the declared peak (CLLI 312 dimmed the sun,
 1000 dimmed and flattened the whole picture), washing saturated highlights toward
 white. The pixels were exact (decoded back on the Mac), so the loss is in the player.
+HLG still mutes highlights the flat view clips (device, 2026-11-02): the player rolls HLG
+off from its nominal 4.9x peak. `aiPhotoHDRHighlightPower` (default 1, off) raises
+luminance above SDR white before encoding, hue kept; a stopgap until the player's
+response is measured (Hypnos `hypnos-photo-viewer.md`, "HDR photos").
 `onReady` lets the caller hide its flat
 fallback only after enqueue; hide stereo / show flat for menus and transitions.
 Bakes are serialized across windows and bounded by `StillStereoResolution` after

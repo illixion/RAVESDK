@@ -36,6 +36,11 @@ public struct RAVEStereoPhotoView: View {
     /// flat view; 1.06 was still slightly bright and 1.12 slightly dark (device,
     /// 2026-10-27). Debug knob.
     @AppStorage("aiPhotoHDRMidGamma") private var hdrMidGamma = 1.09
+    /// Power on an HDR still's luminance above SDR white, before HLG encoding: 1 leaves
+    /// highlights as they are. The video player's HLG rendering showed highlights that the
+    /// flat view puts near the display's peak muted, though the encoded frame holds them
+    /// exactly (Mac read-back, 2026-11-02); this expands them back. Debug knob, untuned.
+    @AppStorage("aiPhotoHDRHighlightPower") private var hdrHighlightPower = 1.0
     @State private var presentation = Presentation()
     @Environment(\.physicalMetrics) private var metrics
     @Environment(\.scenePhase) private var scenePhase
@@ -54,10 +59,11 @@ public struct RAVEStereoPhotoView: View {
         GeometryReader { geometry in
             let widthMeters = Float(metrics.convert(geometry.size.width, to: .meters))
             let strength = Float(Pseudo3DSettings.default.depthStrength) / max(widthMeters, 1)
-            let hdr = headroom > 1 ? HDR(midGamma: hdrMidGamma) : nil
+            let hdr = headroom > 1 ? HDR(midGamma: hdrMidGamma, highlightPower: hdrHighlightPower) : nil
             let key = Key(content: contentID, image: ObjectIdentifier(image), depth: depth.id, adjustments: adjustments,
                           strength: Int((strength * 100_000).rounded()), boundaries: separatesBoundaries, mirror: isFlipped,
-                          headroom: Int((headroom * 100).rounded()), hdrGamma: Int(((hdr?.midGamma ?? 0) * 100).rounded()))
+                          headroom: Int((headroom * 100).rounded()), hdrGamma: Int(((hdr?.midGamma ?? 0) * 100).rounded()),
+                          hdrHighlights: Int(((hdr?.highlightPower ?? 0) * 100).rounded()))
             FadingPlane(entity: presentation.entity,
                 aspect: Float(image.width) / Float(image.height), squareCorners: cornerRadius == 0,
                 opacity: Float(opacity), onAttach: { [presentation] in
@@ -130,12 +136,34 @@ public struct RAVEStereoPhotoView: View {
         let mirror: Bool
         let headroom: Int
         let hdrGamma: Int
+        let hdrHighlights: Int
     }
 
     /// An HDR still, encoded as HLG: SDR white stays the window's own white and the
     /// highlights sit above it.
     fileprivate struct HDR: Sendable {
         let midGamma: Double
+        let highlightPower: Double
+
+        /// Luminance above SDR white raised to `highlightPower`; everything at or below it,
+        /// and each pixel's hue, unchanged. Built-in filters only: a pixel's gain is
+        /// max(L, 1)^(power - 1), multiplied into its colour.
+        func expandingHighlights(_ input: CIImage) -> CIImage {
+            guard highlightPower != 1 else { return input }
+            let extent = input.extent
+            // Luminance of linear Display P3.
+            let weights = CIVector(x: 0.2290, y: 0.6917, z: 0.0793, w: 0)
+            let luminance = input.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": weights, "inputGVector": weights, "inputBVector": weights,
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0), "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
+            let white = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1,
+                colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!)!).cropped(to: extent)
+            let gain = luminance
+                .applyingFilter("CIMaximumCompositing", parameters: [kCIInputBackgroundImageKey: white])
+                .applyingFilter("CIGammaAdjust", parameters: ["inputPower": highlightPower - 1])
+            return input.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: gain])
+                .cropped(to: extent)
+        }
     }
 
     @MainActor @Observable fileprivate final class Presentation {
@@ -294,8 +322,8 @@ public struct RAVEStereoPhotoView: View {
                         // HLG is relative. Core Image writes linear 1.0 at signal 0.75 (reference
                         // white), so SDR white is the window's own and the highlights sit above
                         // it, with no nit calibration and no static metadata.
-                        let shaped = hdr.midGamma == 1 ? oriented
-                            : oriented.applyingFilter("CIGammaAdjust", parameters: ["inputPower": hdr.midGamma])
+                        let shaped = hdr.expandingHighlights(hdr.midGamma == 1 ? oriented
+                            : oriented.applyingFilter("CIGammaAdjust", parameters: ["inputPower": hdr.midGamma]))
                         CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
                             kCVImageBufferColorPrimaries_ITU_R_2020, .shouldPropagate)
                         CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
