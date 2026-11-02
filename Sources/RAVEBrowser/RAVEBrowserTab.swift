@@ -64,6 +64,7 @@ import AppKit
 import Foundation
 import Observation
 import RAVECamera
+import Security
 import WebKit
 
 @MainActor
@@ -158,6 +159,26 @@ public final class RAVEBrowserTab: Identifiable {
     @ObservationIgnored public var mediaCapturePermission: ((
         _ origin: WKSecurityOrigin, _ type: WKMediaCaptureType
     ) -> WKPermissionDecision)?
+
+    /// Certificates this tab accepts although the system does not trust them
+    /// (see `RAVECertificateTrust.swift`). Nil, the default, accepts none: a
+    /// self-signed host fails to load, as in every browser.
+    @ObservationIgnored public var certificateExceptions: RAVECertificateExceptions?
+    /// The newest untrusted certificate seen per `host:port`, kept so a load
+    /// that failed on one can say which and offer it for an exception.
+    @ObservationIgnored private var certificateProblems: [String: RAVECertificateProblem] = [:]
+    /// The address the last failed navigation was for.
+    public private(set) var failedURL: URL?
+
+    /// Why the last navigation failed, if it failed on a certificate the
+    /// system does not trust. Nil for any other failure, and for a
+    /// certificate problem on something other than the page itself (an ad
+    /// host's subresource): only a load that failed *on this host* counts.
+    public var untrustedCertificate: RAVECertificateProblem? {
+        guard loadError != nil, let host = failedURL?.host?.lowercased() else { return nil }
+        let port = failedURL?.port ?? (failedURL?.scheme?.lowercased() == "http" ? 80 : 443)
+        return certificateProblems[RAVECertificateExceptions.address(host: host, port: port)]
+    }
 
     /// A reason the app is holding this tab awake (Raven: its assistant is
     /// driving the page), or nil.
@@ -283,12 +304,19 @@ public final class RAVEBrowserTab: Identifiable {
             syncFromWebView()
             onLoadFinished?()
         }
-        delegate.onLoadFailed = { [weak self] message in
+        delegate.onLoadFailed = { [weak self] message, url in
             guard let self else { return }
             isLoading = false
             progress = 0
             loadError = message
+            failedURL = url
             syncFromWebView()
+        }
+        delegate.isCertificateTrusted = { [weak self] problem in
+            self?.certificateExceptions?.isTrusted(problem) == true
+        }
+        delegate.onCertificateProblem = { [weak self] problem in
+            self?.certificateProblems[problem.address] = problem
         }
         delegate.onOpenInNewTab = { [weak self] url in
             guard let self else { return }
@@ -775,6 +803,7 @@ public final class RAVEBrowserTab: Identifiable {
     private func loadStarted() {
         isLoading = true
         loadError = nil
+        failedURL = nil
         // The page being navigated away from owns everything the features
         // know about it.
         frames.pageWillNavigate()
@@ -840,7 +869,12 @@ public final class RAVEBrowserTab: Identifiable {
         var onNavigationStateChanged: (() -> Void)?
         var onLoadStarted: (() -> Void)?
         var onLoadFinished: (() -> Void)?
-        var onLoadFailed: ((String) -> Void)?
+        /// The failure's message and the address it was for.
+        var onLoadFailed: ((String, URL?) -> Void)?
+        /// Whether this exact untrusted certificate was accepted for its address.
+        var isCertificateTrusted: ((RAVECertificateProblem) -> Bool)?
+        /// A server certificate the system rejected and nothing accepted.
+        var onCertificateProblem: ((RAVECertificateProblem) -> Void)?
         var onOpenInNewTab: ((URL) -> Void)?
         var onContentProcessTerminated: (() -> Void)?
         var mediaCapturePermission: ((WKSecurityOrigin, WKMediaCaptureType) -> WKPermissionDecision)?
@@ -1083,7 +1117,52 @@ public final class RAVEBrowserTab: Identifiable {
             \(nsError.localizedDescription, privacy: .private) \
             url=\(nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String ?? "?", privacy: .private)
             """)
-            onLoadFailed?(nsError.localizedDescription)
+            onLoadFailed?(nsError.localizedDescription,
+                          (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+                              ?? (nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:)))
+        }
+
+        // MARK: Server trust
+
+        /// A server certificate the system does not trust is accepted only
+        /// when the tab's exceptions hold this exact certificate for this
+        /// address. Everything else — including every other kind of
+        /// challenge — takes WebKit's default handling, so a tab with no
+        /// exceptions behaves as if this method did not exist.
+        ///
+        /// The closure attributes are the SDK's; see the note on this class.
+        func webView(
+            _ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
+            completionHandler: @escaping @MainActor @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) {
+            let space = challenge.protectionSpace
+            guard space.authenticationMethod == NSURLAuthenticationMethodServerTrust, let trust = space.serverTrust else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            var failure: CFError?
+            if SecTrustEvaluateWithError(trust, &failure) {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            guard let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            let problem = RAVECertificateProblem(
+                host: space.host, port: space.port,
+                fingerprint: RAVECertificateProblem.fingerprint(of: SecCertificateCopyData(leaf) as Data),
+                reason: (failure as Error?)?.localizedDescription ?? "the certificate is not trusted")
+            if isCertificateTrusted?(problem) == true {
+                RAVEBrowserLog.browser.notice("""
+                accepted pinned certificate for \(problem.address, privacy: .private) \
+                sha256=\(problem.fingerprint.prefix(16), privacy: .public)…
+                """)
+                completionHandler(.useCredential, URLCredential(trust: trust))
+                return
+            }
+            onCertificateProblem?(problem)
+            completionHandler(.performDefaultHandling, nil)
         }
     }
 }

@@ -198,6 +198,7 @@ enum RAVEPageScripts {
             if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
                 item.value = el.type === 'password' ? (el.value ? '•••' : '') : clean(el.value);
             }
+            if (el.tagName === 'INPUT') item.inputType = (el.type || 'text').toLowerCase();
             if (el.type === 'checkbox' || el.type === 'radio') item.checked = el.checked;
             else if (el.getAttribute('aria-checked')) item.checked = el.getAttribute('aria-checked') === 'true';
             if (el.disabled || el.getAttribute('aria-disabled') === 'true') item.disabled = true;

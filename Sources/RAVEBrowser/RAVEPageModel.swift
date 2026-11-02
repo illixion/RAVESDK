@@ -58,10 +58,13 @@ public struct RAVEPageElement: Codable, Sendable, Equatable {
     public var h: Double
     /// For an element inside an iframe: the frame's host (`js.stripe.com`).
     public var inFrame: String?
+    /// An `<input>`'s `type` (`text`, `password`, `email`…), lowercased. Not in
+    /// the outline: it is for a host that has to find one kind of field itself.
+    public var inputType: String?
 
     public init(ref: Int, role: String, name: String, tag: String, href: String? = nil, value: String? = nil,
                 checked: Bool? = nil, disabled: Bool? = nil, x: Double, y: Double, w: Double, h: Double,
-                inFrame: String? = nil) {
+                inFrame: String? = nil, inputType: String? = nil) {
         self.ref = ref
         self.role = role
         self.name = name
@@ -75,6 +78,7 @@ public struct RAVEPageElement: Codable, Sendable, Equatable {
         self.w = w
         self.h = h
         self.inFrame = inFrame
+        self.inputType = inputType
     }
 
     public var frame: CGRect { CGRect(x: x, y: y, width: w, height: h) }

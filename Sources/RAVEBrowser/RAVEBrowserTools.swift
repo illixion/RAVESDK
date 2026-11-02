@@ -36,10 +36,17 @@ public enum RAVEBrowserTools {
         /// The tab's `RAVEPageSupport`, for console, network, dialogs and the
         /// events an action reports. Nil where the host has none.
         public var support: RAVEPageSupport?
+        /// Why the tab's last navigation failed, when it did: the host's words
+        /// for a failure the driver cannot see (a page that never loaded looks
+        /// like a quiet one). An action's reply carries it in `events`, so a
+        /// refused certificate is not mistaken for a page that loaded blank.
+        public var loadProblem: (@MainActor () -> String?)?
 
-        public init(driver: RAVEPageDriver, support: RAVEPageSupport? = nil) {
+        public init(driver: RAVEPageDriver, support: RAVEPageSupport? = nil,
+                    loadProblem: (@MainActor () -> String?)? = nil) {
             self.driver = driver
             self.support = support
+            self.loadProblem = loadProblem
         }
     }
 
@@ -475,8 +482,12 @@ public enum RAVEBrowserTools {
         /// `shared` (the person's profile, logins and all) or a throwaway
         /// profile's name.
         public var profile: String
+        /// Why its last navigation failed, when it did.
+        public var error: String?
 
-        public init(id: String, title: String, url: String, active: Bool, loading: Bool, profile: String) {
+        public init(id: String, title: String, url: String, active: Bool, loading: Bool, profile: String,
+                    error: String? = nil) {
+            self.error = error
             self.id = id
             self.title = title
             self.url = url
@@ -577,13 +588,17 @@ public enum RAVEBrowserTools {
     static func act<Output: Encodable>(_ arguments: DebugArguments, _ resolve: Resolve,
                                        _ body: @MainActor (Target) async throws -> Output) async throws -> WithEvents<Output> {
         var support: RAVEPageSupport?
+        var loadProblem: (@MainActor () -> String?)?
         var mark = 0
         let output = try await run(arguments, resolve) { target in
             support = target.support
+            loadProblem = target.loadProblem
             mark = target.support?.lastSequence ?? 0
             return try await body(target)
         }
-        return WithEvents(value: output, events: support?.events(after: mark).map { "\($0.kind): \($0.text)" } ?? [])
+        var events = support?.events(after: mark).map { "\($0.kind): \($0.text)" } ?? []
+        if let problem = loadProblem?() { events.append("loadFailed: \(problem)") }
+        return WithEvents(value: output, events: events)
     }
 
     /// A driver error as one that tells a model what to do next, for a host's
