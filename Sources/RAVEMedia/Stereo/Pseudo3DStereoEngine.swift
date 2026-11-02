@@ -829,7 +829,11 @@ public final class Pseudo3DStereoEngine {
     public func reloadDepthPipeline() {
         guard let url = loadedURL else { return }
         let resumeTime = currentTime
-        let wasPaused = player?.timeControlStatus == .paused
+        // While the model loads or the pump holds the player, it is paused by
+        // the engine, not the user: reading that as the user's pause left a
+        // picture that never started after Smooth Motion was toggled during
+        // the load (device, 2026-11-02). The intent is the truth then.
+        let wasPaused = isAnalysisHeld ? !intendsToPlay : player?.timeControlStatus == .paused
         let wasMuted = player?.isMuted ?? startMuted
         if let player { startVolume = player.volume }
         let savedLoopA = loopA
