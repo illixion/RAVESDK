@@ -1147,10 +1147,22 @@ public final class Pseudo3DStereoEngine {
         let hint = sharedFields?.frameRate
         displayCriteriaTask = Task { @MainActor [weak self, weak item] in
             // An HLS item says its rate (and maybe its format) only once it
-            // plays, so ask for a while.
+            // plays, so ask for a while. A measured rate counts once three
+            // readings in a row agree: just after a resume a 23.976 episode
+            // measured 25 and the display was set to 50 Hz for 47.952 fps
+            // (device, 2026-11-02).
+            var agreeing: (rate: Double, count: Int)?
             for _ in 0 ..< 30 {
                 guard let item, !Task.isCancelled else { return }
-                if let (criteria, hertz) = await Self.criteria(for: item, rateHint: hint, doubled: doubled, speed: speed) {
+                if let (criteria, hertz, measured) = await Self.criteria(for: item, rateHint: hint, doubled: doubled,
+                                                                         speed: speed) {
+                    if measured {
+                        agreeing = agreeing?.rate == hertz ? (hertz, agreeing!.count + 1) : (hertz, 1)
+                        guard agreeing!.count >= 3 else {
+                            try? await Task.sleep(for: .milliseconds(500))
+                            continue
+                        }
+                    }
                     guard !Task.isCancelled, let self else { return }
                     self.displayCriteria = criteria
                     RAVEMediaLog.pipeline.notice(
@@ -1163,7 +1175,7 @@ public final class Pseudo3DStereoEngine {
     }
 
     private static func criteria(for item: AVPlayerItem, rateHint: Double?, doubled: Bool,
-                                 speed: Double) async -> (AVDisplayCriteria, Double)? {
+                                 speed: Double) async -> (AVDisplayCriteria, Double, measured: Bool)? {
         guard let track = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return nil }
         var rate = 0.0
         var format: CMFormatDescription?
@@ -1173,13 +1185,18 @@ public final class Pseudo3DStereoEngine {
         }
         // What the player measures (all HLS has) is the rate shown, which
         // the speed multiplies.
+        var measured = false
         if rate <= 0, item.timebase.map({ CMTimebaseGetRate($0) }) ?? 0 > 0 {
             rate = Double(track.currentVideoFrameRate) / (item.timebase.map { CMTimebaseGetRate($0) } ?? 1)
+            measured = true
         }
         guard rate > 0 else { return nil }
         // A hint close to the measure wins: 24 and 23.976 are too close for
         // a measured rate to tell apart.
-        if let rateHint, abs(rateHint - rate) < 0.5 { rate = rateHint }
+        if let rateHint, abs(rateHint - rate) < 0.5 {
+            rate = rateHint
+            measured = false
+        }
         let snapped = PlaybackFrameRate.snapped(rate)
         guard abs(snapped - rate) < 0.5 else { return nil }
         // A source too fast to double passes through as it came.
@@ -1198,7 +1215,7 @@ public final class Pseudo3DStereoEngine {
             format = plain
         }
         guard let format else { return nil }
-        return (AVDisplayCriteria(refreshRate: Float(shown), formatDescription: format), shown)
+        return (AVDisplayCriteria(refreshRate: Float(shown), formatDescription: format), shown, measured)
     }
 
     /// Wires a new pump's callbacks to this engine and starts it.
