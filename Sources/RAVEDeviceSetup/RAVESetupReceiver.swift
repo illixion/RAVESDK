@@ -13,6 +13,7 @@ import CryptoKit
 import Foundation
 import Network
 import Observation
+import os
 
 @MainActor
 @Observable
@@ -34,6 +35,8 @@ public final class RAVESetupReceiver<Payload: Decodable & Sendable> {
     private let onPayload: @MainActor (Payload) -> Void
     private var listener: NWListener?
     private var privateKey: Curve25519.KeyAgreement.PrivateKey?
+    private let pendingConnections = OSAllocatedUnfairLock(initialState: 0)
+    private let maximumPendingConnections = 4
 
     public init(service: RAVESetupService, onPayload: @escaping @MainActor (Payload) -> Void) {
         self.service = service
@@ -52,7 +55,16 @@ public final class RAVESetupReceiver<Payload: Decodable & Sendable> {
                 Task { @MainActor in self?.listenerChanged(state) }
             }
             listener.newConnectionHandler = { [weak self] connection in
-                Task { @MainActor in self?.accept(connection) }
+                guard let self,
+                      self.pendingConnections.withLock({ count in
+                          guard count < self.maximumPendingConnections else { return false }
+                          count += 1
+                          return true
+                      }) else {
+                    connection.cancel()
+                    return
+                }
+                Task { @MainActor in self.accept(connection) }
             }
             listener.start(queue: .main)
             self.listener = listener
@@ -84,11 +96,13 @@ public final class RAVESetupReceiver<Payload: Decodable & Sendable> {
 
     private func accept(_ connection: NWConnection) {
         guard let privateKey, let code else {
+            pendingConnections.withLock { $0 -= 1 }
             connection.cancel()
             return
         }
         connection.start(queue: .main)
         Task {
+            defer { pendingConnections.withLock { $0 -= 1 } }
             do {
                 let (payload, replyKey) = try await withSetupTimeout(15, cancelling: connection) {
                     let envelope = try JSONDecoder().decode(RAVESetupChannel.Envelope.self, from: try await connection.receiveFrame())

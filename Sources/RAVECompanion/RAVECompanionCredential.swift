@@ -41,13 +41,19 @@ public struct RAVECompanionCredential: Sendable, Equatable, Hashable {
     }
 
     /// 256-bit URL-safe token.
-    public static func generateToken() -> String {
+    public static func generateToken() throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw TokenGenerationError.randomSourceUnavailable
+        }
         return Data(bytes).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    public enum TokenGenerationError: Error, Sendable {
+        case randomSourceUnavailable
     }
 }
 
@@ -264,12 +270,17 @@ public struct RAVECompanionPairLink: Equatable, Sendable {
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
               let mac = items.first(where: { $0.name == "mac" })?.value, !mac.isEmpty, mac.count <= 64 else { return nil }
         let addresses = items.filter { $0.name == "addr" }.compactMap(\.value)
-            .filter { !$0.isEmpty && $0.count < 64 }.prefix(12)
+            .filter { $0.count < 64 && (IPv4Address($0) != nil || IPv6Address($0) != nil) }.prefix(12)
         guard !addresses.isEmpty else { return nil }
+        // Address links are generated from the host's advertised IPs. Keep a
+        // link from silently redirecting pairing traffic to another service.
+        if let rawPort = items.first(where: { $0.name == "port" })?.value {
+            guard UInt16(rawPort) == namespace.defaultPairPort else { return nil }
+        }
         self.namespace = namespace
         self.macID = mac
         self.name = String((items.first { $0.name == "name" }?.value ?? "Mac").prefix(80))
-        self.port = items.first { $0.name == "port" }?.value.flatMap(UInt16.init) ?? namespace.defaultPairPort
+        self.port = namespace.defaultPairPort
         self.addresses = Array(addresses)
     }
 }
