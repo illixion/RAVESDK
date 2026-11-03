@@ -24,15 +24,10 @@
  treated as always satisfied: reconnects ride the backoff, and a kiosk's
  network doesn't flap the way a headset's does across sleep/wake.
 
- **Calls about a socket name the socket.** The app hears events late: by the
- time it handles a frame, the transport may already have replaced that frame's
- socket (a pong timeout, a wake probe). A `markReady()` decided on the old
- socket's `auth_ok` then promoted the *new*, unauthenticated one, its keepalive
- pinged into Home Assistant's auth phase, HA answered `auth_invalid`, and the
- app halted for good. So `send`, `markHandshaking`, `markReady` and `halt` take
- `seenFrames:`, the number of `.frame` events the app has handled from this
- transport, and a call made before the current socket's first frame is
- dropped.
+ Every socket has a generation carried by frames and state events. Delayed
+ application work must pass that generation back. Internal pings and deadlines
+ also retain their socket across suspension points; old work cannot touch a
+ replacement. Handshake transports permit one handshake response before ready.
 
  Protocol framing lives entirely above this type. It moves `String` frames and
  nothing else — even the keepalive ping is app-supplied, because Stash pings
@@ -50,9 +45,9 @@ import Network
 /// Events emitted to the app. Consume via `for await event in transport.events`.
 public enum RAVENetEvent: Sendable {
     /// Lifecycle transition. Also delivered for `.failed`.
-    case stateChanged(RAVEConnectionState)
+    case stateChanged(RAVEConnectionState, generation: UInt64)
     /// An inbound text frame (binary frames are UTF-8 decoded into this case).
-    case frame(String)
+    case frame(String, generation: UInt64)
     /// A receive failure, delivered after the failure policy has been consulted
     /// and the resulting action taken. Informational — do not reconnect from here.
     case failure(RAVETransportFailure)
@@ -71,6 +66,8 @@ public actor RAVEWebSocketTransport {
     public struct Configuration: Sendable {
         /// Endpoint to connect to.
         public var url: URL
+        public var requiresHandshake: Bool
+        public var handshakeRetryLimit: Int
         /// Reconnect backoff. See `RAVEBackoffPolicy` for why both floors exist.
         public var backoff: RAVEBackoffPolicy
         /// Gap between keepalive pings. Started only once the app calls
@@ -90,9 +87,13 @@ public actor RAVEWebSocketTransport {
             pingInterval: TimeInterval = 25,
             pongTimeout: TimeInterval = 10,
             requestTimeout: TimeInterval = 15,
-            resourceTimeout: TimeInterval = 30
+            resourceTimeout: TimeInterval = 30,
+            requiresHandshake: Bool = false,
+            handshakeRetryLimit: Int = 0
         ) {
             self.url = url
+            self.requiresHandshake = requiresHandshake
+            self.handshakeRetryLimit = max(0, handshakeRetryLimit)
             self.backoff = backoff
             self.pingInterval = pingInterval
             self.pongTimeout = pongTimeout
@@ -116,6 +117,8 @@ public actor RAVEWebSocketTransport {
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var reconnectID: UUID?
+    private var handshakeTask: Task<Void, Never>?
 
     private var state: RAVEConnectionState = .idle
     private var retryCount: Int = 0
@@ -125,12 +128,10 @@ public actor RAVEWebSocketTransport {
     /// Timestamp of the last inbound frame — the liveness signal the keepalive
     /// and probe paths both test against.
     private var lastReceiveAt: Date = .distantPast
-    /// `.frame` events yielded so far, across every socket. Frames are only
-    /// counted when yielded, so the app's own count of handled frames matches.
-    private var framesYielded = 0
-    /// `framesYielded` when the current socket opened: a `seenFrames` at or
-    /// below it was decided on an earlier socket's traffic.
-    private var framesBeforeCurrentSocket = 0
+    private var generation: UInt64 = 0
+    private var handshakeSent = false
+    private var handshakeRejections = 0
+    private var readySince: Date?
     /// Set by a `.halt` failure decision or by `halt(reason:)`. Suppresses every
     /// reconnect path until the next explicit `start()`.
     private var halted: Bool = false
@@ -180,6 +181,7 @@ public actor RAVEWebSocketTransport {
     public func start() {
         teardownSocket()
         halted = false
+        handshakeRejections = 0
         retryCount = 0
         startPathMonitor()
         doConnect()
@@ -196,27 +198,55 @@ public actor RAVEWebSocketTransport {
         transition(to: .idle)
     }
 
-    /// Fire-and-forget send. Failures are logged, not thrown — every caller in
-    /// both source implementations ignored the result, and a send error is
-    /// always followed by a receive error that drives the real recovery.
-    ///
-    /// - Parameter seenFrames: `.frame` events the app had handled when it
-    ///   decided to send. Pass it for anything protocol-stateful: a frame meant
-    ///   for an authenticated socket must not reach its unauthenticated
-    ///   replacement. Nil sends to whatever socket is current.
-    public func send(_ text: String, seenFrames: Int? = nil) {
-        guard let task = webSocketTask, isCurrentSocket(seenFrames, "send") else { return }
+    /// Send normal protocol traffic. Handshake transports require readiness.
+    /// Pass the generation from the event that caused this send.
+    public func send(_ text: String, generation: UInt64? = nil) {
+        guard let task = webSocketTask, isCurrentSocket(generation, "send"),
+              !configuration.requiresHandshake || state.isReady else {
+            logger.log(.info, "application frame dropped — socket not ready or replaced")
+            return
+        }
+        send(text, on: task, kind: "application")
+    }
+
+    /// The sole pre-ready frame allowed on a handshake transport.
+    public func sendHandshake(_ text: String, generation: UInt64) {
+        guard isCurrentSocket(generation, "handshake"), let task = webSocketTask,
+              state == .handshaking, !handshakeSent else { return }
+        handshakeSent = true
+        send(text, on: task, kind: "handshake")
+    }
+
+    private func send(_ text: String, on task: RAVEWebSocketConnection, kind: String) {
+        logger.log(.debug, "tx kind=\(kind, privacy: .public) generation=\(generation, privacy: .public)")
+        let sentGeneration = generation
         task.send(text) { [logger] error in
             if let error {
-                logger.log(.warning, "send error: \(error)")
+                let nsError = error as NSError
+                logger.log(.warning, "send error generation=\(sentGeneration, privacy: .public): \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public): \(error.localizedDescription, privacy: .private)")
             }
+        }
+    }
+
+    /// One bounded clean retry for an ambiguous protocol authentication rejection.
+    /// The budget resets only on explicit start or a minute of healthy traffic.
+    public func rejectHandshake(reason: String, generation: UInt64) {
+        guard isCurrentSocket(generation, "rejectHandshake"), webSocketTask != nil else { return }
+        handshakeRejections += 1
+        if handshakeRejections <= configuration.handshakeRetryLimit {
+            logger.log(.warning, "authentication rejected — scheduling clean retry")
+            teardownSocket()
+            transition(to: .connecting)
+            scheduleReconnect()
+        } else {
+            halt(reason: reason, generation: generation)
         }
     }
 
     /// Declare that a protocol-level handshake is underway (Home Assistant's
     /// `auth_required`). Optional — apps without a handshake never call it.
-    public func markHandshaking(seenFrames: Int? = nil) {
-        guard state == .connecting, isCurrentSocket(seenFrames, "markHandshaking") else { return }
+    public func markHandshaking(generation: UInt64? = nil) {
+        guard state == .connecting, isCurrentSocket(generation, "markHandshaking") else { return }
         transition(to: .handshaking)
     }
 
@@ -224,23 +254,24 @@ public actor RAVEWebSocketTransport {
     /// that does — a wake or path-up edge does not prove a connection works)
     /// and starts the keepalive loop.
     ///
-    /// - Parameter seenFrames: `.frame` events the app had handled when it
-    ///   decided. Pass it whenever readiness follows a frame, which is always
-    ///   in practice: without it, a decision about a socket that has since been
-    ///   replaced promotes the replacement.
-    public func markReady(seenFrames: Int? = nil) {
+    /// - Parameter generation: Identity from the frame declaring readiness.
+    public func markReady(generation: UInt64? = nil) {
         guard state == .connecting || state == .handshaking, webSocketTask != nil,
-              isCurrentSocket(seenFrames, "markReady") else { return }
+              !configuration.requiresHandshake || handshakeSent,
+              isCurrentSocket(generation, "markReady") else { return }
         retryCount = 0
         transition(to: .ready)
+        handshakeTask?.cancel()
+        handshakeTask = nil
+        readySince = Date()
         startKeepalive()
     }
 
     /// Stop permanently with a reason. Used for protocol-level fatalities the
     /// transport cannot see — Home Assistant's `auth_invalid` arrives as an
     /// ordinary frame, not a socket error.
-    public func halt(reason: String, seenFrames: Int? = nil) {
-        guard isCurrentSocket(seenFrames, "halt") else { return }
+    public func halt(reason: String, generation: UInt64? = nil) {
+        guard isCurrentSocket(generation, "halt") else { return }
         halted = true
         teardownSocket()
         logger.log(.error, "halted: \(reason)")
@@ -256,16 +287,16 @@ public actor RAVEWebSocketTransport {
     public func probeOrReconnect(timeout: TimeInterval = 3) async {
         if halted { return }
         guard state.isReady, webSocketTask != nil else {
-            forceReconnectNow()
+            reviveIfIdle()
             return
         }
-        let sentAt = Date()
+        guard let task = webSocketTask else { return }
         logger.log(.info, "probe ping (timeout=\(timeout)s)")
-        if let frame = await pingFrameProvider() { send(frame) }
+        guard let sentAt = await sendPing(on: task) else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(timeout))
             guard let self else { return }
-            await self.failProbeIfSilent(since: sentAt)
+            await self.failProbeIfSilent(since: sentAt, task: task)
         }
     }
 
@@ -276,7 +307,10 @@ public actor RAVEWebSocketTransport {
     /// classic sleep/wake zombie socket, where `receive()` does not error until
     /// the OS finally tries to deliver a frame, which can take minutes.
     public func forceReconnectNow() {
-        if halted { return }
+        if halted {
+            logger.log(.info, "reconnect blocked — halted; explicit reconnect required")
+            return
+        }
         guard session != nil else { return }
         teardownSocket()
         // Deliberately NOT resetting retryCount. This fires on path-up and wake
@@ -303,8 +337,9 @@ public actor RAVEWebSocketTransport {
     /// - Parameter shouldSuspend: Re-checked *after* the flush completes, so a
     ///   window that came back during the flush keeps its socket.
     public func flushAndSuspend(shouldSuspend: @Sendable () async -> Bool) async {
-        guard let task = webSocketTask else { return }
+        guard let task = webSocketTask, state.isReady else { return }
         if let frame = await pingFrameProvider() {
+            guard !Task.isCancelled, task === webSocketTask, state.isReady else { return }
             await withCheckedContinuation { continuation in
                 task.send(frame) { _ in continuation.resume() }
             }
@@ -357,19 +392,37 @@ public actor RAVEWebSocketTransport {
         task.resume()
         lastConnectAttemptAt = Date()
         lastReceiveAt = Date()
-        framesBeforeCurrentSocket = framesYielded
+        generation += 1
+        handshakeSent = false
+        readySince = nil
         // Announced even when already connecting. A socket replaced before it
         // was declared ready (a forced reconnect racing the first frame) is
         // still a new socket, and a client that declared itself ready on the
         // old one's frame has to hear that, or it never replays on this one.
         state = .connecting
-        eventContinuation.yield(.stateChanged(.connecting))
+        eventContinuation.yield(.stateChanged(.connecting, generation: generation))
 
+        logger.log(.info, "socket generation=\(generation, privacy: .public) connecting")
         logger.log(.info, "connecting to \(configuration.url.scheme ?? "?", privacy: .public)://\(Self.loggableEndpoint(configuration.url), privacy: .private(mask: .hash))")
 
+        if configuration.requiresHandshake {
+            handshakeTask = Task { [weak self, timeout = configuration.requestTimeout] in
+                try? await Task.sleep(for: .seconds(timeout))
+                guard !Task.isCancelled else { return }
+                await self?.expireHandshake(on: task)
+            }
+        }
         receiveTask = Task { [weak self] in
             await self?.receiveLoop(task: task)
         }
+    }
+
+    private func expireHandshake(on task: RAVEWebSocketConnection) {
+        guard task === webSocketTask, !state.isReady else { return }
+        logger.log(.warning, "handshake timed out — scheduling reconnect")
+        teardownSocket()
+        transition(to: .connecting)
+        scheduleReconnect()
     }
 
     private func receiveLoop(task: RAVEWebSocketConnection) async {
@@ -504,13 +557,18 @@ public actor RAVEWebSocketTransport {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(configuration.pingInterval))
             if Task.isCancelled { return }
-            guard webSocketTask != nil, state.isReady else { return }
+            guard let task = webSocketTask, state.isReady else { return }
 
-            let sentAt = Date()
-            if let frame = await pingFrameProvider() { send(frame) }
+            guard let sentAt = await sendPing(on: task) else {
+                if Task.isCancelled || task !== webSocketTask || !state.isReady { return }
+                continue
+            }
 
             try? await Task.sleep(for: .seconds(configuration.pongTimeout))
-            if Task.isCancelled { return }
+            if Task.isCancelled || task !== webSocketTask || !state.isReady { return }
+            if let readySince, Date().timeIntervalSince(readySince) >= 60, lastReceiveAt >= sentAt {
+                handshakeRejections = 0
+            }
             if lastReceiveAt < sentAt {
                 logger.log(.warning, "pong timeout (last rx \(-lastReceiveAt.timeIntervalSinceNow)s ago) — forcing reconnect")
                 forceReconnectNow()
@@ -519,8 +577,8 @@ public actor RAVEWebSocketTransport {
         }
     }
 
-    private func failProbeIfSilent(since sentAt: Date) {
-        guard lastReceiveAt < sentAt else { return }
+    private func failProbeIfSilent(since sentAt: Date, task: RAVEWebSocketConnection) {
+        guard task === webSocketTask, state.isReady, lastReceiveAt < sentAt else { return }
         logger.log(.warning, "probe timed out — forcing reconnect")
         forceReconnectNow()
     }
@@ -542,6 +600,9 @@ public actor RAVEWebSocketTransport {
         reconnectTask?.cancel()
         let attempt = retryCount
         retryCount += 1
+        let scheduledGeneration = generation
+        let id = UUID()
+        reconnectID = id
         let delay = configuration.backoff.delay(
             forAttempt: attempt,
             secondsSinceLastAttempt: Date().timeIntervalSince(lastConnectAttemptAt)
@@ -551,7 +612,7 @@ public actor RAVEWebSocketTransport {
             await self.logReconnect(delay: delay, attempt: attempt)
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            await self.performScheduledReconnect()
+            await self.performScheduledReconnect(generation: scheduledGeneration, id: id)
         }
     }
 
@@ -559,8 +620,10 @@ public actor RAVEWebSocketTransport {
         logger.log(.info, "reconnecting in \(delay, privacy: .public)s (attempt=\(attempt))")
     }
 
-    private func performScheduledReconnect() {
+    private func performScheduledReconnect(generation expected: UInt64, id: UUID) {
+        guard expected == generation, reconnectID == id, session != nil else { return }
         reconnectTask = nil
+        reconnectID = nil
         guard !halted else { return }
         // Re-check the path — it may have flipped during the backoff sleep.
         guard lastPathSatisfied else {
@@ -607,20 +670,32 @@ public actor RAVEWebSocketTransport {
     // MARK: - Helpers
 
     private func yieldFrame(_ text: String) {
-        framesYielded += 1
-        eventContinuation.yield(.frame(text))
+        eventContinuation.yield(.frame(text, generation: generation))
     }
 
-    /// Whether an app call decided after seeing `seenFrames` frames is about
-    /// the current socket, i.e. at least one of this socket's frames had
-    /// reached the app. Nil opts out of the check.
-    private func isCurrentSocket(_ seenFrames: Int?, _ call: String) -> Bool {
-        guard let seenFrames, seenFrames <= framesBeforeCurrentSocket else { return true }
-        logger.log(.info, "\(call, privacy: .public) dropped — decided on a replaced socket (seen \(seenFrames), socket opened after \(framesBeforeCurrentSocket))")
-        return false
+    private func isCurrentSocket(_ expected: UInt64?, _ call: String) -> Bool {
+        guard let expected else { return true }
+        guard expected == generation, webSocketTask != nil else {
+            logger.log(.info, "\(call, privacy: .public) dropped — generation \(expected, privacy: .public) no longer active (current \(generation, privacy: .public))")
+            return false
+        }
+        return true
+    }
+
+    /// Capture the socket before asking the app to build a ping. Actor reentrancy
+    /// and cancellation may both replace it while the provider is suspended.
+    private func sendPing(on task: RAVEWebSocketConnection) async -> Date? {
+        guard let frame = await pingFrameProvider(), !Task.isCancelled,
+              task === webSocketTask, state.isReady else { return nil }
+        let sentAt = Date()
+        send(frame, on: task, kind: "ping")
+        return sentAt
     }
 
     private func teardownSocket() {
+        reconnectID = nil
+        handshakeTask?.cancel()
+        handshakeTask = nil
         reconnectTask?.cancel()
         reconnectTask = nil
         receiveTask?.cancel()
@@ -634,6 +709,6 @@ public actor RAVEWebSocketTransport {
     private func transition(to newState: RAVEConnectionState) {
         guard state != newState else { return }
         state = newState
-        eventContinuation.yield(.stateChanged(newState))
+        eventContinuation.yield(.stateChanged(newState, generation: generation))
     }
 }

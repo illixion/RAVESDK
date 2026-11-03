@@ -94,7 +94,7 @@ struct RAVEWebSocketTransportStateTests {
 
         var seen: RAVEConnectionState?
         for await event in events {
-            if case .stateChanged(let state) = event {
+            if case .stateChanged(let state, _) = event {
                 seen = state
                 break
             }
@@ -114,7 +114,7 @@ struct RAVEWebSocketTransportStateTests {
         // Expect exactly one .failed("same") before the .idle from stop().
         var states: [RAVEConnectionState] = []
         for await event in events {
-            if case .stateChanged(let state) = event {
+            if case .stateChanged(let state, _) = event {
                 states.append(state)
                 if state == .idle { break }
             }
