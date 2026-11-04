@@ -372,6 +372,11 @@ public final class Pseudo3DStereoEngine {
     /// Every couple of seconds of playback: whether the conversion keeps up
     /// with the source (`StereoPerformance.isOverloaded`). Main actor.
     @ObservationIgnored public var onPerformance: ((StereoPerformance) -> Void)?
+    /// What the source frames are (transfer function, Dolby Vision RPU),
+    /// when playback starts and whenever it changes. Main actor. Both eyes
+    /// keep the transfer; an RPU is never applied, so Dolby Vision shows as
+    /// its base layer.
+    @ObservationIgnored public var onFrameSignal: ((FrameColorSignal) -> Void)?
     @ObservationIgnored public var onDurationKnown: ((Double) -> Void)?
     /// One-shot latch for `onDurationKnown` (duration is polled from the
     /// periodic time observer, which fires ~30×/s). Reset per loaded item.
@@ -1242,6 +1247,9 @@ public final class Pseudo3DStereoEngine {
 
     private func install(_ pump: StereoPump) {
         pump.onPerformance = performanceForwarder()
+        pump.onFrameSignal = { [weak self] signal in
+            Task { @MainActor in self?.onFrameSignal?(signal) }
+        }
         pump.onUnshowablePicture = unshowablePictureForwarder()
         pump.onProcessingBuffering = { [weak self, weak pump] held in
             Task { @MainActor in
@@ -1465,6 +1473,7 @@ public final class Pseudo3DStereoEngine {
         cleanupPlayer()
         videoRenderer.flush()
         onVideoSizeKnown = nil
+        onFrameSignal = nil
         onPlaybackError = nil
         onDurationKnown = nil
         onPlaybackUpdate = nil
