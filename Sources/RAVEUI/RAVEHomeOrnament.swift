@@ -26,9 +26,12 @@ private struct RAVEHomeOrnament<Accessory: View>: ViewModifier {
     let systemImage: String
     let action: @MainActor () -> Void
     let accessory: Accessory
+    /// Hidden with the window while a window it pushed is in front of it;
+    /// an ornament is not covered by its content's opacity.
+    @Environment(\.raveIsPushedAway) private var isPushedAway
 
     func body(content: Content) -> some View {
-        content.ornament(attachmentAnchor: .scene(.bottomFront)) {
+        content.ornament(visibility: isPushedAway ? .hidden : .automatic, attachmentAnchor: .scene(.bottomFront)) {
             HStack(spacing: 12) {
                 Button(action: action) {
                     Label(title, systemImage: systemImage)
