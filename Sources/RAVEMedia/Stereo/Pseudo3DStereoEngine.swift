@@ -209,8 +209,9 @@ public final class Pseudo3DStereoEngine {
     /// to the system. A host states it with `UIWindow.avDisplayManager`.
     public private(set) var displayCriteria: AVDisplayCriteria?
     @ObservationIgnored private var displayCriteriaTask: Task<Void, Never>?
-    /// The pump's source doubles the frames (Smooth Motion).
-    @ObservationIgnored private var showsDoubledFrames = false
+    /// The pump's source doubles the frames (Smooth Motion): a host's
+    /// readout says "24 → 48 fps".
+    public private(set) var showsDoubledFrames = false
     private var spatialAudioSceneIdentifier: String?
     private var playerItem: AVPlayerItem? {
         didSet { playerItem?.preferredMaximumResolution = preferredMaximumResolution }
