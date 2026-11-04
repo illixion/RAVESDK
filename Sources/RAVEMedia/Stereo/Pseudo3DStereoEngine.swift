@@ -1030,7 +1030,9 @@ public final class Pseudo3DStereoEngine {
         // frames, never older depth. Faster than 1× it shows no more frames a
         // second than the video has at 1×, so the inference does the same
         // work at any speed (StereoPump's frame cap).
-        let playerSource = AVPlayerFrameSource(output: output, item: item)
+        // An HDR picture switches the output to half float at its first frame,
+        // so its eyes are drawn and handed over in 10 bits, not 8.
+        let playerSource = AVPlayerFrameSource(output: output, item: item, upgradesForHDR: true)
         let frameSource = interpolating(playerSource, packedStereo: packedStereo)
         showsDoubledFrames = frameSource is InterpolatingFrameSource
         updateDisplayCriteria(item: item, doubled: showsDoubledFrames)
