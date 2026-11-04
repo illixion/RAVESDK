@@ -41,7 +41,10 @@
      @Environment(\.ravePushWindow) private var pushWindow
      pushWindow(id: "viewer", value: photo)
 
- The pushed window closes itself with the ordinary `dismissWindow()`.
+ The pushed window closes itself with the ordinary `dismissWindow()`. A
+ Home button that should bring the caller back *beside* a pushed window that
+ keeps running calls `RAVEWindowPushCoordinator.shared.reveal(sceneID:value:)`
+ before its `openWindow`.
  Pushes nest: a pushed window may push again, and each close reveals the one
  beneath it.
 
@@ -85,6 +88,10 @@ public final class RAVEWindowPushCoordinator {
     @ObservationIgnored private var sizes: [UUID: CGSize] = [:]
 
     @ObservationIgnored private var scenes: [UUID: WeakScene] = [:]
+
+    /// What each hosted window was opened with, so `reveal(sceneID:value:)`
+    /// can find it.
+    @ObservationIgnored private var hosts: [UUID: (sceneID: String, value: AnyHashable?)] = [:]
     @ObservationIgnored private var disconnectObserver: NSObjectProtocol?
 
     private init() {}
@@ -126,9 +133,30 @@ public final class RAVEWindowPushCoordinator {
         pending.first { $0.sceneID == sceneID }?.sourceSize
     }
 
+    // MARK: Reveal
+
+    /// Show a hidden window again without closing what it pushed: each window
+    /// it was hidden behind becomes an ordinary window beside it. For a Home
+    /// button in a pushed window that should bring the caller back while the
+    /// pushed window carries on (a streaming session, a player).
+    ///
+    /// `openWindow` on a hidden window cannot do this on its own: the window
+    /// is already open, so the system only brings it forward, still hidden.
+    /// Call this, then `openWindow`, so the window also comes to the person.
+    public func reveal(sceneID: String, value: (any Hashable)? = nil) {
+        let key = value.map { AnyHashable($0) }
+        let tokens = hosts.filter { $0.value.sceneID == sceneID && $0.value.value == key }.map(\.key)
+        for token in tokens {
+            for (pushed, source) in covers where source == token {
+                covers[pushed] = nil
+            }
+        }
+    }
+
     // MARK: Host bookkeeping
 
     func hostAppeared(token: UUID, sceneID: String, value: AnyHashable?) {
+        hosts[token] = (sceneID, value)
         guard covers[token] == nil,
               let index = pending.firstIndex(where: { $0.sceneID == sceneID && $0.value == value })
         else { return }
@@ -149,6 +177,7 @@ public final class RAVEWindowPushCoordinator {
         pending.removeAll { $0.source == token }
         sizes[token] = nil
         scenes[token] = nil
+        hosts[token] = nil
     }
 
     func updateSize(token: UUID, size: CGSize) {
