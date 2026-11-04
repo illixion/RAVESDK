@@ -48,6 +48,12 @@
  Pushes nest: a pushed window may push again, and each close reveals the one
  beneath it.
 
+ Stacking is strict: only
+ a visible window pushes (a hidden one's push opens a plain pop-out), a
+ stacked window leaves the stack only by closing or by
+ `\.raveDetachFromStack`, and `\.raveIsPushedWindow` tells a window which of
+ the two it is right now.
+
  A push that never lands — the value is already open in another window, so
  `openWindow` brought that one forward instead of opening a new one — hides
  nothing: the caller only hides once a new window claims the push, and an
@@ -117,6 +123,15 @@ public final class RAVEWindowPushCoordinator {
     /// Issue a push from `source`. `open` opens the window; the source hides
     /// once that window's host claims the push.
     func push(from source: UUID, sceneID: String, value: AnyHashable?, open: () -> Void) {
+        // Strict: only the window the person is looking at can push. A window
+        // that is itself hidden behind another (a model reacting in the
+        // background) has no place in the stack to push from, and hiding it
+        // further would leave the visible window beside the new one. Its
+        // window opens as an ordinary pop-out.
+        guard !isPushedAway(source) else {
+            open()
+            return
+        }
         let entry = Pending(source: source, sceneID: sceneID, value: value, sourceSize: sizes[source])
         pending.append(entry)
         open()
@@ -151,6 +166,14 @@ public final class RAVEWindowPushCoordinator {
                 covers[pushed] = nil
             }
         }
+    }
+
+    /// Turn a pushed window into a pop-out: show the window it covers again
+    /// and leave the pushed window open and running. The covered window
+    /// becomes an ordinary window beside it. A no-op for a window that was not
+    /// pushed.
+    func detach(token: UUID) {
+        covers[token] = nil
     }
 
     // MARK: Host bookkeeping
@@ -238,11 +261,29 @@ public struct RAVEPushWindowAction {
     }
 }
 
+/// Detaches the calling window from the stack it was pushed onto, so the
+/// window it covers shows again beside it. See `raveDetachFromStack`.
+@MainActor
+public struct RAVEDetachFromStackAction {
+    let token: UUID?
+
+    public func callAsFunction() {
+        guard let token else { return }
+        RAVEWindowPushCoordinator.shared.detach(token: token)
+    }
+}
+
 // MARK: - Environment
 
 private struct RAVEPushWindowKey: EnvironmentKey {
     static var defaultValue: RAVEPushWindowAction {
         MainActor.assumeIsolated { RAVEPushWindowAction(source: nil, openWindow: nil) }
+    }
+}
+
+private struct RAVEDetachFromStackKey: EnvironmentKey {
+    static var defaultValue: RAVEDetachFromStackAction {
+        MainActor.assumeIsolated { RAVEDetachFromStackAction(token: nil) }
     }
 }
 
@@ -261,6 +302,15 @@ public extension EnvironmentValues {
     var ravePushWindow: RAVEPushWindowAction {
         get { self[RAVEPushWindowKey.self] }
         set { self[RAVEPushWindowKey.self] = newValue }
+    }
+
+    /// Make this pushed window a pop-out: the window it covers shows again
+    /// beside it and this one keeps running. Use it for a "show the gallery"
+    /// control on a stacked viewer. `dismissWindow()` instead ends this window
+    /// (a player stops); detaching never does.
+    var raveDetachFromStack: RAVEDetachFromStackAction {
+        get { self[RAVEDetachFromStackKey.self] }
+        set { self[RAVEDetachFromStackKey.self] = newValue }
     }
 
     /// True while this window is hidden behind a window it pushed. Hide
@@ -287,20 +337,47 @@ private struct RAVEWindowPushHostModifier: ViewModifier {
     @State private var token = UUID()
     @Environment(\.openWindow) private var openWindow
 
+    /// What the window itself asked for through `raveSystemOverlays`; nil when
+    /// it never did.
+    @State private var requestedOverlays: Visibility?
+    /// True while a hidden state is being re-asserted after a resize: the
+    /// applied value flips off for a moment so SwiftUI sees a real change.
+    @State private var reasserting = false
+    @State private var reassertTask: Task<Void, Never>?
+
+    private static let reassertDelay: Duration = .milliseconds(600)
+
     private var coordinator: RAVEWindowPushCoordinator { .shared }
 
     func body(content: Content) -> some View {
         let pushedAway = coordinator.isPushedAway(token)
+        let wantsHidden = pushedAway || requestedOverlays == .hidden
+        let appliedOverlays: Visibility = wantsHidden
+            ? (reasserting ? .automatic : .hidden)
+            : (requestedOverlays ?? .automatic)
         content
             .environment(\.ravePushWindow, RAVEPushWindowAction(source: token, openWindow: openWindow))
+            .environment(\.raveDetachFromStack, RAVEDetachFromStackAction(token: token))
             .environment(\.raveIsPushedAway, pushedAway)
             .environment(\.raveIsPushedWindow, coordinator.isPushed(token))
             .opacity(pushedAway ? 0 : 1)
             .allowsHitTesting(!pushedAway)
-            .persistentSystemOverlays(pushedAway ? .hidden : .automatic)
+            .onPreferenceChange(RAVESystemOverlaysKey.self) { requestedOverlays = $0 }
+            .persistentSystemOverlays(appliedOverlays)
             .animation(.easeInOut(duration: 0.2), value: pushedAway)
             .onGeometryChange(for: CGSize.self, of: \.size) { size in
                 coordinator.updateSize(token: token, size: size)
+                // A resize resets the system's overlay state to visible
+                // without SwiftUI noticing; flip the applied value off and on
+                // once the resize settles so a hidden state is applied again.
+                guard pushedAway || requestedOverlays == .hidden else { return }
+                reassertTask?.cancel()
+                reasserting = true
+                reassertTask = Task { @MainActor in
+                    try? await Task.sleep(for: Self.reassertDelay)
+                    guard !Task.isCancelled else { return }
+                    reasserting = false
+                }
             }
             .background {
                 RAVEPushSceneReader { scene in
