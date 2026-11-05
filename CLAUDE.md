@@ -1175,6 +1175,7 @@ the link list.
 | `halflife-visionos/LambdaVision` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics`, `RAVERig` |
 | `spatial-ai-character` | `RAVEUI`, `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, `RAVEConsent`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
 | `Apparition` (visionOS + iOS + tvOS) | `RAVEUI`, `RAVECompanion`, `RAVELauncher` (the visionOS Home tab) |
+| `Nexus` (visionOS) | `RAVELauncher` (Home), + Engine's `RAVESharedSpace`; its modules use `RAVEWindowScope` |
 
 Read this from `productName = RAVE…` in each `project.pbxproj`, not from `import RAVE…` —
 re-exports and typealiases hide a dependency from the import list.
