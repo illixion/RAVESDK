@@ -276,20 +276,39 @@ public final class RAVEWindowRegistry {
 // MARK: - Scene-level escape hatch
 
 public enum RAVEWindowScenes {
-    /// Destroy every connected window scene session except `keeping`.
+    /// The SwiftUI window id a scene session was opened for (`WindowGroup(id:)`),
+    /// or nil if it can't be told.
+    ///
+    /// SwiftUI keeps it in the session's `userInfo` under
+    /// `com.apple.SwiftUI.sceneID`. That key is undocumented: read on visionOS 27
+    /// (Nexus, 2026-11-05) it held each group's id for windows and immersive
+    /// spaces alike. It is written when the session is made, so it is there for
+    /// a scene that never got a layout pass. If a release drops it, scoped
+    /// calls match nothing and leave every window alone, which is the safe way
+    /// to fail.
+    @MainActor
+    public static func sceneID(of session: UISceneSession) -> String? {
+        session.userInfo?["com.apple.SwiftUI.sceneID"] as? String
+    }
+
+    /// Destroy every connected window scene session in `scope` except `keeping`.
     ///
     /// The registry cannot reach a scene that never ran `onAppear` — which is
     /// exactly what the launch-time variant of the visionOS 27 blank-window bug
     /// produces. This goes underneath SwiftUI to UIKit's scene sessions, so it
     /// also clears windows the app never managed to register. Returns how many
     /// sessions were asked to go away.
+    ///
+    /// An app sharing its process with others (a Nexus module) passes its own
+    /// scope, or this closes their windows too.
     @MainActor
     @discardableResult
-    public static func destroyAll(except keeping: UISceneSession?) -> Int {
+    public static func destroyAll(except keeping: UISceneSession?, in scope: RAVEWindowScope = .process) -> Int {
         let sessions = UIApplication.shared.connectedScenes.compactMap { scene -> UISceneSession? in
             guard let windowScene = scene as? UIWindowScene,
                   windowScene.session.role == .windowApplication,
-                  windowScene.session !== keeping else {
+                  windowScene.session !== keeping,
+                  scope.contains(sceneID: sceneID(of: windowScene.session)) else {
                 return nil
             }
             return windowScene.session
@@ -300,15 +319,15 @@ public enum RAVEWindowScenes {
         return sessions.count
     }
 
-    /// Whether any window scene other than `keeping` is currently connected.
+    /// Whether any window scene in `scope` other than `keeping` is connected.
     @MainActor
-    public static func hasWindows(besides keeping: UISceneSession?) -> Bool {
+    public static func hasWindows(besides keeping: UISceneSession?, in scope: RAVEWindowScope = .process) -> Bool {
         UIApplication.shared.connectedScenes.contains { scene in
             guard let windowScene = scene as? UIWindowScene,
                   windowScene.session.role == .windowApplication else {
                 return false
             }
-            return windowScene.session !== keeping
+            return windowScene.session !== keeping && scope.contains(sceneID: sceneID(of: windowScene.session))
         }
     }
 }
@@ -410,6 +429,7 @@ public struct RAVEWindowManagerView<Actions: View>: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.raveWindowToken) private var selfToken
+    @Environment(\.raveWindowScope) private var scope
 
     private var registry: RAVEWindowRegistry { .shared }
 
@@ -424,7 +444,7 @@ public struct RAVEWindowManagerView<Actions: View>: View {
     }
 
     private var listedWindows: [RAVEWindowRegistry.Entry] {
-        registry.windows.filter { $0.id != selfToken }
+        registry.windows.filter { $0.id != selfToken && scope.contains(sceneID: $0.sceneID) }
     }
 
     public var body: some View {

@@ -39,6 +39,11 @@ public struct RAVECodableSize: Codable, Hashable, Sendable {
 /// Tracks how many "main" windows are open and holds a live `OpenWindowAction`,
 /// so app and scene lifecycle hooks can summon the main window even when only
 /// pop-out scenes are connected.
+///
+/// An app alone in its process uses `shared`. An app hosted as a module beside
+/// others (Nexus) makes its own, with its own main window id, and puts it in
+/// its scenes' environment with `.raveWindowSessions(_:)`, so the counting
+/// modifiers below count its main window rather than everyone's.
 @MainActor
 public final class RAVEWindowSessionRegistry {
     public static let shared = RAVEWindowSessionRegistry()
@@ -65,7 +70,9 @@ public final class RAVEWindowSessionRegistry {
     /// into their own logger; nil is silent.
     public var log: (@MainActor (String) -> Void)?
 
-    private init() {}
+    public init(mainWindowID: String = "main") {
+        self.mainWindowID = mainWindowID
+    }
 
     public func registerMainWindow() {
         mainWindowCount += 1
@@ -138,14 +145,26 @@ public final class RAVEWindowSessionRegistry {
     }
 }
 
+private struct RAVERegisterMainWindowModifier: ViewModifier {
+    @Environment(\.raveWindowSessions) private var registry
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { (registry ?? .shared).registerMainWindow() }
+            .onDisappear { (registry ?? .shared).unregisterMainWindow() }
+    }
+}
+
 #if !os(tvOS)
-/// Keeps `RAVEWindowSessionRegistry.shared.openWindow` fresh from any scene root.
+/// Keeps the registry's `openWindow` fresh from any scene root: `shared`, or
+/// the one in the environment (`.raveWindowSessions(_:)`).
 private struct RAVECaptureOpenWindowModifier: ViewModifier {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.raveWindowSessions) private var registry
 
     func body(content: Content) -> some View {
         content.onAppear {
-            RAVEWindowSessionRegistry.shared.openWindow = openWindow
+            (registry ?? .shared).openWindow = openWindow
         }
     }
 }
@@ -163,10 +182,10 @@ public extension View {
         #endif
     }
 
-    /// Count this view's scene as a main window for as long as it exists.
+    /// Count this view's scene as a main window for as long as it exists, in
+    /// the environment's registry (`shared` unless `.raveWindowSessions(_:)`).
     func registerAsMainWindow() -> some View {
-        onAppear { RAVEWindowSessionRegistry.shared.registerMainWindow() }
-            .onDisappear { RAVEWindowSessionRegistry.shared.unregisterMainWindow() }
+        modifier(RAVERegisterMainWindowModifier())
     }
 }
 

@@ -453,6 +453,21 @@ Design points that will look like over-engineering until they bite:
   is what lets an app register its *main* windows too, so a second main parked in another
   room is recoverable — Longwave's version had to exclude "main" wholesale.
 
+**Several apps in one process (Nexus modules): scope the window helpers.** Both registries and
+`destroyAll` assumed the app was alone in its process, and in Nexus one module's "Close All
+Windows" would have closed the launcher and every other module. A module now:
+- names its windows with a prefix (`convolution.main`) and sets `.raveWindowScope(.prefix(…))`
+  on its scene roots, so `RAVEWindowManagerView` lists only its windows;
+- passes the same scope to `RAVEWindowScenes.destroyAll(except:in:)` / `hasWindows(besides:in:)`;
+- makes its own `RAVEWindowSessionRegistry(mainWindowID:)` and sets `.raveWindowSessions(_:)`,
+  so `registerAsMainWindow()` and `captureOpenWindowAction()` count its main window.
+
+The scene ids come from `RAVEWindowScenes.sceneID(of:)`, which reads SwiftUI's undocumented
+`com.apple.SwiftUI.sceneID` from the session's `userInfo` (read on visionOS 27: each group's
+id, windows and immersive spaces, present before a scene draws). If it goes away, scoped calls
+match nothing and close nothing. A standalone app changes nothing: the defaults are `.process`
+and `.shared`. `RAVEOpenMainWindowIntent` stays on `.shared`, the host app's.
+
 Labels are re-pushed on change (`RAVEWindowLabel` is `Equatable`) so a row can carry a live
 subtitle — Longwave's connection names, Stash's media titles. The action closures are taken
 once, which is correct: a window's identity never changes after it opens.
