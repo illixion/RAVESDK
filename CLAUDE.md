@@ -87,7 +87,7 @@ is easy to skip.
 | Target | Purpose |
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing. Also builds on Linux (see below) |
-| `RAVEUI` | Ornament tab bar, the Home ornament for pop-out windows (`raveHomeOrnament`), hover effects, grid column layout, window-session registry, window manager, window push (`ravePushWindow` + `raveWindowPushHost`: SwiftUI's `pushWindow` rebuilt by hiding the caller in place, since visionOS 27 stopped honouring the system one; ornaments hide via `\.raveIsPushedAway`), shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), `raveScreenTitle(_:)` + `RAVEScreenHeading` (a screen title that scrolls with the content on tvOS, where the bar's large title stays put over it; use them instead of a bare `navigationTitle` on any screen tvOS shows), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture) |
+| `RAVEUI` | Ornament tab bar, the Home ornament for pop-out windows (`raveHomeOrnament`), hover effects, grid column layout, window-session registry, window manager, window push (`ravePushWindow` + `raveWindowPushHost`: SwiftUI's `pushWindow` rebuilt by hiding the caller in place, since visionOS 27 stopped honouring the system one; ornaments hide via `\.raveIsPushedAway`), shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), `raveScreenTitle(_:)` + `RAVEScreenHeading` (a screen title that scrolls with the content on tvOS, where the bar's large title stays put over it; use them instead of a bare `navigationTitle` on any screen tvOS shows), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture), mini player views (`RAVEMiniPlayerPanel`, `RAVEMiniPlayerBar`, `RAVEMiniPlayerPlaceholder`, `RAVEMiniPlayerLayout`: the drawing of an audio mini player, bound to nothing) |
 | `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality/stall rules, Up Next ordering and skip-segment models/policy. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
@@ -103,6 +103,7 @@ is easy to skip.
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
 | `RAVEConsent` | Asking before personal data leaves an app's hands: `RAVEConsentCenter` (rules: grants keyed by kind and destination, "for 15 Minutes", supersede, history, a `status` with ids and decisions only), `RAVEConsentRequest` (kind, destination, title, detail, a `RAVEConsentPreview` of the exact payload: image or text), `RAVEConsentKind` (open: each app names its own). `RAVEConsentWindow` + `.raveConsentPrompts()` show it in a utility-panel window on visionOS/macOS (an immersive space has nothing a system alert could attach to) and a sheet on iOS/tvOS. Grants are in memory only. First consumer is spatial-ai-character (screenshots; Health next). In SDK, not DebugTrace: it ships in App Store builds, and DebugTrace cannot import RAVESDK, which depends on it. Logs through the small `DebugLog` product only (no trace builder, registry or server linked) |
 | `RAVELauncher` | A launcher screen: `RAVELauncherView` lays out `RAVELauncherSection`s of `RAVELauncherItem` tiles whose `RAVELauncherAction`s the app defines (open by URL through `.open(_:name:)`, a menu of choices, anything async that returns a status line). Plus the shortcuts other apps ask to pin: `RAVELauncherShortcutRequest` (parse and build `<scheme>://launcher-shortcut?…`, bounded, an icon required), `RAVELauncherShortcutStore` (UserDefaults JSON + icon files, observable), `RAVELauncherShortcutRequestView` (the approve sheet) and `RAVELaunchLinkEditor`. Lifted from Apparition's visionOS Home tab; the super-app host is meant to be its second consumer. Builds on every declared platform |
+| `RAVESearch` | Typo-tolerant, weighted search over a few text fields per item, in memory: `RAVEFuzzyIndex` (exact, prefix, one typo, substring, two typos; every query word must match; per-field weights; an inverted index, so tens of thousands of items search in milliseconds), `RAVEFuzzyOptions`, and `RAVEFuzzyText` (folding, HTML to text, highlighted excerpts). Lifted from Worldcast's episode search and Hypnos's music search. Foundation only, builds on Linux (excerpts lose their bold there). First consumer is Hypnos (music); Worldcast's own copy is pinned to its backend's JS and can adopt this one without a ranking change (`WorldcastParityTests` runs its fixtures through this index) once it can link RAVE |
 
 ### Linux: the portable targets
 
@@ -1096,6 +1097,48 @@ Things that look arbitrary and aren't:
   addresses only the caller's own scenes; a tile reaches another app's main window only through a
   URL that app routes itself (`docs/LAUNCHERS_PLAN.md` in Apparition).
 
+### RAVESearch — one matcher, configured per corpus
+
+Worldcast ranked episodes by title and description; Hypnos ranked a music library by name, artist and album. The
+matcher was the same code twice, so it is here once and **what differs is configuration, not a fork**:
+
+- **Weights** are per field, in the order of `RAVEFuzzyDocument.fields` (Worldcast `[3, 1]`, Hypnos `[3, 1.5, 1]`).
+  A match scores its tier (0.3 to 1) times the weight of the best field it is in; the first field is the
+  *primary* one (the title, the name).
+- **`RAVEFuzzyOptions` defaults are Worldcast's**, because its ranking is pinned by parity tests against its backend's
+  JS: no exact/prefix bonus, a +2 phrase bonus, no closed-up words. Hypnos turns on `primaryExactBonus` 6,
+  `primaryPrefixBonus` 3 (typing a title, or its start, is what was meant) and `joinPrimaryWords` ("AC/DC" is also
+  "acdc"). A new corpus picks its own; don't change a default to suit one.
+- **`priority`** orders equal scores (lower first, then input order). Worldcast uses the negated date; Hypnos the kind
+  (artist, album, song) and then name length.
+- The ID type is a generic parameter, so a hit carries whatever the app keys items by.
+- Candidates come from an inverted word → items list, so cost follows the matched vocabulary, not total text. Measured
+  -O, 57k songs: ~0.4 s to build, 40–60 ms a search.
+- `RAVEFuzzyText.snippet` highlights what `searchWithMatches` matched. On Linux Foundation has no
+  `inlinePresentationIntent`, so the excerpt is the same without the bold.
+- It is an in-memory index. Building from a server and saving it between launches is the app's job (Hypnos's
+  `MusicSearchStore`); the index is cheap enough to rebuild from the saved names at launch.
+
+### RAVEUI — the mini player is a drawing, not a player
+
+Longwave drew a mini player for a streamed Mac's audio and Hypnos drew a second for its music library. They differed
+in what they were bound to, so the views take everything as parameters: the cover as a view, labels as text, controls
+as a view (usually `RAVEPlayerControls` in `.strip` layout, which is the transport both apps use). Nothing here
+loads artwork, owns a clock or talks to a session.
+
+- `RAVEMiniPlayerPanel` is the iTunes mini player: cover across the full width, title / subtitle / detail, an optional
+  actions row, the transport. `RAVEMiniPlayerPlaceholder` is its shape with nothing playing.
+- `RAVEMiniPlayerBar` is the compact bar that hangs over a library: cover and labels in one tappable row (it opens the
+  full player), controls under it, glass on visionOS and material elsewhere. The host animates its insertion.
+- `RAVEMiniPlayerLayout.artworkHeight` / `topSlack` are Longwave's cover rules: the pane is the shape of the art, never
+  taller than a square; on visionOS a window reserves `topSlack` of transparent space above its glass so it keeps one
+  height while the cover changes shape (visionOS anchors a window's *centre* when its content resizes, so letting the
+  window follow the content makes the controls drift from track to track).
+- The window or popover chrome (glass, `containerBackground`) is the host's; the bar brings its own surface.
+- Consumers: Hypnos (`MusicMiniPlayerView`, `MusicMiniPlayerWindowView`). Longwave's `AudioPlayerPanel` still has
+  its own copy (it also carries a tech-info overlay on the cover and a volume row, both expressible through the
+  `artwork` and `actions` slots) and is the next to adopt it; build `LongwaveMac` and `LongwaveiOS` when it does.
+
 ## How consumers use this
 
 Nine apps under `~/Projects/`. During development each references this package as a
@@ -1107,7 +1150,7 @@ the link list.
 
 | App (directory) | Links |
 |---|---|
-| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, + Engine's `RAVEDiagnostics` |
+| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, `RAVESearch`, + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), `RAVECompanion` (the app, LongwaveMac, LongwaveiOS and the Companion), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), `RAVEBrowser`, `RAVELLM` |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia` (incl. AI 3D stills), `RAVESlideshow` |

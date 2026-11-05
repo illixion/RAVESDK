@@ -44,6 +44,7 @@ let package = Package(
         .library(name: "RAVELLM", targets: ["RAVELLM"]),
         .library(name: "RAVEConsent", targets: ["RAVEConsent"]),
         .library(name: "RAVELauncher", targets: ["RAVELauncher"]),
+        .library(name: "RAVESearch", targets: ["RAVESearch"]),
     ],
     // The two sibling packages, neither depending on a RAVE package, so
     // neither adds a cycle or a RAVESDK <-> RAVEEngine edge (see
@@ -161,6 +162,12 @@ let package = Package(
         // implementations of the same protocol.
         .target(name: "RAVELLM"),
         .testTarget(name: "RAVELLMTests", dependencies: ["RAVELLM"]),
+        // Typo-tolerant, weighted search over a few text fields per item, in memory (`RAVEFuzzyIndex`), and the
+        // text handling a results screen needs (`RAVEFuzzyText`: folding, HTML to text, highlighted excerpts).
+        // Lifted from Worldcast's episode search and Hypnos's music search, which each wrote it. Foundation
+        // only, so it builds everywhere, Linux included.
+        .target(name: "RAVESearch"),
+        .testTarget(name: "RAVESearchTests", dependencies: ["RAVESearch"]),
         // Asking before personal data leaves an app's hands: the question
         // (what, where to, a preview of the payload), the 15-minute grants,
         // and where it appears (a window on visionOS/macOS, a sheet on
@@ -217,6 +224,7 @@ let portableTargets: Set<String> = [
     "RAVENet", "RAVENetTests",
     "RAVEMediaCore",
     "RAVESlideshowCore", "RAVESlideshowCoreTests",
+    "RAVESearch", "RAVESearchTests",
 ]
 package.targets.removeAll { !portableTargets.contains($0.name) }
 package.products.removeAll { !portableTargets.contains($0.name) }
