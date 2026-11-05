@@ -102,6 +102,7 @@ is easy to skip.
 | `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/keys/hover/drag/select/check/upload/scroll/find/wait, dismiss overlays, tiered JavaScript (`RAVEScriptPolicy`), real input on the Mac (`RAVENativeInput`, `RAVEBackgroundWindow`); `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
 | `RAVEConsent` | Asking before personal data leaves an app's hands: `RAVEConsentCenter` (rules: grants keyed by kind and destination, "for 15 Minutes", supersede, history, a `status` with ids and decisions only), `RAVEConsentRequest` (kind, destination, title, detail, a `RAVEConsentPreview` of the exact payload: image or text), `RAVEConsentKind` (open: each app names its own). `RAVEConsentWindow` + `.raveConsentPrompts()` show it in a utility-panel window on visionOS/macOS (an immersive space has nothing a system alert could attach to) and a sheet on iOS/tvOS. Grants are in memory only. First consumer is spatial-ai-character (screenshots; Health next). In SDK, not DebugTrace: it ships in App Store builds, and DebugTrace cannot import RAVESDK, which depends on it. Logs through the small `DebugLog` product only (no trace builder, registry or server linked) |
+| `RAVELauncher` | A launcher screen: `RAVELauncherView` lays out `RAVELauncherSection`s of `RAVELauncherItem` tiles whose `RAVELauncherAction`s the app defines (open by URL through `.open(_:name:)`, a menu of choices, anything async that returns a status line). Plus the shortcuts other apps ask to pin: `RAVELauncherShortcutRequest` (parse and build `<scheme>://launcher-shortcut?…`, bounded, an icon required), `RAVELauncherShortcutStore` (UserDefaults JSON + icon files, observable), `RAVELauncherShortcutRequestView` (the approve sheet) and `RAVELaunchLinkEditor`. Lifted from Apparition's visionOS Home tab; the super-app host is meant to be its second consumer. Builds on every declared platform |
 
 ### Linux: the portable targets
 
@@ -1070,6 +1071,31 @@ Design points worth keeping:
   themselves in `RAVELiveObjects`, which an app's memory heartbeat prints: a count that only
   goes up is a leak named outright.
 
+### RAVELauncher — the screen is shared, what a tile does is not
+
+Lifted from Apparition's visionOS Home tab (2026-11-05) because a second launcher is planned:
+a host app that runs Longwave, Hypnos and spatial-ai-character as modules in one process so they
+share one immersive space (`~/Memory/Projects/project/super-app-module-host-scoping.md`). The
+two disagree on everything a tile *does*. Apparition opens installed apps by URL and starts JIT
+sessions; the host opens a module in its own process. So a tile is just buttons:
+`RAVELauncherAction.perform` is async, gets a `RAVELauncherContext` (its `open` is SwiftUI's
+`openURL`, so the screen builds on macOS and tvOS too), and returns the status line to show.
+
+Things that look arbitrary and aren't:
+
+- **The shortcut JSON is Apparition's** (`launcher.shortcuts.v1`, field names, `Date` as the
+  default `JSONEncoder` double, icons as `<uuid>.img` files beside the list). Apparition passes its
+  old key and folder; a test decodes a stored blob. Rename nothing.
+- **A request must carry an icon** (https `icon` or `icon-data` ≤ 128 KB, ≤ 1024 px). A bare
+  letter tile is indistinguishable from another app's, and the owner is only a claim: a custom URL
+  can't authenticate its sender, so the sheet says "this request says it will open with …" and
+  shows the destination behind a wrapper link (`raven://open?url=…`).
+- **A target may not use the launcher's own scheme**, so a shortcut can't drive the launcher
+  (Apparition's JIT launch). The link editor doesn't forbid it: the person typing it is the owner.
+- **No cross-app scene activation exists.** Apparition's spike found `activateSceneSession`
+  addresses only the caller's own scenes; a tile reaches another app's main window only through a
+  URL that app routes itself (`docs/LAUNCHERS_PLAN.md` in Apparition).
+
 ## How consumers use this
 
 Nine apps under `~/Projects/`. During development each references this package as a
@@ -1090,6 +1116,7 @@ the link list.
 | `Oneiros` (visionOS + macOS) | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `halflife-visionos/LambdaVision` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics`, `RAVERig` |
 | `spatial-ai-character` | `RAVEUI`, `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, `RAVEConsent`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
+| `Apparition` (visionOS + iOS + tvOS) | `RAVEUI`, `RAVECompanion`, `RAVELauncher` (the visionOS Home tab) |
 
 Read this from `productName = RAVE…` in each `project.pbxproj`, not from `import RAVE…` —
 re-exports and typealiases hide a dependency from the import list.

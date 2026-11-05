@@ -43,6 +43,7 @@ let package = Package(
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
         .library(name: "RAVELLM", targets: ["RAVELLM"]),
         .library(name: "RAVEConsent", targets: ["RAVEConsent"]),
+        .library(name: "RAVELauncher", targets: ["RAVELauncher"]),
     ],
     // The two sibling packages, neither depending on a RAVE package, so
     // neither adds a cycle or a RAVESDK <-> RAVEEngine edge (see
@@ -168,6 +169,13 @@ let package = Package(
         // through DebugLog alone: no registry, trace or server comes with it.
         .target(name: "RAVEConsent", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVEConsentTests", dependencies: ["RAVEConsent"]),
+        // A launcher screen: sections of app tiles whose buttons the app defines (open by
+        // URL, start a JIT session, or run an app hosted in the same process), plus the
+        // shortcuts other apps ask to pin, with the request parsing and the approve sheet.
+        // Lifted from Apparition's visionOS Home tab; the super-app host is its second
+        // consumer. Its stored shortcut JSON is Apparition's.
+        .target(name: "RAVELauncher", dependencies: ["RAVEUI"]),
+        .testTarget(name: "RAVELauncherTests", dependencies: ["RAVELauncher"]),
         .target(
             name: "RAVEBrowser",
             dependencies: ["RAVELLM", "RAVECamera", .product(name: "DebugTrace", package: "DebugTrace")],
