@@ -62,6 +62,41 @@ public enum RAVEVideoPlane {
     }
 }
 
+/// Puts a 2D view drawn over a `.videoWindow` plane (subtitles, a notice)
+/// on the plane itself, a centimetre in front of it.
+///
+/// Apply it to a sibling of the plane's view in the same stack (same frame,
+/// same depth). A 2D sibling lands at the front of that depth, while the
+/// plane is placed `planeDepthTrim` (12 cm) behind its centre (`place`), so
+/// subtitles offset by `viewRecess` alone floated well in front of the
+/// picture (Hypnos film player, device, 2026-11-05). This reads the depth
+/// the same way the plane does, from a `GeometryReader3D` over the same
+/// frame, and goes back half of it plus the trim. The trim is metres in the
+/// window's RealityKit content, which scales with the window as its points
+/// do, so it is converted with `PhysicalMetric`.
+public struct RAVEVideoPlaneOverlay: ViewModifier {
+    /// How far in front of the plane the overlay sits, metres.
+    public static let lift: Float = 0.01
+    @PhysicalMetric(from: .meters) private var trim = CGFloat(RAVEVideoPlane.planeDepthTrim - RAVEVideoPlaneOverlay.lift)
+
+    public init() {}
+
+    public func body(content: Content) -> some View {
+        GeometryReader3D { geometry in
+            content
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                // At the front of the depth, where the plane's slab is too.
+                .frame(depth: geometry.size.depth, alignment: .front)
+                .offset(z: RAVEVideoPlane.viewRecess - geometry.size.depth / 2 - trim)
+        }
+    }
+}
+
+extension View {
+    /// See `RAVEVideoPlaneOverlay`.
+    public func onRAVEVideoPlane() -> some View { modifier(RAVEVideoPlaneOverlay()) }
+}
+
 /// A flat video plane filling its view, for an entity carrying a
 /// `VideoPlayerComponent` the caller owns (and keeps feeding while the view
 /// comes and goes).
