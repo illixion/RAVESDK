@@ -129,8 +129,9 @@ let package = Package(
             name: "RAVEFilm",
             dependencies: ["RAVESpatialAudio", "RAVEMedia", .product(name: "DebugLog", package: "DebugTrace")],
             // UIWindow.avDisplayManager is an AVKit category; Swift's autolink
-            // drops the framework when nothing else from it is used.
-            linkerSettings: [.linkedFramework("AVKit", .when(platforms: [.tvOS, .visionOS]))]
+            // drops the framework when nothing else from it is used. iOS and
+            // macOS use it for Picture in Picture (FilmPictureInPicture).
+            linkerSettings: [.linkedFramework("AVKit")]
         ),
         .testTarget(name: "RAVEFilmTests", dependencies: ["RAVEFilm"], resources: [.copy("Fixtures")]),
         // Hand an app's configuration, secrets included, to the same app on
