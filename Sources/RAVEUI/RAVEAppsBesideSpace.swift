@@ -50,7 +50,18 @@ public final class RAVEAppsBesideSpace {
     public var keepAppsVisible: Bool {
         didSet {
             if let defaultsKey { UserDefaults.standard.set(keepAppsVisible, forKey: defaultsKey) }
-            if keepAppsVisible, spaceActive, !applied { triggerSoon() }
+            if keepAppsVisible, !isPaused, spaceActive, !applied { triggerSoon() }
+        }
+    }
+
+    /// Holds the trigger off for a while without touching the saved setting:
+    /// spatial-ai-character pauses it while a gaze session's approval prompt
+    /// is up, because other apps showing then kill the session. Turning the
+    /// setting itself off for that was saved to disk, and an app quit or a
+    /// reboot mid-connect left it off for good. Never persisted.
+    public var isPaused = false {
+        didSet {
+            if !isPaused, keepAppsVisible, spaceActive, !applied { triggerSoon() }
         }
     }
 
@@ -87,11 +98,13 @@ public final class RAVEAppsBesideSpace {
     @ObservationIgnored private var counts: [String: Int] = [:]
     @ObservationIgnored private var lastEvent = ""
 
-    public init(windowID: String, defaultsKey: String? = nil, settleDelay: Duration = .milliseconds(1500)) {
+    /// - Parameter defaultValue: `keepAppsVisible` until the wearer sets it.
+    public init(windowID: String, defaultsKey: String? = nil, defaultValue: Bool = false,
+                settleDelay: Duration = .milliseconds(1500)) {
         self.windowID = windowID
         self.defaultsKey = defaultsKey
         self.settleDelay = settleDelay
-        keepAppsVisible = defaultsKey.map { UserDefaults.standard.bool(forKey: $0) } ?? false
+        keepAppsVisible = defaultsKey.flatMap { UserDefaults.standard.object(forKey: $0) as? Bool } ?? defaultValue
     }
 
     // MARK: - Space lifecycle
@@ -101,7 +114,7 @@ public final class RAVEAppsBesideSpace {
         spaceActive = phase == .active
         guard spaceActive else { return }
         spaceWasUp = true
-        if keepAppsVisible, !applied { triggerSoon() }
+        if keepAppsVisible, !isPaused, !applied { triggerSoon() }
     }
 
     /// The space closed. Safe to call more than once per close: only the
@@ -123,7 +136,8 @@ public final class RAVEAppsBesideSpace {
         pendingTrigger = Task { [weak self] in
             guard let delay = self?.settleDelay else { return }
             try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled, self.spaceActive, self.keepAppsVisible, !self.applied else { return }
+            guard let self, !Task.isCancelled, self.spaceActive, self.keepAppsVisible, !self.isPaused,
+                  !self.applied else { return }
             self.trigger()
         }
     }
@@ -154,7 +168,7 @@ public final class RAVEAppsBesideSpace {
 
     /// State and event counts, for a debug endpoint.
     public func report() -> [String: Any] {
-        ["keepAppsVisible": keepAppsVisible, "spaceActive": spaceActive, "applied": applied,
+        ["keepAppsVisible": keepAppsVisible, "paused": isPaused, "spaceActive": spaceActive, "applied": applied,
          "available": isAvailable(), "events": counts, "lastEvent": lastEvent]
     }
 }
