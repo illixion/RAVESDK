@@ -47,6 +47,7 @@ public struct RAVESubtitleOverlay: View {
     private let track: RAVESubtitleTrack?
     private let pictureAspect: CGFloat?
     private let time: @MainActor () -> Double
+    @Environment(\.raveSubtitleStyle) private var style
 
     public init(track: RAVESubtitleTrack?, pictureAspect: CGFloat? = nil, time: @escaping @MainActor () -> Double) {
         self.track = track
@@ -66,7 +67,7 @@ public struct RAVESubtitleOverlay: View {
                         Spacer(minLength: 0)
                         block(text.filter { $0.placement == .bottom }, fontSize: fontSize)
                     }
-                    .padding(.vertical, picture.height * 0.05)
+                    .padding(.vertical, picture.height * 0.05 * style.marginScale)
                     .frame(width: picture.width, height: picture.height)
                     ForEach(showing.compactMap(\.image), id: \.id) { image in
                         RAVESubtitleBitmap(image: image)
@@ -142,6 +143,7 @@ public struct RAVESubtitlePanel: View {
     private let fontSize: CGFloat
     private let reservedLines: Int
     private let time: @MainActor () -> Double
+    @Environment(\.raveSubtitleStyle) private var style
 
     public init(track: RAVESubtitleTrack?, fontSize: CGFloat = 30, reservedLines: Int = 2,
                 time: @escaping @MainActor () -> Double) {
@@ -170,7 +172,7 @@ public struct RAVESubtitlePanel: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: CGFloat(reservedLines) * fontSize * 1.45, alignment: .top)
+            .frame(maxWidth: .infinity, minHeight: CGFloat(reservedLines) * fontSize * CGFloat(max(style.sizeScale, 1)) * 1.45, alignment: .top)
         }
         .allowsHitTesting(false)
     }
@@ -188,11 +190,13 @@ public struct RAVESubtitlePanel: View {
     }
 }
 
-/// One group of simultaneous cues, styled the way subtitles are on Apple
-/// players: white on a translucent black plate.
+/// One group of simultaneous cues in the host's `raveSubtitleStyle`: by
+/// default white on a translucent black plate, as on Apple players.
+/// `fontSize` is the standard size; the style's scale applies on top.
 public struct RAVESubtitleText: View {
     private let cues: [RAVESubtitleCue]
     private let fontSize: CGFloat
+    @Environment(\.raveSubtitleStyle) private var style
 
     public init(cues: [RAVESubtitleCue], fontSize: CGFloat) {
         self.cues = cues
@@ -200,19 +204,23 @@ public struct RAVESubtitleText: View {
     }
 
     public var body: some View {
-        VStack(spacing: fontSize * 0.15) {
+        let size = fontSize * CGFloat(style.sizeScale)
+        VStack(spacing: size * 0.15) {
             ForEach(Array(cues.filter { $0.image == nil }.enumerated()), id: \.offset) { _, cue in
-                Text(cue.text)
-                    .font(.system(size: fontSize, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, fontSize * 0.4)
-                    .padding(.vertical, fontSize * 0.12)
-                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: fontSize * 0.2))
+                style.edged(
+                    Text(cue.text)
+                        .font(.system(size: size, weight: style.weight.swiftUI, design: style.design.swiftUI))
+                        .foregroundStyle(style.textColor.color.opacity(style.textOpacity))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true),
+                    fontSize: size)
+                    .padding(.horizontal, size * 0.4)
+                    .padding(.vertical, size * 0.12)
+                    .background(style.backgroundColor.color.opacity(style.backgroundOpacity),
+                                in: RoundedRectangle(cornerRadius: size * 0.2))
             }
         }
-        .padding(.horizontal, fontSize)
+        .padding(.horizontal, size)
         .accessibilityIdentifier("rave.subtitles")
     }
 }

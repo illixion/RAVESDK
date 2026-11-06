@@ -101,3 +101,25 @@ struct RAVESubtitleTests {
     }
     #endif
 }
+
+@Suite("Subtitle style")
+struct RAVESubtitleStyleTests {
+    @Test("A style survives its JSON, and the default is the look it always had")
+    func roundTrip() throws {
+        var style = RAVESubtitleStyle()
+        #expect(style.textColor == .white && style.backgroundOpacity == 0.6 && style.sizeScale == 1)
+        style.sizeScale = 1.5
+        style.textColor = .yellow
+        style.edge = .outline
+        #expect(RAVESubtitleStyle(json: style.json) == style)
+    }
+
+    @Test("Missing fields take defaults and out-of-range values are clamped")
+    func tolerantDecoding() throws {
+        let style = try #require(RAVESubtitleStyle(json: #"{"sizeScale":99,"backgroundOpacity":-3}"#))
+        #expect(style.sizeScale == RAVESubtitleStyle.sizeRange.upperBound)
+        #expect(style.backgroundOpacity == 0)
+        #expect(style.weight == .semibold)
+        #expect(RAVESubtitleStyle(json: "not json") == nil)
+    }
+}
