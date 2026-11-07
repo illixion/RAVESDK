@@ -1172,7 +1172,7 @@ the link list.
 
 | App (directory) | Links |
 |---|---|
-| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, `RAVESearch`, + Engine's `RAVEDiagnostics` |
+| `Hypnos` (visionOS + iOS + tvOS + macOS; tvOS bench `Hypnos/TVLab`) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESlideshow`, `RAVEFilm` (and through it `RAVESpatialAudio`), `RAVEDeviceSetup`, `RAVESearch`, `RAVECompanion` (pairing with a Vergence analysis coordinator, `RAVECompanionHTTPClient`), + Engine's `RAVEDiagnostics` |
 | `Longwave` (visionOS + iOS + macOS) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVESpatialAudio`, `RAVECamera` (app + broadcast extension), `RAVECompanion` (the app, LongwaveMac, LongwaveiOS and the Companion), + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `Raven` | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` (app + broadcast extension), `RAVEBrowser`, `RAVELLM` |
 | `RoboFrame/NativeClient` (visionOS + iOS) | `RAVENet`, `RAVEUI`, `RAVEConsole`, `RAVEMedia` (incl. AI 3D stills), `RAVESlideshow` |
