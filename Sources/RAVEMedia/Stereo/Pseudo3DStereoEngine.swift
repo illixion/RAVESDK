@@ -365,6 +365,11 @@ public final class Pseudo3DStereoEngine {
     /// make the in-between frames they cover, before depth and warp. Read with
     /// `interpolatesFrames`.
     @ObservationIgnored public var sharedFields: SharedFieldProvider?
+    /// A 2D source's AI 3D depth made ahead by an analysis worker (the
+    /// `ai-3d-depth` workload: the offline pipeline with a larger model). With
+    /// it, real-time depth warps the track's map for every frame it holds and
+    /// runs the device's model only for the rest. Read when a pipeline starts.
+    @ObservationIgnored public var depthTrack: AnalysisDepthTrack?
 
     // Callbacks
     @ObservationIgnored public var onVideoSizeKnown: ((CGSize) -> Void)?
@@ -1067,7 +1072,7 @@ public final class Pseudo3DStereoEngine {
             // is made and held meanwhile, so seeks and pauses still apply.
             loadRealtimeDepth(device: warp.device) { [weak self] source in
                 guard let self else { return }
-                guard let source else {
+                guard let source = self.withDepthTrack(source, device: warp.device) else {
                     self.onPlaybackError?()
                     return
                 }
@@ -1100,6 +1105,14 @@ public final class Pseudo3DStereoEngine {
               let asset = item.asset as? AVURLAsset else { return }
         item.applySpatialAudioPolicy(sceneIdentifier: identifier)
         player.applySpatialAudioPolicy(for: asset, sceneIdentifier: identifier)
+    }
+
+    /// `realtime` behind the worker's depth track when there is one (which
+    /// also plays without the device's model, warping only what it holds).
+    private func withDepthTrack(_ realtime: PumpDepthSource?, device: MTLDevice) -> PumpDepthSource? {
+        guard let depthTrack else { return realtime }
+        RAVEMediaLog.pipeline.notice("AI 3D: depth from an analysis track first, the device's model for the rest")
+        return depthTrack.source(device: device, fallback: realtime)
     }
 
     /// Loads the real-time depth source on a background thread, then calls
@@ -1337,7 +1350,7 @@ public final class Pseudo3DStereoEngine {
             frameSource: frameSource,
             warp: warp,
             startHostTime: startHostTime,
-            depthSource: packedStereo == nil ? RealtimeDepthSource(device: warp.device) : nil,
+            depthSource: packedStereo == nil ? withDepthTrack(RealtimeDepthSource(device: warp.device), device: warp.device) : nil,
             frameInterval: pumpFrameInterval,
             packedLayout: packedStereo,
             onVideoSizeKnown: sizeCallback
