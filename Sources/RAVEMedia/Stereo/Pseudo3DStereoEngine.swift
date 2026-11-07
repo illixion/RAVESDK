@@ -360,7 +360,9 @@ public final class Pseudo3DStereoEngine {
     /// Fields computed ahead for a packed pair (an analysis track from
     /// `vergence analyze`): with them and `interpolatesFrames`, a packed pair
     /// left eye first is interpolated by Vergence's `SharedFieldInterpolator`,
-    /// both eyes from the left eye's one motion field. Read with
+    /// both eyes from the left eye's one motion field. For a 2D source (AI
+    /// 3D), a 2D track's fields (an analysis coordinator's `smooth-motion-2d`)
+    /// make the in-between frames they cover, before depth and warp. Read with
     /// `interpolatesFrames`.
     @ObservationIgnored public var sharedFields: SharedFieldProvider?
 
@@ -1232,7 +1234,11 @@ public final class Pseudo3DStereoEngine {
     /// ahead (`sharedFields`), otherwise as it is.
     private func interpolating(_ source: LookaheadFrameSource, packedStereo: PackedStereoLayout?) -> LookaheadFrameSource {
         guard interpolatesFrames else { return source }
-        guard let packedStereo else { return InterpolatingFrameSource.wrappingIfSupported(source) }
+        guard let packedStereo else {
+            // A 2D picture's fields made ahead (`smooth-motion-2d`) go first, the device's own
+            // interpolator takes the pairs they don't cover yet.
+            return InterpolatingFrameSource.wrappingIfSupported(source, sharedFields: sharedFields)
+        }
         // Half-width or half-height eyes work as they are: fields are scaled
         // to each eye's stored size, and the track is made from those eyes.
         guard let sharedFields, !packedStereo.eyesReversed,
