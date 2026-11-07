@@ -992,6 +992,12 @@ when touching it:
   `Shared/CompanionDevices.swift`, `CompanionLocator.swift`…). Its watch target compiles
   `CompanionDevices.swift` but can't link RAVESDK (no watchOS), so that file falls back to a
   plain `CompanionIdentify` struct under `#if !canImport(RAVECompanion)`.
+- **`RAVECompanionHTTPClient`** speaks HTTP/1.1 over a channel's TLS-PSK connection, for a host
+  whose API answers on its paired channel (Vergence's coordinator: `VergenceAPI/v1`, port 8421).
+  URLSession can't offer an external PSK. It sends no identify message and no Authorization:
+  it is for hosts that read the device from the PSK identity (OpenSSL can; a Network.framework
+  server can't, so a Swift host would still need the identify proof). Keep-alive with a small
+  pool, Content-Length or chunked bodies, a reused connection the host closed is retried once.
 - Not moved: Longwave's device registry (legacy shared token, SSH keys in `authorized_keys`),
   the Projects channel's own per-agent PSKs, and the audio/native/inject clients and servers.
   The authenticated audio client is the next candidate (spatial-ai-character needs it).
