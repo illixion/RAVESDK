@@ -370,6 +370,13 @@ public final class Pseudo3DStereoEngine {
     /// it, real-time depth warps the track's map for every frame it holds and
     /// runs the device's model only for the rest. Read when a pipeline starts.
     @ObservationIgnored public var depthTrack: AnalysisDepthTrack?
+    /// AI HDR for an SDR source (AI 3D or live 3D): a worker's gain grids
+    /// (the `ai-hdr` workload). The pump warps in SDR, then makes each eye
+    /// BT.2020 PQ with the frame's grid, ramped in and capped. Takes effect
+    /// on the running pump at once.
+    @ObservationIgnored public var gainGrids: GainGridPlayback? {
+        didSet { pump?.gainGrids = gainGrids }
+    }
 
     // Callbacks
     @ObservationIgnored public var onVideoSizeKnown: ((CGSize) -> Void)?
@@ -1268,6 +1275,7 @@ public final class Pseudo3DStereoEngine {
     }
 
     private func install(_ pump: StereoPump) {
+        pump.gainGrids = gainGrids
         pump.onPerformance = performanceForwarder()
         pump.onFrameSignal = { [weak self] signal in
             Task { @MainActor in self?.onFrameSignal?(signal) }
