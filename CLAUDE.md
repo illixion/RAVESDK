@@ -965,8 +965,8 @@ unheard on a headset as of 2026-10-04, so whatever it measures belongs here.
 
 Moved out of Longwave on 2026-11-01 so other apps can pair with a computer the same way:
 spatial-ai-character talks to Longwave's Companion (today through the Longwave app, see its
-`docs/codex-voice.md`), and Convolution plans a Mac worker of its own
-(`Hypnos/docs/plans/mac-companion-compute.md`). What matters
+`docs/codex-voice.md`). Convolution's analysis workers once planned to use it, but since
+2026-11-07 they go through its Jellyfin plugin instead (`Hypnos/docs/plans/jellyfin-analysis-workers.md`). What matters
 when touching it:
 
 - **The bytes are fixed.** The Windows Companion (`Longwave/CompanionWindows/backend/Devices/`)
