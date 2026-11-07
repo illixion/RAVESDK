@@ -87,7 +87,7 @@ is easy to skip.
 | Target | Purpose |
 |---|---|
 | `RAVENet` | WebSocket transport: reconnect, keepalive, path gating, wake probing. Also builds on Linux (see below) |
-| `RAVEUI` | Ornament tab bar, the Home ornament for pop-out windows (`raveHomeOrnament`), hover effects, grid column layout, window-session registry, window manager, window push (`ravePushWindow` + `raveWindowPushHost`: SwiftUI's `pushWindow` rebuilt by hiding the caller in place, since visionOS 27 stopped honouring the system one; ornaments hide via `\.raveIsPushedAway`), shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), `raveScreenTitle(_:)` + `RAVEScreenHeading` (a screen title that scrolls with the content on tvOS, where the bar's large title stays put over it; use them instead of a bare `navigationTitle` on any screen tvOS shows), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture), mini player views (`RAVEMiniPlayerPanel`, `RAVEMiniPlayerBar`, `RAVEMiniPlayerPlaceholder`, `RAVEMiniPlayerLayout`: the drawing of an audio mini player, bound to nothing), `RAVEAppsBesideSpace` + `RAVEAppsBesideTriggerWindow` + `appsBesideSpace(_:)` (keep other apps' windows visible beside an open immersive space by flashing a window after it opens: an undocumented visionOS 27.2 behaviour; spatial-ai-character, Longwave) |
+| `RAVEUI` | Ornament tab bar, the Home ornament for pop-out windows (`raveHomeOrnament`), hover effects, grid column layout, window-session registry, window manager, window push (`ravePushWindow` + `raveWindowPushHost`: SwiftUI's `pushWindow` replacement since visionOS 27 stopped honouring the system one; ordinary callers hide in place, while UUID-keyed galleries opt into `raveRetainedWindowContent` to park their live UIKit window without a scene and return it in a fresh shell at the user; ornaments hide via `\.raveIsPushedAway`), shared player controls, `textFieldTapTarget()` (focus a text field from its row padding), `raveScreenTitle(_:)` + `RAVEScreenHeading` (a screen title that scrolls with the content on tvOS, where the bar's large title stays put over it; use them instead of a bare `navigationTitle` on any screen tvOS shows), subtitles (`RAVESubtitleTrack` parses WebVTT/SRT; `RAVESubtitleOverlay` draws a track on a host clock, for players that own their picture), mini player views (`RAVEMiniPlayerPanel`, `RAVEMiniPlayerBar`, `RAVEMiniPlayerPlaceholder`, `RAVEMiniPlayerLayout`: the drawing of an audio mini player, bound to nothing), `RAVEAppsBesideSpace` + `RAVEAppsBesideTriggerWindow` + `appsBesideSpace(_:)` (keep other apps' windows visible beside an open immersive space by flashing a window after it opens: an undocumented visionOS 27.2 behaviour; spatial-ai-character, Longwave) |
 | `RAVEMediaCore` | Portable Foundation-only subtitle parsing, Jellyfin HTTP request construction, stream-quality/stall rules, Up Next ordering and skip-segment models/policy. RAVEUI re-exports it to preserve Apple call sites. Bitmap subtitle bindings are guarded by CoreGraphics availability. |
 | `RAVEQuestCore` | Dynamic Swift library with a UTF-8 JSON C ABI for Hypnos's Android shell: Jellyfin login, paged catalog/search/home shelves, playback/watch reports, subtitles, skip discovery, download authorization, offline progress and stall decisions. Build only this product with the matching Swift Android SDK; the rest of the package retains Apple framework bindings. Build/deploy details live in `Hypnos/Quest/README.md`. |
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
@@ -1160,6 +1160,34 @@ loads artwork, owns a clock or talks to a session.
 - Consumers: Hypnos (`MusicMiniPlayerView`, `MusicMiniPlayerWindowView`). Longwave's `AudioPlayerPanel` still has
   its own copy (it also carries a tech-info overlay on the cover and a volume row, both expressible through the
   `artwork` and `actions` slots) and is the next to adopt it; build `LongwaveMac` and `LongwaveiOS` when it does.
+
+## Retained window content
+
+Hypnos's main gallery uses `raveRetainedWindowContent(sceneID:value:)` inside
+`raveWindowPushHost`. It owns one UIKit window and hosting controller for the
+logical gallery. A claimed push hides that UIKit window, sets its `windowScene`
+to nil, and dismisses the empty SwiftUI scene. Close, Gallery/Videos and Pop Out
+return paths open a fresh UUID shell and move the same UIKit window into it.
+The grid hierarchy, navigation model and scroll offset stay in memory; no
+invisible system scene is required. Players and their accessory scenes retain
+their own identities.
+
+**Create the hosting controller asynchronously, outside SwiftUI's update
+transaction.** Creating it in `makeUIViewController` adopts the source's state
+graph: retaining the controller then still loses `@State` when its source scene
+closes. The simulator regression test caught this as Videos returning on
+Pictures. Do not replace the retained controller's `rootView` on reattachment.
+Forward explicit actions/scene values through `raveWindowShell`; copying all of
+`EnvironmentValues` across roots carries source graph and scene-storage state.
+Scene-specific geometry must also read the current shell. Grids can use its
+`presentationID` to skip their usual scroll-to-last-item restoration on a live
+reattachment.
+
+Programmatic closes use `raveDismissWindow` (Hypnos's `DismissWindowProxy`),
+which restores the gallery and waits for its shell to attach before dismissing
+the player. A raw `dismissWindow()` issued immediately after opening Pop Out
+can be silently dropped as closing the last live scene. System close still
+restores the caller through the scene-disconnect observer.
 
 ## How consumers use this
 

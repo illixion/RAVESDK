@@ -426,8 +426,11 @@ public struct RAVEWindowManagerView<Actions: View>: View {
     private let emptyMessage: String
     private let actions: () -> Actions
 
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var nativeOpenWindow
+    @Environment(\.dismissWindow) private var nativeDismissWindow
+    @Environment(\.raveWindowShell) private var shell
+    private var openWindow: OpenWindowAction { shell?.openWindow ?? nativeOpenWindow }
+    private var dismissWindow: DismissWindowAction { shell?.dismissWindow ?? nativeDismissWindow }
     @Environment(\.raveWindowToken) private var selfToken
     @Environment(\.raveWindowScope) private var scope
 

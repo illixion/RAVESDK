@@ -30,7 +30,11 @@
 
      // Scenes — every window that pushes or is pushed hosts the mechanism:
      WindowGroup(id: "main", for: UUID.self) { $id in
-         GalleryView().raveWindowPushHost(sceneID: "main", value: id)
+         if let id {
+             GalleryView()
+                 .raveRetainedWindowContent(sceneID: "main", value: id)
+                 .raveWindowPushHost(sceneID: "main", value: id)
+         }
      }
      WindowGroup(id: "viewer", for: Photo.self) { $photo in
          ViewerView(photo).raveWindowPushHost(sceneID: "viewer", value: photo)
@@ -41,7 +45,10 @@
      @Environment(\.ravePushWindow) private var pushWindow
      pushWindow(id: "viewer", value: photo)
 
- The pushed window closes itself with the ordinary `dismissWindow()`. A
+ A pushed window closes itself through `raveDismissWindow` (Hypnos's
+ `DismissWindowProxy` wraps it). For retained callers this waits until the
+ gallery's replacement shell is ready before dismissing the player, so
+ visionOS cannot drop the close as a last-window dismissal. A
  Home button that should bring the caller back *beside* a pushed window that
  keeps running calls `RAVEWindowPushCoordinator.shared.reveal(sceneID:value:)`
  before its `openWindow`.
@@ -58,6 +65,12 @@
  `openWindow` brought that one forward instead of opening a new one — hides
  nothing: the caller only hides once a new window claims the push, and an
  unclaimed push expires after a few seconds.
+
+ UUID-keyed source scenes can opt into `raveRetainedWindowContent` inside
+ their push host. Those sources retain their hosting controller in memory
+ and close their empty shell after the destination claims the push. Closing
+ or detaching the destination reattaches the live content to a fresh shell
+ at the user. Viewers and accessory windows keep their existing scenes.
  */
 
 #if os(visionOS)
@@ -86,6 +99,55 @@ public final class RAVEWindowPushCoordinator {
     }
 
     @ObservationIgnored private var pending: [Pending] = []
+    private struct ReturningSize {
+        let sceneID: String
+        let value: UUID
+        let size: CGSize
+    }
+    @ObservationIgnored private var returningSizes: [ReturningSize] = []
+
+    func restoreSize(sceneID: String, value: UUID, size: CGSize?) {
+        guard let size, size.width > 0, size.height > 0 else { return }
+        returningSizes.append(ReturningSize(sceneID: sceneID, value: value, size: size))
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            self?.returningSizes.removeAll { $0.value == value }
+        }
+    }
+
+    /// Opt-in sources can park their live content independently of their scene.
+    /// Ordinary hosts retain the original hide-in-place behavior.
+    struct RetainedSource {
+        let park: () -> Void
+        let restore: (@escaping () -> Void) -> Void
+    }
+    @ObservationIgnored private var retainedSources: [UUID: RetainedSource] = [:]
+    @ObservationIgnored private var parked: Set<UUID> = []
+
+    func retainSource(_ source: RetainedSource, token: UUID) {
+        guard !parked.contains(token) else { return }
+        retainedSources[token] = source
+    }
+
+    private func restoreSource(_ token: UUID, then completion: @escaping () -> Void = {}) {
+        guard parked.remove(token) != nil else { return }
+        let source = retainedSources.removeValue(forKey: token)
+        hosts[token] = nil
+        sizes[token] = nil
+        source?.restore(completion)
+    }
+
+    /// A programmatic close can be dropped as "closing the last window"
+    /// while a just-opened pop-out is still connecting. Surface the retained
+    /// caller first, then close the pushed scene once its replacement is ready.
+    func dismiss(token: UUID, close: @escaping () -> Void) {
+        guard let source = covers[token], parked.contains(source) else {
+            close()
+            return
+        }
+        covers[token] = nil
+        restoreSource(source, then: close)
+    }
 
     /// Pushed window → the window it hides.
     private var covers: [UUID: UUID] = [:]
@@ -107,7 +169,7 @@ public final class RAVEWindowPushCoordinator {
 
     // MARK: Queries
 
-    /// Whether `token`'s window is hidden behind a window it pushed.
+    /// Whether `token` is hidden or parked behind a window it pushed.
     public func isPushedAway(_ token: UUID) -> Bool {
         covers.values.contains(token)
     }
@@ -146,6 +208,7 @@ public final class RAVEWindowPushCoordinator {
     /// is waiting. Read by `raveWindowPushPlacement(id:)`.
     func pendingSize(for sceneID: String) -> CGSize? {
         pending.first { $0.sceneID == sceneID }?.sourceSize
+            ?? returningSizes.first { $0.sceneID == sceneID }?.size
     }
 
     // MARK: Reveal
@@ -165,6 +228,7 @@ public final class RAVEWindowPushCoordinator {
             for (pushed, source) in covers where source == token {
                 covers[pushed] = nil
             }
+            restoreSource(token)
         }
     }
 
@@ -173,12 +237,14 @@ public final class RAVEWindowPushCoordinator {
     /// becomes an ordinary window beside it. A no-op for a window that was not
     /// pushed.
     func detach(token: UUID) {
-        covers[token] = nil
+        guard let source = covers.removeValue(forKey: token) else { return }
+        restoreSource(source)
     }
 
     // MARK: Host bookkeeping
 
     func hostAppeared(token: UUID, sceneID: String, value: AnyHashable?) {
+        returningSizes.removeAll { $0.sceneID == sceneID && AnyHashable($0.value) == value }
         hosts[token] = (sceneID, value)
         guard covers[token] == nil,
               let index = pending.firstIndex(where: { $0.sceneID == sceneID && $0.value == value })
@@ -188,11 +254,22 @@ public final class RAVEWindowPushCoordinator {
         // entries with it (`hostGone`), so whatever is left can be hidden.
         guard claimed.source != token else { return }
         covers[token] = claimed.source
+        if let source = retainedSources[claimed.source] {
+            parked.insert(claimed.source)
+            source.park()
+        }
     }
 
     func hostGone(token: UUID) {
+        if parked.contains(token) {
+            scenes[token] = nil
+            pending.removeAll { $0.source == token }
+            return
+        }
         // A pushed window closing reveals its source.
-        covers[token] = nil
+        if let source = covers.removeValue(forKey: token) {
+            restoreSource(source)
+        }
         // A source closing leaves its pushed window an ordinary window.
         for (pushed, source) in covers where source == token {
             covers[pushed] = nil
@@ -201,6 +278,8 @@ public final class RAVEWindowPushCoordinator {
         sizes[token] = nil
         scenes[token] = nil
         hosts[token] = nil
+        retainedSources[token] = nil
+        parked.remove(token)
     }
 
     func updateSize(token: UUID, size: CGSize) {
@@ -273,6 +352,17 @@ public struct RAVEDetachFromStackAction {
     }
 }
 
+/// Close the calling scene, restoring its retained caller before dismissal.
+@MainActor
+public struct RAVEDismissWindowAction {
+    let token: UUID
+    let action: DismissWindowAction
+
+    public func callAsFunction() {
+        RAVEWindowPushCoordinator.shared.dismiss(token: token) { action() }
+    }
+}
+
 // MARK: - Environment
 
 private struct RAVEPushWindowKey: EnvironmentKey {
@@ -295,7 +385,17 @@ private struct RAVEIsPushedWindowKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct RAVEDismissWindowKey: EnvironmentKey {
+    static let defaultValue: RAVEDismissWindowAction? = nil
+}
+
 public extension EnvironmentValues {
+    /// Prefer this for programmatic closes inside a push host. It waits for a
+    /// retained caller to appear before closing the last live player scene.
+    var raveDismissWindow: RAVEDismissWindowAction? {
+        get { self[RAVEDismissWindowKey.self] }
+        set { self[RAVEDismissWindowKey.self] = newValue }
+    }
     /// Push a window in place of this one. Outside a `raveWindowPushHost` it
     /// does nothing; inside one whose window is not tracked yet it opens the
     /// window without hiding anything.
@@ -336,6 +436,7 @@ private struct RAVEWindowPushHostModifier: ViewModifier {
 
     @State private var token = UUID()
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     /// What the window itself asked for through `raveSystemOverlays`; nil when
     /// it never did.
@@ -357,6 +458,7 @@ private struct RAVEWindowPushHostModifier: ViewModifier {
             : (requestedOverlays ?? .automatic)
         content
             .environment(\.ravePushWindow, RAVEPushWindowAction(source: token, openWindow: openWindow))
+            .environment(\.raveDismissWindow, RAVEDismissWindowAction(token: token, action: dismissWindow))
             .environment(\.raveDetachFromStack, RAVEDetachFromStackAction(token: token))
             .environment(\.raveIsPushedAway, pushedAway)
             .environment(\.raveIsPushedWindow, coordinator.isPushed(token))

@@ -161,10 +161,17 @@ private struct RAVERegisterMainWindowModifier: ViewModifier {
 private struct RAVECaptureOpenWindowModifier: ViewModifier {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.raveWindowSessions) private var registry
+    #if os(visionOS)
+    @Environment(\.raveWindowShell) private var shell
+    #endif
 
     func body(content: Content) -> some View {
         content.onAppear {
+            #if os(visionOS)
+            (registry ?? .shared).openWindow = shell?.openWindow ?? openWindow
+            #else
             (registry ?? .shared).openWindow = openWindow
+            #endif
         }
     }
 }
