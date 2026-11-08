@@ -357,6 +357,15 @@ public final class Pseudo3DStereoEngine {
     /// passes through unless `sharedFields` has fields for it: interpolated
     /// one eye at a time, its eyes would disagree.
     @ObservationIgnored public var interpolatesFrames = false
+    /// Which interpolator makes a mono source's in-between frames, read with
+    /// `interpolatesFrames`. `.videoToolbox` (the default) is the better
+    /// guesser on fast motion, but runs on the Neural Engine beside the depth
+    /// model. `.gpu` is Vergence's `FlowMidFrameInterpolator`: off the Neural
+    /// Engine, and its frames carry the motion they were made along, so each
+    /// in-between frame's depth is the frame before's moved along it rather
+    /// than reused where it was (`MidFrameDepth`). Either way only 24-30 fps
+    /// sources are doubled: the warp can't make 120 pairs of eyes a second.
+    @ObservationIgnored public var interpolationEngine: InterpolatingFrameSource.Engine = .videoToolbox
     /// Fields computed ahead for a packed pair (an analysis track from
     /// `vergence analyze`): with them and `interpolatesFrames`, a packed pair
     /// left eye first is interpolated by Vergence's `SharedFieldInterpolator`,
@@ -1250,14 +1259,17 @@ public final class Pseudo3DStereoEngine {
 
     /// Wires a new pump's callbacks to this engine and starts it.
     /// `source` with Smooth Motion when it applies: a mono source through
-    /// VideoToolbox's interpolator, a packed pair only through fields computed
+    /// `interpolationEngine`'s interpolator, a packed pair only through fields computed
     /// ahead (`sharedFields`), otherwise as it is.
     private func interpolating(_ source: LookaheadFrameSource, packedStereo: PackedStereoLayout?) -> LookaheadFrameSource {
         guard interpolatesFrames else { return source }
         guard let packedStereo else {
             // A 2D picture's fields made ahead (`smooth-motion-2d`) go first, the device's own
             // interpolator takes the pairs they don't cover yet.
-            return InterpolatingFrameSource.wrappingIfSupported(source, sharedFields: sharedFields)
+            return InterpolatingFrameSource.wrappingIfSupported(
+                source, engine: interpolationEngine == .automatic ? .videoToolbox : interpolationEngine,
+                maxGPUSourceFrameRate: InterpolatingFrameSource.maxSourceFrameRate,
+                providesMotion: true, sharedFields: sharedFields)
         }
         // Half-width or half-height eyes work as they are: fields are scaled
         // to each eye's stored size, and the track is made from those eyes.
