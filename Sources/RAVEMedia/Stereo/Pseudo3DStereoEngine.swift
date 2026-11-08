@@ -363,9 +363,17 @@ public final class Pseudo3DStereoEngine {
     /// model. `.gpu` is Vergence's `FlowMidFrameInterpolator`: off the Neural
     /// Engine, and its frames carry the motion they were made along, so each
     /// in-between frame's depth is the frame before's moved along it rather
-    /// than reused where it was (`MidFrameDepth`). Either way only 24-30 fps
-    /// sources are doubled: the warp can't make 120 pairs of eyes a second.
+    /// than reused where it was (`MidFrameDepth`). VideoToolbox doubles only
+    /// 24-30 fps sources (it can't make a frame every 8.3 ms); the GPU one
+    /// also 50-60 fps to 100-120, with the pump ticking at 120 (2026-11-08,
+    /// device-unproven: the governor pauses it if frames come late).
     @ObservationIgnored public var interpolationEngine: InterpolatingFrameSource.Engine = .videoToolbox
+
+    /// The fastest source Smooth Motion doubles with `interpolationEngine`.
+    private var maxDoubledSourceFrameRate: Double {
+        interpolationEngine == .gpu ? InterpolatingFrameSource.maxFastSourceFrameRate
+            : InterpolatingFrameSource.maxSourceFrameRate
+    }
     /// Fields computed ahead for a packed pair (an analysis track from
     /// `vergence analyze`): with them and `interpolatesFrames`, a packed pair
     /// left eye first is interpolated by Vergence's `SharedFieldInterpolator`,
@@ -1175,15 +1183,18 @@ public final class Pseudo3DStereoEngine {
         }
     }
 
-    /// A doubled picture, or one at another speed, states the rate it shows
-    /// so the display can show it evenly; otherwise the display stays as it is.
+    /// The picture states the rate it shows (doubled by Smooth Motion,
+    /// times the speed) so the display can show it evenly. Every picture
+    /// does, since 2026-11-08: left alone the window runs at 90 Hz, where a
+    /// 60 fps video's frames alternate between two refreshes and one and pans
+    /// judder (device, 60 fps YouTube in AI 3D).
     private func updateDisplayCriteria(item: AVPlayerItem, doubled: Bool) {
         displayCriteriaTask?.cancel()
         displayCriteria = nil
         let speed = Double(startRate)
-        guard doubled || speed != 1 else { return }
         // The fields' own rate, when they say: HLS measures 23.976 as ~24.
         let hint = sharedFields?.frameRate
+        let maxDoubled = maxDoubledSourceFrameRate
         displayCriteriaTask = Task { @MainActor [weak self, weak item] in
             // An HLS item says its rate (and maybe its format) only once it
             // plays, so ask for a while. A measured rate counts once three
@@ -1194,7 +1205,7 @@ public final class Pseudo3DStereoEngine {
             for _ in 0 ..< 30 {
                 guard let item, !Task.isCancelled else { return }
                 if let (criteria, hertz, measured) = await Self.criteria(for: item, rateHint: hint, doubled: doubled,
-                                                                         speed: speed) {
+                                                                         maxDoubled: maxDoubled, speed: speed) {
                     if measured {
                         agreeing = agreeing?.rate == hertz ? (hertz, agreeing!.count + 1) : (hertz, 1)
                         guard agreeing!.count >= 3 else {
@@ -1205,7 +1216,7 @@ public final class Pseudo3DStereoEngine {
                     guard !Task.isCancelled, let self else { return }
                     self.displayCriteria = criteria
                     RAVEMediaLog.pipeline.notice(
-                        "\(doubled ? "Smooth Motion" : "Speed", privacy: .public): display at \(hertz, format: .fixed(precision: 3), privacy: .public) Hz")
+                        "\(doubled ? "Smooth Motion on" : speed != 1 ? "Speed" : "Frame rate", privacy: .public): display at \(hertz, format: .fixed(precision: 3), privacy: .public) Hz")
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(500))
@@ -1214,7 +1225,7 @@ public final class Pseudo3DStereoEngine {
     }
 
     private static func criteria(for item: AVPlayerItem, rateHint: Double?, doubled: Bool,
-                                 speed: Double) async -> (AVDisplayCriteria, Double, measured: Bool)? {
+                                 maxDoubled: Double, speed: Double) async -> (AVDisplayCriteria, Double, measured: Bool)? {
         guard let track = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) else { return nil }
         var rate = 0.0
         var format: CMFormatDescription?
@@ -1239,8 +1250,7 @@ public final class Pseudo3DStereoEngine {
         let snapped = PlaybackFrameRate.snapped(rate)
         guard abs(snapped - rate) < 0.5 else { return nil }
         // A source too fast to double passes through as it came.
-        let doubles = doubled && snapped < InterpolatingFrameSource.maxSourceFrameRate
-        guard doubles || speed != 1 else { return nil }
+        let doubles = doubled && snapped < maxDoubled
         let shown = PlaybackFrameRate.shown(source: snapped, doubled: doubles, speed: speed)
         if format == nil {
             // HLS describes no format for its tracks: a plain one of the
@@ -1268,7 +1278,7 @@ public final class Pseudo3DStereoEngine {
             // interpolator takes the pairs they don't cover yet.
             return InterpolatingFrameSource.wrappingIfSupported(
                 source, engine: interpolationEngine == .automatic ? .videoToolbox : interpolationEngine,
-                maxGPUSourceFrameRate: InterpolatingFrameSource.maxSourceFrameRate,
+                maxGPUSourceFrameRate: maxDoubledSourceFrameRate,
                 providesMotion: true, sharedFields: sharedFields)
         }
         // Half-width or half-height eyes work as they are: fields are scaled
@@ -1441,9 +1451,12 @@ public final class Pseudo3DStereoEngine {
     }
 
     /// How often the pump ticks at the speed playing: 60 a second at normal
-    /// speed or slower, that many times more faster, up to 120.
+    /// speed or slower, that many times more faster, up to 120. 120 while
+    /// the GPU interpolator may double a 60 fps source to 120.
     private var pumpFrameInterval: Double {
-        1 / PlaybackFrameRate.drawRate(speed: Double(startRate))
+        let base = interpolatesFrames && interpolationEngine == .gpu
+            ? PlaybackFrameRate.maximum : PlaybackFrameRate.normalDrawRate
+        return 1 / PlaybackFrameRate.drawRate(base: base, speed: Double(startRate))
     }
 
     public func setLoopBounds(a: Double?, b: Double?) { loopA = a; loopB = b }
