@@ -13,7 +13,7 @@ import SwiftUI
 ///
 /// `subtitles` are drawn into the picture itself (see `StereoSubtitleFrame`).
 ///
-/// `interpolatesFrames` doubles a 24-30 fps mono source with interpolated
+/// `interpolatesFrames` doubles a 24-60 fps mono source with interpolated
 /// frames (`Pseudo3DStereoEngine.interpolatesFrames`), and a packed pair too
 /// when `sharedFields` has fields computed ahead for it; like `packedStereo`
 /// both are read when a source attaches.
