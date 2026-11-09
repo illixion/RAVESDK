@@ -73,116 +73,106 @@ public enum FilmListenerDistance: Equatable, Sendable {
 }
 
 // Synchronization.Atomic; the package floor stays at macOS 14.
+/// The stage's logic and entities, apart from any view: what `FilmStageView` draws in a window,
+/// and what a host mounts under its own entity when the room lives in a shared immersive space
+/// (Nexus), where a `RealityView` of its own can't go. Call `start()` once the room is in a scene
+/// and `stop()` when it leaves; `stop()` takes the generators down too.
 @available(macOS 15.0, *)
-public struct FilmStageView: View {
+@MainActor
+public final class FilmStage {
+    /// The room: one entity per Atmos element, positioned in the listener's frame. Put it in
+    /// the scene (a `RealityView`'s content, or under a host's root) before `start()`.
+    public let room = Entity()
     let player: FilmPlayer
     /// visionOS: where the listener sits in front of the window.
-    var listenerDistance: FilmListenerDistance
-    /// visionOS: called with the window's dynamic scale (real metres per
-    /// `RealityView` metre) whenever it changes.
-    var onWindowScale: (@MainActor (Float) -> Void)?
-    /// visionOS, in an immersive space: the room's pose in scene space, read
-    /// every tick; nil keeps the last one. Replaces `listenerDistance`.
+    var placement: FilmListenerDistance
+    /// visionOS, in an immersive space: the room's pose in scene space, read every tick; nil
+    /// keeps the last one. Replaces `placement`.
     var roomPose: (@MainActor () -> simd_float4x4?)?
+    /// visionOS window: real metres per `RealityView` metre.
+    var windowScale: Float = 1
     /// iOS/macOS: the listener's head orientation, read every tick.
     var listenerOrientation: @MainActor () -> simd_quatf
-
-    @State private var room = Entity()
-    @State private var entities: [Int: Entity] = [:]
-    @State private var roomEntities: [Entity] = []
-    @State private var controllers: [AudioGeneratorController] = []
-    @State private var appliedReverb: Float?
-    @State private var builtFor: ObjectIdentifier?
-    @State private var tickTask: Task<Void, Never>?
-    /// An interruption began and the generators haven't been rebuilt since.
-    @State private var interrupted = false
-    #if os(visionOS)
-    @Environment(\.physicalMetrics) private var metrics
-    /// The tick task holds the view as it was on appear, so what it reads
-    /// live has to be state.
-    @State private var placement = FilmListenerDistance.automatic()
-    @State private var windowScale: Float = 1
-    #else
-    @State private var listener = PerspectiveCamera()
+    #if !os(visionOS)
+    public let listener = PerspectiveCamera()
     #endif
+
+    private var entities: [Int: Entity] = [:]
+    private var roomEntities: [Entity] = []
+    private var controllers: [AudioGeneratorController] = []
+    private var appliedReverb: Float?
+    private var builtFor: ObjectIdentifier?
+    private var tickTask: Task<Void, Never>?
+    /// An interruption began and the generators haven't been rebuilt since.
+    private var interrupted = false
+    private var observers: [NSObjectProtocol] = []
 
     private let logger = DebugLogger(subsystem: "com.illixion.hypnos", category: "FilmStage")
 
-    public init(player: FilmPlayer, listenerDistance: FilmListenerDistance = .automatic(),
-                listenerOrientation: @escaping @MainActor () -> simd_quatf = { simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) },
-                onWindowScale: (@MainActor (Float) -> Void)? = nil) {
+    init(player: FilmPlayer, placement: FilmListenerDistance = .automatic(),
+         roomPose: (@MainActor () -> simd_float4x4?)? = nil,
+         listenerOrientation: @escaping @MainActor () -> simd_quatf = { simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) }) {
         self.player = player
-        self.listenerDistance = listenerDistance
-        self.onWindowScale = onWindowScale
-        self.roomPose = nil
+        self.placement = placement
+        self.roomPose = roomPose
         self.listenerOrientation = listenerOrientation
+        #if !os(visionOS)
+        listener.name = "film-listener"
+        #endif
     }
 
     #if os(visionOS)
     /// A stage in an immersive space, its room placed by `roomPose`.
-    public init(player: FilmPlayer, roomPose: @escaping @MainActor () -> simd_float4x4?) {
-        self.player = player
-        self.listenerDistance = .automatic()
-        self.onWindowScale = nil
-        self.roomPose = roomPose
-        self.listenerOrientation = { simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) }
+    public convenience init(player: FilmPlayer, roomPose: @escaping @MainActor () -> simd_float4x4?) {
+        self.init(player: player, placement: .automatic(), roomPose: roomPose)
     }
     #endif
 
-    public var body: some View {
-        RealityView { content in
-            #if !os(visionOS)
-            content.camera = .virtual
-            listener.name = "film-listener"
-            content.add(listener)
-            #endif
-            content.add(room)
-        }
-        .onAppear {
-            tickTask = Task { @MainActor in
-                while !Task.isCancelled {
-                    tick()
-                    try? await Task.sleep(for: .milliseconds(16))
-                }
+    public func start() {
+        guard tickTask == nil else { return }
+        tickTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.tick()
+                try? await Task.sleep(for: .milliseconds(16))
             }
         }
-        .onDisappear {
-            tickTask?.cancel()
-            teardown()
-        }
-        #if os(visionOS)
-        .onChange(of: listenerDistance, initial: true) { placement = listenerDistance }
-        .onChange(of: metrics, initial: true) {
-            let scaled = metrics.worldScalingCompensation(.scaled).convert(CGFloat(1000), to: .meters)
-            let unscaled = metrics.worldScalingCompensation(.unscaled).convert(CGFloat(1000), to: .meters)
-            guard scaled > 0, unscaled > 0 else { return }
-            windowScale = min(max(Float(unscaled / scaled), 0.1), 50)
-            onWindowScale?(windowScale)
-        }
-        #endif
         #if !os(macOS)
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
-            handleInterruption(note)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in
-            logger.info("Media services reset; rebuilding the generators")
-            teardown()
-        }
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+                // Plain integers cross to the main actor; the notification itself doesn't.
+                let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                let options = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+                MainActor.assumeIsolated { self?.handleInterruption(type: type, options: options) }
+            },
+            center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.logger.info("Media services reset; rebuilding the generators")
+                    self?.teardown()
+                }
+            },
+        ]
         #endif
     }
 
+    public func stop() {
+        tickTask?.cancel()
+        tickTask = nil
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers = []
+        teardown()
+    }
+
     #if !os(macOS)
-    private func handleInterruption(_ note: Notification) {
-        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+    private func handleInterruption(type raw: UInt?, options rawOptions: UInt?) {
+        guard let raw, let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
             logger.info("Audio session interrupted; pausing")
             interrupted = true
             player.pause()
         case .ended:
-            let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
-                .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+            let options = rawOptions.map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
             logger.info("Interruption ended (resume: \(options.contains(.shouldResume))); rebuilding the generators")
             recoverFromInterruption()
             if options.contains(.shouldResume) { player.play() }
@@ -313,5 +303,58 @@ public struct FilmStageView: View {
                 entity.components.set(spatial)
             }
         }
+    }
+}
+
+@available(macOS 15.0, *)
+public struct FilmStageView: View {
+    @State private var stage: FilmStage
+    /// visionOS: where the listener sits in front of the window.
+    var listenerDistance: FilmListenerDistance
+    /// visionOS: called with the window's dynamic scale (real metres per
+    /// `RealityView` metre) whenever it changes.
+    var onWindowScale: (@MainActor (Float) -> Void)?
+    #if os(visionOS)
+    @Environment(\.physicalMetrics) private var metrics
+    #endif
+
+    public init(player: FilmPlayer, listenerDistance: FilmListenerDistance = .automatic(),
+                listenerOrientation: @escaping @MainActor () -> simd_quatf = { simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) },
+                onWindowScale: (@MainActor (Float) -> Void)? = nil) {
+        _stage = State(initialValue: FilmStage(player: player, placement: listenerDistance, listenerOrientation: listenerOrientation))
+        self.listenerDistance = listenerDistance
+        self.onWindowScale = onWindowScale
+    }
+
+    #if os(visionOS)
+    /// A stage in an immersive space, its room placed by `roomPose`.
+    public init(player: FilmPlayer, roomPose: @escaping @MainActor () -> simd_float4x4?) {
+        _stage = State(initialValue: FilmStage(player: player, roomPose: roomPose))
+        self.listenerDistance = .automatic()
+        self.onWindowScale = nil
+    }
+    #endif
+
+    public var body: some View {
+        RealityView { content in
+            #if !os(visionOS)
+            content.camera = .virtual
+            content.add(stage.listener)
+            #endif
+            content.add(stage.room)
+        }
+        .onAppear { stage.start() }
+        .onDisappear { stage.stop() }
+        #if os(visionOS)
+        .onChange(of: listenerDistance, initial: true) { stage.placement = listenerDistance }
+        .onChange(of: metrics, initial: true) {
+            let scaled = metrics.worldScalingCompensation(.scaled).convert(CGFloat(1000), to: .meters)
+            let unscaled = metrics.worldScalingCompensation(.unscaled).convert(CGFloat(1000), to: .meters)
+            guard scaled > 0, unscaled > 0 else { return }
+            let scale = min(max(Float(unscaled / scaled), 0.1), 50)
+            stage.windowScale = scale
+            onWindowScale?(scale)
+        }
+        #endif
     }
 }
