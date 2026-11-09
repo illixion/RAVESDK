@@ -97,7 +97,7 @@ is easy to skip.
 | `RAVESlideshow` | The SwiftUI render surfaces and RAVEMedia adapters over `RAVESlideshowCore`, which it re-exports so `import RAVESlideshow` reaches the engine |
 | `RAVEFilm` | The film player: HEVC/Dolby Vision picture on a host-clock timebase plus Atmos objects as spatial sources, fed by a `FilmAudioSource`: Hypnos's Jellyfin Atmos Objects plugin (`FilmServerClient`), or any source that can describe its sound as a scene, such as Hypnos's `DiscAudioSource`, which serves a disc's 5.1 as five pinned objects plus an LFE bed. Pictures come from the plugin's segments or a `FilmPictureSource`. A `FilmServerClient` built with a `FilmOfflineStore` answers every plugin request from a copy on the device (Hypnos's Library downloads), so offline playback runs the streamed code path. `FilmServerClient.encoding` fetches either the lossless FLAC groups or the plugin's compressed per-segment bundle (`FilmAudioBundle`: a mono AAC/Opus stream per channel, decoded in memory in parallel, loudest first, quietest dropped past a deadline); with a `governor` (`FilmAudioGovernor`, "Auto") each segment's encoding follows what the link has carried (every large transfer, the picture's included, is timed from first byte to last), capped by the path (the app supplies cost and an interface generation), stepping down at once and up after a quiet spell, and sending a total `budget` when even the lowest tier won't fit; the streamer fetches compressed segments up to 8 ahead of its decoded slots (`FilmStreamingAudioSource`, 48 MB of bytes), so a link that drops for a tunnel doesn't reach the sound. `AtmosObjectAudio` sizes its slot count to a 256 MB budget so large scenes don't balloon memory. `FilmPlayer.setSpeed` plays at another speed with the objects time-stretched at their own pitch (`FilmTimeStretch`: WSOLA whose splices every channel's callback shares, so the objects stay sample-locked). `RAVEFilmLab` is its Mac bench (`scripts/run-film-lab.sh`) |
 | `RAVESpatialAudio` | A PHASE sound stage fed by pull streams: positioned sources, head-locked beds, head-tracked listener, live room reverb; `RAVEChannelFeed` (live multichannel PCM → host-aligned per-channel pull streams), `RAVEHostClockAligner`, `RAVESpeakerLayout` (2.0/5.1/7.1). RAVEFilm re-exports it (tvOS film audio); Longwave's Moonlight surround feeds it |
-| `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour |
+| `RAVEDeviceSetup` | Hand an app's configuration, secrets included, to the same app on another device: the receiver shows a QR code carrying a fresh public key, the sender seals its payload to it (HPKE) and sends it over Bonjour. Or through a file, `RAVESealedFile`: sealed under five EFF words (Argon2id, ChaCha20-Poly1305) for AirDrop, Files, or two apps on one device |
 | `RAVECompanion` | Pair a device with a companion computer and talk to it over authenticated channels: Bonjour announcement and knock (ports open only while a paired device asks), numeric-comparison pairing, a token per device with grants, TLS-PSK channels with per-connection identity proofs, the address link, the host's pairing server, presence (macOS) and port listener. Lifted from Longwave; its wire format, which the Windows Companion shares, is pinned by golden vectors |
 | `RAVEBrowser` | The browser tab core lifted from Raven: `RAVEBrowserTab` (owns its `WKWebView`, the WebKit quirk handling, hibernation), the `RAVEPageFeature` seam, `RAVETabHibernation`, `RAVEBrowserProfile`, `RAVEAddressInput`, and the opt-in call layer (`RAVECallFeatures`: identity, keyboard guard, WebRTC recovery, `RAVECameraProxy`). Plus a tool surface over a web view for a language model: navigate, read (bundled Readability), numbered elements, marked snapshots, click/type/keys/hover/drag/select/check/upload/scroll/find/wait, dismiss overlays, tiered JavaScript (`RAVEScriptPolicy`), real input on the Mac (`RAVENativeInput`, `RAVEBackgroundWindow`); `RAVEWebViewHost` (show and pause an app-owned web view); `RAVEPageAgent` (the model-driven loop); `RAVEBrowserLab` is its Mac bench |
 | `RAVELLM` | A language model as the apps use one: `RAVEChatModel` (messages in, text out, JSON schema, streaming) and `RAVEOllama` behind it (`Host: localhost` for `tailscale serve`). Foundation only. PCC or the on-device model become further implementations; `RAVEBrowser`'s `RAVEChatPageModel` runs the page agent on any of them |
@@ -1002,7 +1002,7 @@ when touching it:
   the Projects channel's own per-agent PSKs, and the audio/native/inject clients and servers.
   The authenticated audio client is the next candidate (spatial-ai-character needs it).
 
-### RAVEDeviceSetup — the QR code is the only channel the key travels on
+### RAVEDeviceSetup — the QR code is the only channel the key travels on (and a file's words the other)
 
 Written so Hypnos could provision an Apple TV (no AirDrop, no Files app, a Siri Remote
 for typing API keys); the app on both ends is the same app, and the payload is any
@@ -1029,6 +1029,27 @@ matters when touching it:
   the sender can't resolve.
 - `swift test` runs real transfers over Bonjour on the host, including a forged key
   being dropped while the receiver keeps waiting.
+
+**`RAVESealedFile`, the same payload through a file (2026-11-09).** For two devices that can't see
+each other, two apps on one device (Convolution and its copy inside Nexus have different
+containers and keychains), or a setup kept in a folder. The scheme is Apparition's
+`.apparitionkey` (`core/src/share.rs`), so a change to one should be looked at against the other:
+
+- **Five words from the EFF short wordlist 2.0** (`RAVESealedWords`, 1,295 words without "yo-yo",
+  about 51.7 bits), shown on the sending device and **never in the file**. Read back as typed or
+  dictated: any case or separators, each word known by its first three letters.
+- **Argon2id (64 MiB, four passes, one lane) then ChaCha20-Poly1305.** CryptoKit has no Argon2,
+  so `CRAVEArgon2` is Monocypher 4.0.2 vendored whole (BSD-2-Clause or CC0; only `crypto_argon2` is
+  called). It blocks for about a second, so `RAVESealedFile` runs it detached.
+- **The header is the associated data**, as one line per field in a fixed order
+  (`File.authenticatedHeader`), not as JSON, so no encoder's key order matters. Only `from` is
+  readable without the words, so the receiver can say whose file it is.
+- **The cost settings travel in the file**, so a later version can raise them; a file asking for more
+  than 256 MiB or 16 passes is refused before anything is derived.
+- The app names its kind of file in `format`, and a file of another format is refused first.
+- **The tests include a file made by another implementation** (Python's `cryptography`, with the cost
+  turned down) that must open, and the same inputs must give the same sealed bytes. Regenerate it
+  if the header layout changes, never the other way round.
 
 ### RAVECamera — the frame WebKit never gives you
 

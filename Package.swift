@@ -140,7 +140,12 @@ let package = Package(
         // another device: the receiver shows a QR code carrying a fresh
         // public key, the sender seals the payload to it with HPKE and sends
         // it over Bonjour. First consumer is Hypnos provisioning an Apple TV.
-        .target(name: "RAVEDeviceSetup", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
+        // Also moves them through a file (`RAVESealedFile`): sealed under five EFF words with
+        // Argon2id and ChaCha20-Poly1305, for AirDrop, Files and anything else nobody vouches for.
+        // CryptoKit has no Argon2, so `CRAVEArgon2` is Monocypher 4.0.2 (BSD-2-Clause or CC0,
+        // vendored whole, only `crypto_argon2` is used).
+        .target(name: "CRAVEArgon2", exclude: ["LICENCE.md"]),
+        .target(name: "RAVEDeviceSetup", dependencies: ["CRAVEArgon2", .product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVEDeviceSetupTests", dependencies: ["RAVEDeviceSetup"]),
         .target(name: "RAVECompanion", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVECompanionTests", dependencies: ["RAVECompanion"], resources: [.copy("longwave-golden.json")]),
