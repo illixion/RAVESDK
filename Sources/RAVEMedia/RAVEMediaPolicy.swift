@@ -15,6 +15,32 @@
 import Foundation
 import os
 
+/// Whether a player's sound turns with the head (`.fixed`, or unspatialized
+/// for mono and stereo) or stays where the video is.
+public enum RAVEHeadLockedSound: String, Sendable, CaseIterable {
+    /// Sound stays anchored to the video: head-tracked 5.1/7.1, and stereo
+    /// anchored to its window where the player names one.
+    case off
+    /// Every player's sound turns with the head.
+    case always
+    /// Decided per player by its audio, once it has been probed: mono and
+    /// stereo play head-locked (unspatialized, so they keep full quality) and
+    /// 5.1/7.1 stays head-tracked, where it gets its spatial features.
+    case byLayout
+
+    /// Whether sound with this layout plays head-locked. `multichannel` is
+    /// true for 5.1/7.1 and up, false for mono or stereo and nil before the
+    /// audio has been probed, which `.byLayout` reads as stereo: the safe
+    /// guess, since it leaves the sound as the source mixed it.
+    public func locks(multichannel: Bool?) -> Bool {
+        switch self {
+        case .off: false
+        case .always: true
+        case .byLayout: multichannel != true
+        }
+    }
+}
+
 public enum RAVEMediaPolicy {
     /// Allow system spatialization of stereo when a player has no explicit
     /// scene anchor. Custom-rendered window video supplies its owning scene and
@@ -26,16 +52,15 @@ public enum RAVEMediaPolicy {
         set { storage.withLock { $0.spatializeStereo = newValue } }
     }
 
-    /// Play genuine multichannel (5.1/7.1) locked to the head: the virtual
-    /// speakers keep their layout around the listener and turn with them
-    /// instead of staying anchored to a window. Setting it re-applies to every
-    /// player the policy has been applied to (`RAVESpatialAudio.swift`).
-    public static var headLockedSurround: Bool {
-        get { storage.withLock { $0.headLockedSurround } }
+    /// Where sound sits relative to the head, for every player. Setting it
+    /// re-applies to every player the policy has been applied to
+    /// (`RAVESpatialAudio.swift`).
+    public static var headLockedSound: RAVEHeadLockedSound {
+        get { storage.withLock { $0.headLockedSound } }
         set {
             let changed = storage.withLock { storage in
-                defer { storage.headLockedSurround = newValue }
-                return storage.headLockedSurround != newValue
+                defer { storage.headLockedSound = newValue }
+                return storage.headLockedSound != newValue
             }
             #if os(visionOS)
             if changed { RAVESpatialAudioPlayers.refreshSurroundAnchoring() }
@@ -43,9 +68,18 @@ public enum RAVEMediaPolicy {
         }
     }
 
+    /// Play genuine multichannel (5.1/7.1) locked to the head: the virtual
+    /// speakers keep their layout around the listener and turn with them
+    /// instead of staying anchored to a window. Shorthand for
+    /// `headLockedSound` being `.always` (setting it false means `.off`).
+    public static var headLockedSurround: Bool {
+        get { headLockedSound == .always }
+        set { headLockedSound = newValue ? .always : .off }
+    }
+
     private struct Storage: Sendable {
         var spatializeStereo = false
-        var headLockedSurround = false
+        var headLockedSound = RAVEHeadLockedSound.off
     }
 
     private static let storage = OSAllocatedUnfairLock(initialState: Storage())
