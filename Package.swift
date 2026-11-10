@@ -47,6 +47,7 @@ let package = Package(
         .library(name: "RAVESupport", targets: ["RAVESupport"]),
         .library(name: "RAVELauncher", targets: ["RAVELauncher"]),
         .library(name: "RAVESearch", targets: ["RAVESearch"]),
+        .library(name: "RAVEHome", targets: ["RAVEHome"]),
     ],
     // The two sibling packages, neither depending on a RAVE package, so
     // neither adds a cycle or a RAVESDK <-> RAVEEngine edge (see
@@ -189,6 +190,11 @@ let package = Package(
         // iOS/tvOS). Here and not in DebugTrace: it ships in App Store builds,
         // and DebugTrace cannot import RAVESDK, which depends on it. Logs
         // through DebugLog alone: no registry, trace or server comes with it.
+        // Home Assistant and HomeKit behind one `HomeBackend` surface, and the
+        // accessory icons, states and saved actions that sit on it. Extracted from
+        // Spatial Home; the Hypnos sleep timer is the second consumer.
+        .target(name: "RAVEHome", dependencies: ["RAVENet", .product(name: "DebugLog", package: "DebugTrace")]),
+        .testTarget(name: "RAVEHomeTests", dependencies: ["RAVEHome"]),
         .target(name: "RAVEConsent", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVEConsentTests", dependencies: ["RAVEConsent"]),
         // The "Hi, I'm Ixion" support card: a one-time welcome sheet and an inline card for
