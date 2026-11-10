@@ -16,6 +16,9 @@ import Observation
 @Observable
 public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawRepresentable> where Grant.RawValue == String {
     public typealias Message = RAVEPairingMessage<Grant>
+    private static var compatibilityMessage: String {
+        "Pairing could not be completed. Make sure both apps are up to date and try again."
+    }
 
     public enum State: Equatable {
         case idle
@@ -126,7 +129,7 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
                     self.receive()
                 case .failed, .waiting:
                     guard self.agreement == nil else {
-                        return self.fail("Lost the computer while pairing.")
+                        return self.fail(Self.compatibilityMessage)
                     }
                     connection.cancel()
                     self.connection = nil
@@ -214,7 +217,11 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
                 }
                 if isComplete || error != nil {
                     if case .paired = self.state { return }
-                    self.fail("The computer closed the connection.")
+                    if case .confirming = self.state {
+                        self.fail(Self.compatibilityMessage)
+                    } else {
+                        self.fail("The computer closed the connection.")
+                    }
                 } else if self.connection != nil {
                     self.receive()
                 }
@@ -234,7 +241,7 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
                 deviceID: locator.deviceID, deviceName: deviceName,
                 requested: requested.map(\.rawValue).sorted(), sshPublicKey: sshPublicKey
             ) else {
-                return fail("The computer's reply didn't check out.")
+                return fail(Self.compatibilityMessage)
             }
             self.agreement = agreement
             self.agreedHostID = macID

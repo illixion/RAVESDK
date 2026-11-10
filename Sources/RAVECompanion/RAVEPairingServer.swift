@@ -86,6 +86,9 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
         case declined
         /// The user chose to stop being asked for a while.
         case silenced
+        /// The peer's reveal did not match its commitment; the apps may use
+        /// different pairing protocol versions.
+        case incompatible
         /// Timed out, abandoned or malformed — no answer from the user.
         case abandoned
     }
@@ -273,7 +276,7 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
                 requested: committedRequested, sshPublicKey: committedSSHKey
             ) else {
                 log.error("Pairing reveal didn't match its commitment")
-                return finish(.abandoned)
+                return finish(.incompatible)
             }
             guard let approve else {
                 log.error("Pairing server has no approval handler")
