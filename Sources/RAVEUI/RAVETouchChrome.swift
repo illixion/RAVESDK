@@ -15,27 +15,21 @@
 
 import SwiftUI
 
-// A `ButtonStyle` cannot delegate to a system style: `makeBody` hands back a
-// view built from `configuration.label`, and there is no way to say "and then
-// render that the way `.borderless` would". So on visionOS there is no custom
-// style at all — the platform's own `.borderless` draws the gaze hover
-// highlight and the padding that makes an ornament button look like one, and
-// re-deriving those by hand would mean guessing at hover shape, glyph inset
-// and pressed state, and drifting from them at the next OS release.
-//
-// `RAVEChromeButtonStyle` therefore does not exist on visionOS, which makes
-// the mistake structural rather than visual: `.buttonStyle(.raveChrome)` in
-// shared code fails to build for the headset instead of quietly shipping
-// flat, hover-less chrome. Use `View.raveChromeButtonStyle()` — it resolves
-// to the right thing on each platform.
-#if !os(visionOS)
+// A `ButtonStyle` cannot delegate to a system style, so the visionOS spelling
+// below re-creates what `.borderless` gave an ornament button: no background
+// and a gaze hover highlight. What it deliberately does *not* copy is
+// `.borderless`'s hit shape, which hugs the glyph: gaze lands on the hover
+// highlight at the button's edge, but the pinch only counts inside the bare
+// 24pt icon, so the edge of a button that looks hovered does nothing. Here
+// the label is grown to a 60pt target (the same as `ravePlayerControlLabel`)
+// and that one shape serves for hit-testing and the hover highlight, so
+// what lights up is what a pinch presses.
 
-/// Borderless glyph button with a finger-sized hit target: an Apple-HIG
-/// 44-point minimum touchable area, and a press/disabled dimming to replace
-/// the feedback the system style would have given.
+/// Borderless glyph button with a generous hit target: Apple's 60-point
+/// visionOS minimum under gaze, 44 points under a finger, plus a press/disabled
+/// dimming. The transparent margin around the glyph counts as the button.
 ///
-/// Prefer `View.raveChromeButtonStyle()` over naming this directly; it is the
-/// spelling that also compiles on visionOS.
+/// Prefer `View.raveChromeButtonStyle()` over naming this directly.
 ///
 /// `contentShape` is what makes the transparent margin around the glyph count
 /// as part of the button; without it the enlarged frame is inert.
@@ -45,35 +39,37 @@ public struct RAVEChromeButtonStyle: ButtonStyle {
     public init() {}
 
     public func makeBody(configuration: Configuration) -> some View {
+        #if os(visionOS)
+        configuration.label
+            .frame(minWidth: 60, minHeight: 60)
+            .contentShape(.interaction, .capsule)
+            .contentShape(.hoverEffect, .capsule)
+            .hoverEffect(.highlight)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.5 : 1) : 0.35)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+        #else
         configuration.label
             .frame(minWidth: 44, minHeight: 44)
             .contentShape(.rect)
             .opacity(isEnabled ? (configuration.isPressed ? 0.4 : 1) : 0.35)
             .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+        #endif
     }
 }
 
 public extension ButtonStyle where Self == RAVEChromeButtonStyle {
-    /// A glyph button in floating chrome on a touch platform.
+    /// A glyph button in floating chrome.
     static var raveChrome: RAVEChromeButtonStyle { RAVEChromeButtonStyle() }
 }
 
-#endif
-
 public extension View {
-    /// Styles the glyph buttons in this subtree as floating chrome: the
-    /// system `.borderless` style on visionOS, where gaze targeting and the
-    /// platform's own hover highlight already make a bare glyph comfortable,
-    /// and `RAVEChromeButtonStyle`'s 44-point touch target elsewhere.
+    /// Styles the glyph buttons in this subtree as floating chrome, with a
+    /// target far larger than the glyph (60pt on visionOS, 44pt elsewhere).
     ///
-    /// Use this instead of `.buttonStyle(.borderless)` for any control that
-    /// has to be hittable by a finger as well as by gaze.
+    /// Use this instead of `.buttonStyle(.borderless)`, whose hit area on
+    /// visionOS is only the glyph itself.
     func raveChromeButtonStyle() -> some View {
-        #if os(visionOS)
-        buttonStyle(.borderless)
-        #else
         buttonStyle(RAVEChromeButtonStyle())
-        #endif
     }
 }
 

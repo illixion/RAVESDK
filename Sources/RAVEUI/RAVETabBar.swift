@@ -189,6 +189,15 @@ public struct RAVETabBarButtonStyle: ButtonStyle {
                         )
                 }
             }
+            // The hover highlight keeps the visible capsule, but the press
+            // target is the capsule's bounding rect grown by a margin that
+            // fills the gaps between neighbours. Gaze lands on the edge of a
+            // button and the highlight shows there, so a pinch has to count
+            // there too; a capsule shape alone drops the rounded corners.
+            .contentShape(.hoverEffect, Capsule())
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
+            .contentShape(.interaction, .rect)
     }
 }
 
