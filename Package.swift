@@ -43,6 +43,7 @@ let package = Package(
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
         .library(name: "RAVELLM", targets: ["RAVELLM"]),
         .library(name: "RAVEConsent", targets: ["RAVEConsent"]),
+        .library(name: "RAVESupport", targets: ["RAVESupport"]),
         .library(name: "RAVELauncher", targets: ["RAVELauncher"]),
         .library(name: "RAVESearch", targets: ["RAVESearch"]),
     ],
@@ -181,6 +182,11 @@ let package = Package(
         // through DebugLog alone: no registry, trace or server comes with it.
         .target(name: "RAVEConsent", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVEConsentTests", dependencies: ["RAVEConsent"]),
+        // The "Hi, I'm Ixion" support card: a one-time welcome sheet and an inline card for
+        // Settings that point at GitHub Sponsors. No dependencies, so any app links it. The
+        // pose artwork lives once, in Sources/RAVESupport/Poses (see its README).
+        .target(name: "RAVESupport", resources: [.copy("Poses")]),
+        .testTarget(name: "RAVESupportTests", dependencies: ["RAVESupport"]),
         // A launcher screen: sections of app tiles whose buttons the app defines (open by
         // URL, start a JIT session, or run an app hosted in the same process), plus the
         // shortcuts other apps ask to pin, with the request parsing and the approve sheet.
