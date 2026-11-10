@@ -16,6 +16,8 @@ public struct RAVESupportConfig: Sendable {
     public var sponsorURL: URL
     public var title: String
     public var message: String
+    public var nudgeTitle: String
+    public var nudgeMessage: String
 
     public static let defaultSponsorURL = URL(string: "https://github.com/sponsors/illixion")!
 
@@ -24,7 +26,9 @@ public struct RAVESupportConfig: Sendable {
         appID: String,
         sponsorURL: URL = RAVESupportConfig.defaultSponsorURL,
         title: String = "Hi, I'm Ixion",
-        message: String? = nil
+        message: String? = nil,
+        nudgeTitle: String = "Enjoying this app?",
+        nudgeMessage: String? = nil
     ) {
         self.appName = appName
         self.appID = appID
@@ -35,6 +39,11 @@ public struct RAVESupportConfig: Sendable {
             software, and I don't expect anything in return. If it's useful to you and \
             you'd like to help me keep building, sponsoring me on GitHub is the best way. \
             If not, I hope you enjoy it all the same.
+            """
+        self.nudgeTitle = nudgeTitle
+        self.nudgeMessage = nudgeMessage ?? """
+            You've had \(appName) for a day now. If it's earned a place on your device, a small \
+            sponsorship on GitHub helps me keep making free software. This is the last time I'll ask.
             """
     }
 }

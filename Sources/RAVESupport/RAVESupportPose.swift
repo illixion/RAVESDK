@@ -3,7 +3,7 @@
 //  RAVESupport
 //
 //  The artwork slots. Drop a PNG or JPG named after the slot into
-//  Sources/RAVESupport/Poses (welcome.png, thanks.png, card.png) and every app
+//  Sources/RAVESupport/Poses (welcome.png, nudge.png, card.png) and every app
 //  picks it up on its next build. A missing file just means no picture: the
 //  card is complete without one.
 //
@@ -13,8 +13,8 @@ import SwiftUI
 public enum RAVESupportPose: String, CaseIterable, Sendable {
     /// Top of the one-time welcome sheet.
     case welcome
-    /// Shown after the person taps Sponsor.
-    case thanks
+    /// Top of the one-time "Enjoying this app?" nudge, a day after first use.
+    case nudge
     /// The inline card in an app's Settings or About screen.
     case card
 

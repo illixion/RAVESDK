@@ -24,9 +24,38 @@ import Testing
         #expect(a.welcomeShown && !b.welcomeShown)
     }
 
+    @Test func nudgeComesOnceAfterADay() {
+        let d = UserDefaults(suiteName: "rave.support.tests.\(UUID().uuidString)")!
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_000_000)
+        let s = RAVESupportStore(appID: "a", defaults: d, now: { clock })
+        #expect(!s.nudgeDue())                       // welcome not shown yet
+        s.markWelcomeShown()
+        #expect(!s.nudgeDue())                       // same moment
+        clock += RAVESupportStore.nudgeDelay - 1
+        #expect(!s.nudgeDue())                       // one second short
+        clock += 1
+        #expect(s.nudgeDue())                        // exactly a day
+        s.markNudgeShown()
+        clock += 365 * 24 * 3600
+        #expect(!s.nudgeDue())                       // never again
+        #expect(s.nudgeShown)
+    }
+
+    @Test func welcomeFlagWithoutDateStartsTheClockNow() {
+        let d = UserDefaults(suiteName: "rave.support.tests.\(UUID().uuidString)")!
+        d.set(true, forKey: "rave.support.welcomeShown.a")   // set by an older build or a UI test
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_000_000)
+        let s = RAVESupportStore(appID: "a", defaults: d, now: { clock })
+        #expect(!s.nudgeDue())
+        clock += RAVESupportStore.nudgeDelay
+        #expect(s.nudgeDue())
+    }
+
     @Test func defaultCopyNamesTheApp() {
         let c = RAVESupportConfig(appName: "Longwave", appID: "x")
         #expect(c.message.contains("Longwave"))
+        #expect(c.nudgeTitle == "Enjoying this app?")
+        #expect(c.nudgeMessage.contains("Longwave"))
         #expect(c.sponsorURL.absoluteString == "https://github.com/sponsors/illixion")
     }
 
