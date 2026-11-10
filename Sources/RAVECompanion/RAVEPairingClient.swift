@@ -46,6 +46,8 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
     private let exchange = RAVEPairingExchange()
     private var commitment = Data()
     private var agreement: RAVEPairingExchange.Agreement?
+    private var agreedHostID: String?
+    private var agreedHostName: String?
     private var timeout: Task<Void, Never>?
     private let deviceName: String
 
@@ -235,10 +237,14 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
                 return fail("The computer's reply didn't check out.")
             }
             self.agreement = agreement
+            self.agreedHostID = macID
+            self.agreedHostName = macName
             send(.reveal(publicKey: exchange.publicKey, nonce: exchange.nonce))
             state = .confirming(code: agreement.code)
         case .accept(let sealed):
-            guard let agreement, let grant = try? RAVEPairingExchange.open(sealed, with: agreement.key) else {
+            guard let agreement, let grant = try? RAVEPairingExchange.open(sealed, with: agreement.key),
+                  let hostID = agreedHostID, let hostName = agreedHostName,
+                  grant.macID == hostID, grant.macName == hostName else {
                 return fail("The computer's answer couldn't be opened.")
             }
             state = .paired(grant)
