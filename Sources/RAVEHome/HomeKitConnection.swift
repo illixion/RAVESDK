@@ -40,6 +40,7 @@ public final class HomeKitConnection: NSObject, HomeBackend {
     // MARK: - HomeKit internals (not observed)
 
     @ObservationIgnored private var manager: HMHomeManager?
+    @ObservationIgnored private var activatedAt: Date?
     /// entity id → characteristic type → characteristic, for reads and writes.
     @ObservationIgnored private var charCache: [String: [String: HMCharacteristic]] = [:]
     /// entity id → the service/accessory it was built from.
@@ -90,6 +91,17 @@ public final class HomeKitConnection: NSObject, HomeBackend {
         return "\(homes) · \(entities.count) accessories"
     }
 
+    /// True when HomeKit has said nothing at all for `after` seconds since
+    /// `activate()`: no authorization decision, not even a refusal. That is
+    /// what an app signed without the HomeKit capability sees (the system logs
+    /// the missing entitlement and the manager just never answers), so a UI
+    /// can say so instead of "connecting" forever. Not observable over time:
+    /// ask it from a clock (a `TimelineView`).
+    public func isSilent(after seconds: TimeInterval = 8, at date: Date = Date()) -> Bool {
+        guard manager != nil, authorization.isEmpty, let activatedAt else { return false }
+        return date.timeIntervalSince(activatedAt) >= seconds
+    }
+
     public func areaName(forEntity id: String) -> String? { roomName[id] }
 
     public func homeName(forEntity id: String) -> String? { homeNames[id] }
@@ -100,6 +112,7 @@ public final class HomeKitConnection: NSObject, HomeBackend {
     /// use) and start loading homes. Idempotent.
     public func activate() {
         guard manager == nil else { return }
+        activatedAt = Date()
         let manager = HMHomeManager()
         manager.delegate = self
         self.manager = manager
@@ -668,6 +681,7 @@ public final class HomeKitConnection: HomeBackend {
     public func areaName(forEntity id: String) -> String? { nil }
     public func homeName(forEntity id: String) -> String? { nil }
     public func activate() {}
+    public func isSilent(after seconds: TimeInterval = 8, at date: Date = Date()) -> Bool { false }
     public func refreshSensor(entityID: String) {}
     public func performDefaultAction(on entity: HAEntity) {}
     public func setLightBrightness(entityId: String, fraction: Double) {}
