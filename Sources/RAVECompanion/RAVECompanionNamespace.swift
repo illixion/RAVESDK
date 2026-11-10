@@ -5,11 +5,11 @@
  comparison, gets a token minted for it alone, and from then on reaches that
  computer over TLS-PSK channels keyed from the token, each connection proving
  which device it is. The computer opens its ports only while a paired device
- knocks for them. Lifted from Longwave (its Mac and Windows Companions), so the
- wire format is Longwave's, byte for byte: the Windows Companion
- (`CompanionWindows/backend/Devices/Pairing.cs`) and every device already
- paired depend on it. `RAVECompanionTests` pins it with vectors taken from the
- Longwave code before the move.
+ knocks for them. Lifted from Longwave (its Mac and Windows Companions), then
+ hardened as pairing v2: the numeric comparison binds both endpoint identities
+ and all client-supplied enrollment fields. Older v1 peers fail closed and must
+ be upgraded together. Swift and Windows interop vectors are pinned in
+ `RAVECompanionTests`.
 
  An app picks a namespace: the Bonjour service types, the key-derivation
  labels and the link scheme it uses. Longwave's is `.longwave`; another app
@@ -26,7 +26,7 @@ public struct RAVECompanionNamespace: Sendable, Equatable, Hashable {
     /// `NSBonjourServices`.
     public var serviceStem: String
     /// Prefix of every key-derivation label (`<prefix>-Knock-v1`,
-    /// `<prefix>-Pair-v1`, `<prefix>-Device-Proof-v1`).
+    /// `<prefix>-Pair-v2`, `<prefix>-Device-Proof-v1`).
     public var labelPrefix: String
     /// Scheme of the address link (`<scheme>://pair?…`).
     public var urlScheme: String
@@ -59,6 +59,6 @@ public struct RAVECompanionNamespace: Sendable, Equatable, Hashable {
     public var pairServiceType: String { "_\(serviceStem)-pair._tcp" }
 
     var knockSalt: Data { Data("\(labelPrefix)-Knock-v1".utf8) }
-    var pairInfo: Data { Data("\(labelPrefix)-Pair-v1".utf8) }
+    var pairInfo: Data { Data("\(labelPrefix)-Pair-v2".utf8) }
     var proofSalt: Data { Data("\(labelPrefix)-Device-Proof-v1".utf8) }
 }

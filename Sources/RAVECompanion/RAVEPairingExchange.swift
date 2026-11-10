@@ -18,6 +18,10 @@
 import CryptoKit
 import Foundation
 
+enum RAVEPairingLimits {
+    static let maximumInboxBytes = 32 * 1024
+}
+
 /// What the host hands a device once the user has approved it.
 public struct RAVEPairingGrant: Codable, Sendable, Equatable {
     public var token: String
@@ -54,9 +58,43 @@ public struct RAVEPairingExchange: Sendable {
         Data(SymmetricKey(size: .bits256).withUnsafeBytes { Array($0) })
     }
 
-    /// The device's opening move: a hash binding its key and nonce.
-    public static func commitment(publicKey: Data, nonce: Data) -> Data {
-        Data(SHA256.hash(data: publicKey + nonce))
+    /// The device's opening move: a hash binding its key, nonce and every
+    /// client-controlled field the host will use before approval. Without
+    /// those fields, an on-path relay could rewrite the device ID, requested
+    /// capabilities or offered SSH key while leaving the six-digit code
+    /// unchanged.
+    public static func commitment(
+        _ namespace: RAVECompanionNamespace,
+        publicKey: Data, nonce: Data,
+        deviceID: String, deviceName: String,
+        requested: [String]?, sshPublicKey: String?
+    ) -> Data {
+        var transcript = Data("RAVECompanionPairCommit-v2".utf8)
+        appendField(namespace.pairInfo, to: &transcript)
+        appendField(publicKey, to: &transcript)
+        appendField(nonce, to: &transcript)
+        appendField(Data(deviceID.utf8), to: &transcript)
+        appendField(Data(deviceName.utf8), to: &transcript)
+        let grants = Array(Set(requested ?? [])).sorted()
+        appendLength(UInt32(grants.count), to: &transcript)
+        for grant in grants { appendField(Data(grant.utf8), to: &transcript) }
+        if let sshPublicKey {
+            transcript.append(1)
+            appendField(Data(sshPublicKey.utf8), to: &transcript)
+        } else {
+            transcript.append(0)
+        }
+        return Data(SHA256.hash(data: transcript))
+    }
+
+    private static func appendField(_ value: Data, to transcript: inout Data) {
+        appendLength(UInt32(value.count), to: &transcript)
+        transcript.append(value)
+    }
+
+    private static func appendLength(_ length: UInt32, to transcript: inout Data) {
+        var bigEndian = length.bigEndian
+        withUnsafeBytes(of: &bigEndian) { transcript.append(contentsOf: $0) }
     }
 
     public struct Agreement: Sendable {
@@ -73,14 +111,27 @@ public struct RAVEPairingExchange: Sendable {
         theirPublicKey: Data,
         commitment: Data,
         devicePublicKey: Data, deviceNonce: Data,
-        hostPublicKey: Data, hostNonce: Data
+        hostPublicKey: Data, hostNonce: Data,
+        hostID: String, hostName: String,
+        deviceID: String, deviceName: String,
+        requested: [String]?, sshPublicKey: String?
     ) -> Agreement? {
-        guard Self.commitment(publicKey: devicePublicKey, nonce: deviceNonce) == commitment,
+        guard Self.commitment(namespace, publicKey: devicePublicKey, nonce: deviceNonce,
+                              deviceID: deviceID, deviceName: deviceName,
+                              requested: requested, sshPublicKey: sshPublicKey) == commitment,
               let theirs = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: theirPublicKey),
               let shared = try? mine.privateKey.sharedSecretFromKeyAgreement(with: theirs) else {
             return nil
         }
-        let transcript = Data(SHA256.hash(data: commitment + hostPublicKey + hostNonce + devicePublicKey + deviceNonce))
+        var transcriptInput = Data("RAVECompanionPairTranscript-v2".utf8)
+        Self.appendField(commitment, to: &transcriptInput)
+        Self.appendField(hostPublicKey, to: &transcriptInput)
+        Self.appendField(hostNonce, to: &transcriptInput)
+        Self.appendField(devicePublicKey, to: &transcriptInput)
+        Self.appendField(deviceNonce, to: &transcriptInput)
+        Self.appendField(Data(hostID.utf8), to: &transcriptInput)
+        Self.appendField(Data(hostName.utf8), to: &transcriptInput)
+        let transcript = Data(SHA256.hash(data: transcriptInput))
         let key = shared.hkdfDerivedSymmetricKey(
             using: SHA256.self, salt: transcript, sharedInfo: namespace.pairInfo, outputByteCount: 32
         )
@@ -122,6 +173,9 @@ public enum RAVEPairingMessage<Grant: Codable & Hashable & Sendable>: Codable, S
 
     public func framed() throws -> Data {
         let body = try JSONEncoder().encode(self)
+        guard !body.isEmpty, body.count <= Self.maxBytes else {
+            throw EncodingError.invalidValue(body.count, .init(codingPath: [], debugDescription: "Pairing message exceeds the frame limit."))
+        }
         var length = UInt32(body.count).littleEndian
         var frame = Data(bytes: &length, count: 4)
         frame.append(body)
@@ -132,7 +186,7 @@ public enum RAVEPairingMessage<Grant: Codable & Hashable & Sendable>: Codable, S
     public static func take(from buffer: inout Data) throws -> RAVEPairingMessage? {
         guard buffer.count >= 4 else { return nil }
         let length = buffer.prefix(4).enumerated().reduce(0) { $0 | Int($1.element) << (8 * $1.offset) }
-        guard length <= maxBytes else { throw CocoaError(.coderReadCorrupt) }
+        guard length > 0, length <= maxBytes else { throw CocoaError(.coderReadCorrupt) }
         guard buffer.count >= 4 + length else { return nil }
         let body = buffer.subdata(in: (buffer.startIndex + 4)..<(buffer.startIndex + 4 + length))
         buffer.removeFirst(4 + length)

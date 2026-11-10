@@ -1,9 +1,9 @@
 {
-  "code" : "741941",
-  "commitment" : "490936352de1a9e674b2e72904884a1594337353ecac61ff333b1e174fea0de8",
+  "code" : "339511",
+  "commitment" : "362e966d5c352c01b39e096708225f111260b22f9e58de2668111b91752ace76",
   "hsPublicKey" : "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
   "identifyJSON" : "{\"deviceID\":\"HS-1\",\"proof\":\"AQID\"}",
-  "key" : "1be2c8c031f09561104f018943935f04c12c5de64cd3c8e212285c5505b2cb40",
+  "key" : "ea37f996bdeb58c95edf92d455013ed7ed064368e40242fe86fbcd5be3f8de59",
   "knockTag" : "h0HTFJVMA_OpRCZA",
   "macPublicKey" : "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
   "messages" : [

@@ -83,7 +83,11 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
     public func start() {
         guard state == .idle else { return }
         state = .waitingForHost
-        commitment = RAVEPairingExchange.commitment(publicKey: exchange.publicKey, nonce: exchange.nonce)
+        commitment = RAVEPairingExchange.commitment(
+            namespace, publicKey: exchange.publicKey, nonce: exchange.nonce,
+            deviceID: locator.deviceID, deviceName: deviceName,
+            requested: requested.map(\.rawValue).sorted(), sshPublicKey: sshPublicKey
+        )
         let hostApp = namespace.hostAppName
         timeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(120))
@@ -193,7 +197,12 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let data { self.buffer.append(data) }
+                if let data {
+                    guard data.count <= RAVEPairingLimits.maximumInboxBytes - self.buffer.count else {
+                        return self.fail("The computer sent an oversized reply.")
+                    }
+                    self.buffer.append(data)
+                }
                 do {
                     while let message = try Message.take(from: &self.buffer) {
                         self.handle(message)
@@ -213,12 +222,15 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
 
     private func handle(_ message: Message) {
         switch message {
-        case .macHello(let macID, _, let publicKey, let nonce):
+        case .macHello(let macID, let macName, let publicKey, let nonce):
             // A typed address names no host id up front: the first answer is it.
             guard self.macID.isEmpty || macID == self.macID, let agreement = RAVEPairingExchange.agree(
                 namespace, mine: exchange, theirPublicKey: publicKey, commitment: commitment,
                 devicePublicKey: exchange.publicKey, deviceNonce: exchange.nonce,
-                hostPublicKey: publicKey, hostNonce: nonce
+                hostPublicKey: publicKey, hostNonce: nonce,
+                hostID: macID, hostName: macName,
+                deviceID: locator.deviceID, deviceName: deviceName,
+                requested: requested.map(\.rawValue).sorted(), sshPublicKey: sshPublicKey
             ) else {
                 return fail("The computer's reply didn't check out.")
             }

@@ -110,13 +110,20 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
     private var deviceName: String
     private var requested: Set<Grant>
     private var sshPublicKey: String?
+    /// Exact commit fields used to verify the device's commitment. Keep these
+    /// separate from the display values, which are normalized for the UI.
+    private var committedDeviceName: String?
+    private var committedRequested: [String]?
+    private var committedSSHKey: String?
     private var finished = false
     private var timeout: Task<Void, Never>?
     private var approving = false
     private nonisolated let lost = OSAllocatedUnfairLock(initialState: false)
     private nonisolated let inbox = OSAllocatedUnfairLock(initialState: Data())
+    /// A peer may keep sending while the main actor is inside the approval
+    /// prompt. Bound queued input so that an unauthenticated pairing socket
+    /// cannot turn that wait into unbounded memory growth.
     private var draining = false
-    private let startedAt = ContinuousClock.now
 
     public init(context: Context) {
         self.context = context
@@ -127,7 +134,6 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
 
     /// Runs the exchange on a connection the direct pairing listener accepted.
     public func start(accepting connection: NWConnection) {
-        startTimeout()
         accept(connection)
     }
 
@@ -156,12 +162,13 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
         }
         listener.start(queue: queue)
         self.listener = listener
-        startTimeout()
+        startTimeout(after: .seconds(120))
     }
 
-    private func startTimeout() {
+    private func startTimeout(after duration: Duration) {
+        timeout?.cancel()
         timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(120))
+            try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
             self?.log.info("Pairing timed out")
             self?.finish(.abandoned)
@@ -178,6 +185,9 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
             return
         }
         self.connection = connection
+        // Unauthenticated peers get only a short window to begin an exchange;
+        // the long timeout is reserved for the user-facing approval step.
+        startTimeout(after: .seconds(10))
         // The record has done its job; nobody else should find it.
         listener?.cancel()
         listener = nil
@@ -204,11 +214,18 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
         onData: @escaping @Sendable () -> Void
     ) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, isComplete, error in
-            if let data { inbox.withLock { $0.append(data) } }
+            let overflow = data.map { bytes in
+                inbox.withLock { buffer -> Bool in
+                    guard bytes.count <= RAVEPairingLimits.maximumInboxBytes - buffer.count else { return true }
+                    buffer.append(bytes)
+                    return false
+                }
+            } ?? false
+            if overflow { lost.withLock { $0 = true } }
             let ended = isComplete || error != nil
             if ended { lost.withLock { $0 = true } }
             onData()
-            if !ended { receiveLoop(connection, inbox: inbox, lost: lost, onData: onData) }
+            if !ended && !overflow { receiveLoop(connection, inbox: inbox, lost: lost, onData: onData) }
         }
     }
 
@@ -236,17 +253,24 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
             guard self.commitment == nil, !deviceID.isEmpty, deviceID.count <= 64,
                   context.deviceID == nil || deviceID == context.deviceID else { return finish(.abandoned) }
             self.deviceID = deviceID
+            committedDeviceName = deviceName
+            committedRequested = requested?.map(\.rawValue)
+            committedSSHKey = sshPublicKey
             if context.deviceID == nil { self.deviceName = String(deviceName.prefix(80)) }
             if let requested { self.requested = Set(requested) }
             self.sshPublicKey = sshPublicKey.flatMap { context.acceptsPublicKey($0) ? $0 : nil }
             self.commitment = commitment
+            startTimeout(after: .seconds(15))
             send(.macHello(macID: context.hostID, macName: context.hostName,
                            publicKey: exchange.publicKey, nonce: exchange.nonce))
         case .reveal(let publicKey, let nonce):
             guard let commitment, let agreement = RAVEPairingExchange.agree(
                 context.namespace, mine: exchange, theirPublicKey: publicKey, commitment: commitment,
                 devicePublicKey: publicKey, deviceNonce: nonce,
-                hostPublicKey: exchange.publicKey, hostNonce: exchange.nonce
+                hostPublicKey: exchange.publicKey, hostNonce: exchange.nonce,
+                hostID: context.hostID, hostName: context.hostName,
+                deviceID: deviceID ?? "", deviceName: committedDeviceName ?? "",
+                requested: committedRequested, sshPublicKey: committedSSHKey
             ) else {
                 log.error("Pairing reveal didn't match its commitment")
                 return finish(.abandoned)
@@ -255,11 +279,12 @@ public final class RAVEPairingServer<Grant: Codable & Hashable & Sendable & RawR
                 log.error("Pairing server has no approval handler")
                 return finish(.abandoned)
             }
+            startTimeout(after: .seconds(120))
             let lost = self.lost
             approving = true
             let decision = await approve(ApprovalRequest(
                 code: agreement.code, deviceName: deviceName, requested: requested, sshPublicKey: sshPublicKey,
-                isPeerLost: { lost.withLock { $0 } }, deadline: startedAt + .seconds(120)
+                isPeerLost: { lost.withLock { $0 } }, deadline: ContinuousClock.now + .seconds(120)
             ))
             approving = false
             guard !finished else { return }

@@ -52,13 +52,23 @@ struct ExchangeTests {
     struct Run {
         let device = RAVEPairingExchange()
         let host = RAVEPairingExchange()
-        var commitment: Data { RAVEPairingExchange.commitment(publicKey: device.publicKey, nonce: device.nonce) }
+        let deviceID = "device-1"
+        let deviceName = "Vision Pro"
+        let requested = ["audio", "screen"]
+        let sshPublicKey: String? = nil
+        var commitment: Data {
+            RAVEPairingExchange.commitment(ns, publicKey: device.publicKey, nonce: device.nonce,
+                                            deviceID: deviceID, deviceName: deviceName,
+                                            requested: requested, sshPublicKey: sshPublicKey)
+        }
 
         func deviceSide(hostPublicKey: Data? = nil) -> RAVEPairingExchange.Agreement? {
             RAVEPairingExchange.agree(
                 ns, mine: device, theirPublicKey: hostPublicKey ?? host.publicKey, commitment: commitment,
                 devicePublicKey: device.publicKey, deviceNonce: device.nonce,
-                hostPublicKey: hostPublicKey ?? host.publicKey, hostNonce: host.nonce
+                hostPublicKey: hostPublicKey ?? host.publicKey, hostNonce: host.nonce,
+                hostID: "mac", hostName: "Studio Mac",
+                deviceID: deviceID, deviceName: deviceName, requested: requested, sshPublicKey: sshPublicKey
             )
         }
 
@@ -66,7 +76,9 @@ struct ExchangeTests {
             RAVEPairingExchange.agree(
                 ns, mine: host, theirPublicKey: revealedKey ?? device.publicKey, commitment: commitment,
                 devicePublicKey: revealedKey ?? device.publicKey, deviceNonce: revealedNonce ?? device.nonce,
-                hostPublicKey: host.publicKey, hostNonce: host.nonce
+                hostPublicKey: host.publicKey, hostNonce: host.nonce,
+                hostID: "mac", hostName: "Studio Mac",
+                deviceID: deviceID, deviceName: deviceName, requested: requested, sshPublicKey: sshPublicKey
             )
         }
     }
@@ -96,11 +108,16 @@ struct ExchangeTests {
         let impostor = RAVEPairingExchange()
         let deviceCode = try #require(run.deviceSide(hostPublicKey: impostor.publicKey)).code
         let fake = RAVEPairingExchange()
-        let fakeCommitment = RAVEPairingExchange.commitment(publicKey: fake.publicKey, nonce: fake.nonce)
+        let fakeCommitment = RAVEPairingExchange.commitment(
+            ns, publicKey: fake.publicKey, nonce: fake.nonce, deviceID: "fake",
+            deviceName: "Fake device", requested: nil, sshPublicKey: nil
+        )
         let hostCode = try #require(RAVEPairingExchange.agree(
             ns, mine: run.host, theirPublicKey: fake.publicKey, commitment: fakeCommitment,
             devicePublicKey: fake.publicKey, deviceNonce: fake.nonce,
-            hostPublicKey: run.host.publicKey, hostNonce: run.host.nonce
+            hostPublicKey: run.host.publicKey, hostNonce: run.host.nonce,
+            hostID: "mac", hostName: "Studio Mac",
+            deviceID: "fake", deviceName: "Fake device", requested: nil, sshPublicKey: nil
         )).code
         #expect(deviceCode != hostCode)
     }
@@ -110,6 +127,76 @@ struct ExchangeTests {
         let grant = RAVEPairingGrant(token: "secret", macID: "mac", macName: "M", addresses: [])
         let sealed = try RAVEPairingExchange.seal(grant, with: SymmetricKey(size: .bits256))
         #expect(throws: (any Error).self) { try RAVEPairingExchange.open(sealed, with: SymmetricKey(size: .bits256)) }
+    }
+
+    @Test("tampering with a sealed grant is rejected")
+    func tamperedGrant() throws {
+        let grant = RAVEPairingGrant(token: "secret", macID: "mac", macName: "M", addresses: [])
+        var sealed = try RAVEPairingExchange.seal(grant, with: SymmetricKey(size: .bits256))
+        sealed[sealed.index(before: sealed.endIndex)] ^= 1
+        #expect(throws: (any Error).self) {
+            try RAVEPairingExchange.open(sealed, with: SymmetricKey(size: .bits256))
+        }
+    }
+
+    @Test("the transcript binds host values and the app namespace")
+    func transcriptBinding() throws {
+        let run = Run()
+        let agreement = try #require(run.deviceSide())
+        let changedID = RAVEPairingExchange.agree(
+            ns, mine: run.host, theirPublicKey: run.device.publicKey, commitment: run.commitment,
+            devicePublicKey: run.device.publicKey, deviceNonce: run.device.nonce,
+            hostPublicKey: run.host.publicKey, hostNonce: run.host.nonce,
+            hostID: "mac", hostName: "Studio Mac",
+            deviceID: "another-device", deviceName: run.deviceName,
+            requested: run.requested, sshPublicKey: run.sshPublicKey
+        )
+        let changedGrantRequest = RAVEPairingExchange.agree(
+            ns, mine: run.host, theirPublicKey: run.device.publicKey, commitment: run.commitment,
+            devicePublicKey: run.device.publicKey, deviceNonce: run.device.nonce,
+            hostPublicKey: run.host.publicKey, hostNonce: run.host.nonce,
+            hostID: "mac", hostName: "Studio Mac",
+            deviceID: run.deviceID, deviceName: run.deviceName,
+            requested: ["audio", "projects", "screen"], sshPublicKey: run.sshPublicKey
+        )
+        #expect(changedID == nil)
+        #expect(changedGrantRequest == nil)
+        let changedHostIdentity = RAVEPairingExchange.agree(
+            ns, mine: run.device, theirPublicKey: run.host.publicKey, commitment: run.commitment,
+            devicePublicKey: run.device.publicKey, deviceNonce: run.device.nonce,
+            hostPublicKey: run.host.publicKey, hostNonce: run.host.nonce,
+            hostID: "spoofed-mac", hostName: "Studio Mac",
+            deviceID: run.deviceID, deviceName: run.deviceName,
+            requested: run.requested, sshPublicKey: run.sshPublicKey
+        )
+        #expect(changedHostIdentity?.code != run.deviceSide()?.code)
+        let changedHostNonce = RAVEPairingExchange.agree(
+            ns, mine: run.device, theirPublicKey: run.host.publicKey, commitment: run.commitment,
+            devicePublicKey: run.device.publicKey, deviceNonce: run.device.nonce,
+            hostPublicKey: run.host.publicKey, hostNonce: Data(repeating: 0x99, count: 32),
+            hostID: "mac", hostName: "Studio Mac",
+            deviceID: run.deviceID, deviceName: run.deviceName,
+            requested: run.requested, sshPublicKey: run.sshPublicKey
+        )
+        #expect(changedHostNonce?.code != agreement.code)
+        #expect(changedHostNonce?.key.withUnsafeBytes { Data($0) } != agreement.key.withUnsafeBytes { Data($0) })
+
+        let other = RAVECompanionNamespace(serviceStem: "other", labelPrefix: "Other", urlScheme: "other",
+                                           defaultPairPort: 4859, hostAppName: "Other")
+        let otherCommitment = RAVEPairingExchange.commitment(
+            other, publicKey: run.device.publicKey, nonce: run.device.nonce,
+            deviceID: run.deviceID, deviceName: run.deviceName,
+            requested: run.requested, sshPublicKey: run.sshPublicKey
+        )
+        let otherAgreement = try #require(RAVEPairingExchange.agree(
+            other, mine: run.device, theirPublicKey: run.host.publicKey, commitment: otherCommitment,
+            devicePublicKey: run.device.publicKey, deviceNonce: run.device.nonce,
+            hostPublicKey: run.host.publicKey, hostNonce: run.host.nonce,
+            hostID: "mac", hostName: "Studio Mac",
+            deviceID: run.deviceID, deviceName: run.deviceName,
+            requested: run.requested, sshPublicKey: run.sshPublicKey
+        ))
+        #expect(otherAgreement.key.withUnsafeBytes { Data($0) } != agreement.key.withUnsafeBytes { Data($0) })
     }
 
     @Test("messages frame and split across reads")
@@ -135,12 +222,22 @@ struct ExchangeTests {
         var buffer = Data([0xFF, 0xFF, 0x00, 0x00])
         #expect(throws: (any Error).self) { try Message.take(from: &buffer) }
     }
+
+    @Test("zero-length frames and oversized outgoing messages are rejected")
+    func invalidFrameBounds() {
+        var empty = Data([0, 0, 0, 0])
+        #expect(throws: (any Error).self) { try Message.take(from: &empty) }
+
+        let oversized: Message = .commit(
+            headsetID: "hs", headsetName: String(repeating: "x", count: Message.maxBytes),
+            commitment: Data(repeating: 0, count: 32), requested: nil
+        )
+        #expect(throws: (any Error).self) { try oversized.framed() }
+    }
 }
 
-/// Values the Longwave code produced before the move (`longwave-golden.json`,
-/// generated 2026-11-01 from Longwave's `Shared/CompanionPairing.swift` and
-/// `Shared/CompanionDevices.swift`). The Windows Companion and every paired
-/// device depend on these bytes.
+/// Fixed Swift values shared with the Windows Companion. The v2 commitment
+/// binds the client identity and requested capabilities as well as its key.
 @Suite("Longwave wire compatibility")
 struct GoldenTests {
     struct Golden: Decodable {
@@ -183,18 +280,25 @@ struct GoldenTests {
         let g = Self.golden
         #expect(Self.hex(device.publicKey) == g.hsPublicKey)
         #expect(Self.hex(host.publicKey) == g.macPublicKey)
-        let commitment = RAVEPairingExchange.commitment(publicKey: device.publicKey, nonce: device.nonce)
+        let commitment = RAVEPairingExchange.commitment(
+            ns, publicKey: device.publicKey, nonce: device.nonce, deviceID: "device-1",
+            deviceName: "Vision Pro", requested: ["audio", "screen"], sshPublicKey: nil
+        )
         #expect(Self.hex(commitment) == g.commitment)
         for (mine, theirs) in [(device, host.publicKey), (host, device.publicKey)] {
             let agreement = try #require(RAVEPairingExchange.agree(
                 ns, mine: mine, theirPublicKey: theirs, commitment: commitment,
                 devicePublicKey: device.publicKey, deviceNonce: device.nonce,
-                hostPublicKey: host.publicKey, hostNonce: host.nonce))
+                hostPublicKey: host.publicKey, hostNonce: host.nonce,
+                hostID: "MAC-1", hostName: "Studio",
+                deviceID: "device-1", deviceName: "Vision Pro",
+                requested: ["audio", "screen"], sshPublicKey: nil))
             #expect(agreement.code == g.code)
             #expect(agreement.key.withUnsafeBytes { Self.hex(Data($0)) } == g.key)
-            let grant = try RAVEPairingExchange.open(Self.data(g.sealedGrant), with: agreement.key)
-            #expect(grant == RAVEPairingGrant(token: "tok-123", macID: "MAC-1", macName: "Studio",
-                                              addresses: ["192.0.2.10"], grants: ["audio", "screen"]))
+            let grant = RAVEPairingGrant(token: "tok-123", macID: "MAC-1", macName: "Studio",
+                                        addresses: ["192.0.2.10"], grants: ["audio", "screen"])
+            #expect(try RAVEPairingExchange.open(RAVEPairingExchange.seal(grant, with: agreement.key),
+                                                 with: agreement.key) == grant)
         }
     }
 
@@ -258,5 +362,13 @@ struct KeyringTests {
         #expect(keyring.verify(.init(deviceID: "A", proof: proofA), binding: Data(repeating: 8, count: 32)) == nil)
         #expect(keyring.allows("A", .screen) && !keyring.allows("A", .audio))
         #expect(keyring.entries(with: .audio).map(\.credential) == [b])
+
+        // A proof captured on one TLS connection cannot be replayed after a
+        // new exporter value is negotiated, and revocation takes effect in
+        // the next keyring snapshot.
+        #expect(keyring.verify(.init(deviceID: "A", proof: proofA), binding: Data(repeating: 10, count: 32)) == nil)
+        keyring.replace([.init(credential: b, grants: [.audio])])
+        #expect(keyring.verify(.init(deviceID: "A", proof: proofA), binding: binding) == nil)
+        #expect(!keyring.allows("A", .screen))
     }
 }
