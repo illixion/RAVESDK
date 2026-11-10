@@ -34,6 +34,7 @@ let package = Package(
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
+        .library(name: "RAVEBroadcast", targets: ["RAVEBroadcast"]),
         .library(name: "RAVESlideshowCore", targets: ["RAVESlideshowCore"]),
         .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
         .library(name: "RAVEFilm", targets: ["RAVEFilm"]),
@@ -104,6 +105,14 @@ let package = Package(
         // only and guarded.
         .target(name: "RAVECamera", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVECameraTests", dependencies: ["RAVECamera"]),
+        // Publishing to an RTSP server (mediamtx): H.264 and Opus over
+        // interleaved RTP on one TCP connection, with RTCP sender reports for
+        // A/V sync. Lifted from Longwave's BroadcastCore when
+        // spatial-ai-character's program feed became its second consumer. The
+        // video encoder is RAVECamera's, reshaped for RTP; Opus is Apple's
+        // native AudioToolbox codec.
+        .target(name: "RAVEBroadcast", dependencies: ["RAVECamera", .product(name: "DebugLog", package: "DebugTrace")]),
+        .testTarget(name: "RAVEBroadcastTests", dependencies: ["RAVEBroadcast"]),
         // Source-agnostic slideshow lifecycle, local sync payloads, display
         // settings, and render hooks. Apps provide their own data adapters and
         // chrome; depth/stereo stays in RAVEMedia and transport in RAVENet.
