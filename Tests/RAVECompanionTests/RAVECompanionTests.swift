@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 import Testing
 @testable import RAVECompanion
 
@@ -370,5 +371,43 @@ struct KeyringTests {
         keyring.replace([.init(credential: b, grants: [.audio])])
         #expect(keyring.verify(.init(deviceID: "A", proof: proofA), binding: binding) == nil)
         #expect(!keyring.allows("A", .screen))
+    }
+}
+
+@Suite("Locating a host's address")
+struct LocatorAddressTests {
+    @Test("the lowest-ranked reachable address wins; none reachable keeps the host's first")
+    func choice() {
+        let addresses = ["192.168.80.1", "172.20.48.233", "100.120.197.67"]
+        #expect(RAVECompanionLocator.chooseAddress(addresses, reachable: [1, 2]) == "172.20.48.233")
+        #expect(RAVECompanionLocator.chooseAddress(addresses, reachable: [0, 1]) == "192.168.80.1")
+        #expect(RAVECompanionLocator.chooseAddress(addresses, reachable: []) == "192.168.80.1")
+        #expect(RAVECompanionLocator.chooseAddress([], reachable: []) == nil)
+    }
+
+    @Test("an address that doesn't answer is skipped for one that does")
+    func skipsTheDeadOne() async throws {
+        let listener = try NWListener(using: .tcp, on: .any)
+        listener.newConnectionHandler = { $0.cancel() }
+        let ready = AsyncStream<UInt16> { continuation in
+            listener.stateUpdateHandler = { state in
+                if case .ready = state, let port = listener.port?.rawValue { continuation.yield(port); continuation.finish() }
+            }
+        }
+        listener.start(queue: .global())
+        defer { listener.cancel() }
+        var port: UInt16?
+        for await value in ready { port = value }
+        // 192.0.2.1 is TEST-NET-1: nothing answers there.
+        let found = await RAVECompanionLocator.firstReachable(["192.0.2.1", "127.0.0.1"], port: try #require(port),
+                                                              timeout: .milliseconds(400))
+        #expect(found == "127.0.0.1")
+    }
+
+    @Test("a single address, or no port to try, is returned as is")
+    func trivialCases() async {
+        #expect(await RAVECompanionLocator.firstReachable(["10.0.0.5"], port: 4859) == "10.0.0.5")
+        #expect(await RAVECompanionLocator.firstReachable(["10.0.0.5", "10.0.0.6"], port: nil) == "10.0.0.5")
+        #expect(await RAVECompanionLocator.firstReachable([], port: 4859) == nil)
     }
 }

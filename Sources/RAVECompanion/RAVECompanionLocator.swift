@@ -152,7 +152,12 @@ public final class RAVECompanionLocator {
     /// Waits up to 1.5 s for the host's record to appear — away from home it
     /// never will, and that wait is all connecting by address costs — then up
     /// to 3 s in all for the host to say its ports are open.
-    public func locate(macID: String, token: String) async -> String? {
+    ///
+    /// A host announces every address it has, and the first is not always the one this device can
+    /// reach (a PC's Hyper-V switch, a VPN). With more than one, each is dialled on `probePort`
+    /// (the host's pairing port when it has one) and the first in the host's order that answers wins;
+    /// when none does, the first, as before.
+    public func locate(macID: String, token: String, probePort: UInt16? = nil) async -> String? {
         renewKnock(macID: macID, token: token)
         startBrowsing()
         defer { stopBrowsing() }
@@ -175,7 +180,60 @@ public final class RAVECompanionLocator {
         if !seen.open {
             log.info("Paired host found but hasn't opened its ports yet")
         }
-        return seen.addresses.first
+        return await Self.firstReachable(seen.addresses, port: seen.pairPort ?? probePort)
+    }
+
+    /// The first of `addresses` (in the host's order) that accepts a TCP connection on `port`, within
+    /// `timeout`; the first address when none does, or when there is nothing to choose between.
+    nonisolated static func firstReachable(_ addresses: [String], port: UInt16?, timeout: Duration = .milliseconds(800)) async -> String? {
+        guard addresses.count > 1, let port else { return addresses.first }
+        var reachable = Set<Int>()
+        await withTaskGroup(of: (Int, Bool).self) { group in
+            for (index, address) in addresses.enumerated() {
+                group.addTask { (index, await canConnect(address, port: port, timeout: timeout)) }
+            }
+            for await (index, ok) in group {
+                if ok { reachable.insert(index) }
+                // Nothing ahead of the best answer so far can still beat it.
+                if let best = reachable.min(), best == 0 { group.cancelAll(); break }
+            }
+        }
+        return chooseAddress(addresses, reachable: reachable)
+    }
+
+    /// The lowest-ranked reachable address, else the first.
+    nonisolated static func chooseAddress(_ addresses: [String], reachable: Set<Int>) -> String? {
+        if let best = reachable.min(), addresses.indices.contains(best) { return addresses[best] }
+        return addresses.first
+    }
+
+    private nonisolated static func canConnect(_ address: String, port: UInt16, timeout: Duration) async -> Bool {
+        guard let port = NWEndpoint.Port(rawValue: port) else { return false }
+        return await withCheckedContinuation { continuation in
+            let queue = DispatchQueue(label: "rave.companion.probe")
+            let connection = NWConnection(host: NWEndpoint.Host(address), port: port, using: .tcp)
+            let lock = NSLock()
+            nonisolated(unsafe) var finished = false
+            let finish: @Sendable (Bool) -> Void = { ok in
+                lock.lock()
+                let first = !finished
+                finished = true
+                lock.unlock()
+                guard first else { return }
+                connection.cancel()
+                continuation.resume(returning: ok)
+            }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready: finish(true)
+                case .failed, .cancelled: finish(false)
+                default: break
+                }
+            }
+            connection.start(queue: queue)
+            let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+            queue.asyncAfter(deadline: .now() + seconds) { finish(false) }
+        }
     }
 
     /// Keeps knocking for `macID` for another `lease` seconds. Callers renew
