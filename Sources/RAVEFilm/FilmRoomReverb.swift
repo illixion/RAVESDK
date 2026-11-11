@@ -41,6 +41,7 @@ import AVFoundation
 import Foundation
 import RAVESpatialAudio
 import RealityKit
+import RAVEMedia
 import Synchronization
 
 /// Where a RealityKit stage's room acoustics come from.
@@ -182,6 +183,8 @@ public final class FilmRoomReverb: @unchecked Sendable {
             out[i] *= gain
         }
         appliedLevel[o] = target
+        // The room is part of what the listener hears, so it is equalised too (after the elements' channels).
+        audio.equalizer.process(channel: audio.channelCount + o, samples: out, count: n)
         for extra in buffers.dropFirst() {
             guard let dst = extra.mData else { continue }
             memcpy(dst, out, n * MemoryLayout<Float>.size)

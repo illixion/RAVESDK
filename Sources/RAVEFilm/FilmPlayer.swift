@@ -23,6 +23,7 @@ import DebugLog
 import CoreMedia
 import Foundation
 import Observation
+import RAVEMedia
 import os
 // Re-exported: `reverbPreset` is part of this API, so a client of RAVEFilm
 // shouldn't have to link the stage's product to set it.
@@ -109,6 +110,10 @@ public final class FilmPlayer {
             }
         }
     }
+
+    /// The listener's EQ. Set it before `load`: each film's object audio (and its room) follows
+    /// it from the moment the audio is built, and live after.
+    @ObservationIgnored public var audioEQ: RAVEAudioEQ?
 
     // Tuning, read by the stage every tick.
     /// Mute is independent of saved gain tuning and keeps the clock running.
@@ -236,6 +241,7 @@ public final class FilmPlayer {
         streamer.focus(on: frame(for: seconds, in: scene))
         self.scene = scene
         self.audio = audio
+        audioEQ?.follow(audio.equalizer)
         roomReverb = FilmRoomReverb(audio: audio, elements: scene.elements)
         self.streamer = streamer
         levels = Array(repeating: 0, count: scene.elements.count)

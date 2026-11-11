@@ -33,6 +33,7 @@ import Foundation
 import os
 import RAVESpatialAudio
 import RealityKit
+import RAVEMedia
 import Synchronization
 
 // MARK: - Scene layout and tracks
@@ -187,6 +188,12 @@ public final class AtmosObjectAudio: @unchecked Sendable {
     /// The channels the stretch lines its grains up on: every one but the LFE.
     private let referenceChannels: [Int]
 
+    /// The listener's EQ, run on every element's samples (the filter is linear, so the same one on
+    /// each object is the EQ on the mix) and on the room reverb's outputs, which follow the
+    /// elements' channels. It does nothing until a host hands it to a `RAVEAudioEQ`
+    /// (`FilmPlayer.audioEQ`).
+    public let equalizer: EQProcessor
+
     /// Linear gain targets, written by the main actor.
     let targetGain: UnsafeMutablePointer<Float>
     private let currentGain: UnsafeMutablePointer<Float>
@@ -227,6 +234,7 @@ public final class AtmosObjectAudio: @unchecked Sendable {
         // jitter, well inside what reads as out of sync.
         alignment = RAVEHostClockAligner(channelCount: channelCount, sampleRate: sampleRate, reanchorSeconds: 0.05)
         stretch = FilmTimeStretch(sampleRate: sampleRate)
+        equalizer = EQProcessor(channelCount: scene.elements.count + FilmRoomReverb.outputCount, sampleRate: sampleRate)
     }
 
     deinit {
@@ -433,6 +441,7 @@ public final class AtmosObjectAudio: @unchecked Sendable {
             }
         }
         currentGain[ch] = to
+        equalizer.process(channel: ch, samples: out, count: n)
         // Mono generator, but copy into any further buffers the node asked for.
         for extra in buffers.dropFirst() {
             guard let dst = extra.mData else { continue }

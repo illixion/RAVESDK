@@ -388,6 +388,8 @@ public final class Pseudo3DStereoEngine {
     // Callbacks
     @ObservationIgnored public var onVideoSizeKnown: ((CGSize) -> Void)?
     @ObservationIgnored public var onPlaybackError: (() -> Void)?
+    /// Whether the app's EQ (`RAVEMediaPolicy.audioEQ`) reached the item just opened: not for HLS.
+    @ObservationIgnored public var onAudioEQResult: (@MainActor (EQAttachResult) -> Void)?
     /// Why the last `onPlaybackError` came, when there is more to say than
     /// "it failed": read it in the callback. Reset per load.
     @ObservationIgnored public private(set) var failure: Pseudo3DFailure?
@@ -957,6 +959,7 @@ public final class Pseudo3DStereoEngine {
             : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": self.httpHeaderFields])
         let item = AVPlayerItem(asset: asset)
         item.applySpatialAudioPolicy(sceneIdentifier: self.spatialAudioSceneIdentifier)
+        item.attachAudioEQ { [weak self] in self?.onAudioEQResult?($0) }
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey as String: true

@@ -77,9 +77,18 @@ public enum RAVEMediaPolicy {
         set { headLockedSound = newValue ? .always : .off }
     }
 
+    /// The listener's EQ, for the players RAVEMedia owns: the stereo engine attaches it to each
+    /// item it creates (`AVPlayerItem.attachAudioEQ`). An app sets it once at launch and puts it
+    /// on its own players the same way. Nil: no EQ.
+    public static var audioEQ: RAVEAudioEQ? {
+        get { storage.withLock { $0.audioEQ } }
+        set { storage.withLock { $0.audioEQ = newValue } }
+    }
+
     private struct Storage: Sendable {
         var spatializeStereo = false
         var headLockedSound = RAVEHeadLockedSound.off
+        var audioEQ: RAVEAudioEQ?
     }
 
     private static let storage = OSAllocatedUnfairLock(initialState: Storage())

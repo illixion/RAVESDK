@@ -26,16 +26,20 @@ public struct EQEditorView: View {
     @State private var selectedBandID: UUID?
     /// In-flight freehand stroke (graph coordinates), Draw mode only.
     @State private var drawStroke: [CGPoint] = []
-    @State private var customPresets: [EQPreset] = EQPreset.loadCustom()
+    @State private var customPresets: [EQPreset]
     @State private var showSavePreset = false
     @State private var newPresetName = ""
 
+    /// Where custom presets are kept: the same store the host's `EQSettings` lives in.
+    private let defaults: UserDefaults
     private let editorWidth: CGFloat = 810
     private let graphHeight: CGFloat = 345
     private var gainRange: Double { EQSettings.gainRange }
 
-    public init(settings: Binding<EQSettings>) {
+    public init(settings: Binding<EQSettings>, defaults: UserDefaults = .standard) {
         self._settings = settings
+        self.defaults = defaults
+        self._customPresets = State(initialValue: EQPreset.loadCustom(from: defaults))
     }
 
     public var body: some View {
@@ -46,44 +50,40 @@ public struct EQEditorView: View {
             footer(settings: $settings)
         }
         .padding(20)
+        #if os(iOS)
+        // A phone is narrower than the sheet this was drawn for; the graph is geometry-driven.
+        .frame(maxWidth: editorWidth)
+        #else
         .frame(width: editorWidth)
+        #endif
     }
 
     // MARK: - Header
 
     private func header(settings: Binding<EQSettings>) -> some View {
-        HStack(spacing: 14) {
-            Toggle("Equalizer", isOn: settings.enabled)
-                .toggleStyle(.switch)
-                .fixedSize()
-
-            Spacer()
-
-            Picker("Mode", selection: $mode) {
-                Text("Bands").tag(EditorMode.bands)
-                Text("Draw").tag(EditorMode.draw)
+        // One row where it fits (the visionOS and Mac sheet), two on a phone.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                enabledToggle(settings: settings)
+                Spacer()
+                modePicker
+                presetsMenu(settings: settings)
+                resetButton(settings: settings)
+                closeButton
             }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .labelsHidden()
-
-            presetsMenu(settings: settings)
-
-            Button("Reset") {
-                selectedBandID = nil
-                drawStroke = []
-                settings.wrappedValue.bands = []
-                settings.wrappedValue.preampDB = 0
+            VStack(spacing: 10) {
+                HStack(spacing: 14) {
+                    enabledToggle(settings: settings)
+                    Spacer()
+                    closeButton
+                }
+                HStack(spacing: 14) {
+                    modePicker
+                    Spacer()
+                    presetsMenu(settings: settings)
+                    resetButton(settings: settings)
+                }
             }
-            .disabled(settings.wrappedValue.bands.isEmpty && settings.wrappedValue.preampDB == 0)
-
-            // Sheet presentation has no tap-outside dismissal.
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .help("Close")
         }
         .alert("Save Preset", isPresented: $showSavePreset) {
             TextField("Name", text: $newPresetName)
@@ -93,6 +93,42 @@ public struct EQEditorView: View {
         } message: {
             Text("Saves the current bands as a custom preset.")
         }
+    }
+
+    private func enabledToggle(settings: Binding<EQSettings>) -> some View {
+        Toggle("Equalizer", isOn: settings.enabled)
+            .toggleStyle(.switch)
+            .fixedSize()
+    }
+
+    private var modePicker: some View {
+        Picker("Mode", selection: $mode) {
+            Text("Bands").tag(EditorMode.bands)
+            Text("Draw").tag(EditorMode.draw)
+        }
+        .pickerStyle(.segmented)
+        .fixedSize()
+        .labelsHidden()
+    }
+
+    private func resetButton(settings: Binding<EQSettings>) -> some View {
+        Button("Reset") {
+            selectedBandID = nil
+            drawStroke = []
+            settings.wrappedValue.bands = []
+            settings.wrappedValue.preampDB = 0
+        }
+        .disabled(settings.wrappedValue.bands.isEmpty && settings.wrappedValue.preampDB == 0)
+    }
+
+    /// Sheet presentation has no tap-outside dismissal.
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+        }
+        .help("Close")
     }
 
     private func presetsMenu(settings: Binding<EQSettings>) -> some View {
@@ -121,7 +157,7 @@ public struct EQEditorView: View {
                     ForEach(customPresets) { preset in
                         Button(preset.name, role: .destructive) {
                             customPresets.removeAll { $0.id == preset.id }
-                            EQPreset.saveCustom(customPresets)
+                            EQPreset.saveCustom(customPresets, to: defaults)
                         }
                     }
                 }
@@ -145,7 +181,7 @@ public struct EQEditorView: View {
         newPresetName = ""
         guard !name.isEmpty else { return }
         customPresets.append(EQPreset(name: name, bands: settings.bands))
-        EQPreset.saveCustom(customPresets)
+        EQPreset.saveCustom(customPresets, to: defaults)
     }
 
     // MARK: - Graph
