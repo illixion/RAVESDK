@@ -34,6 +34,7 @@ let package = Package(
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
+        .library(name: "RAVEFaceTracking", targets: ["RAVEFaceTracking"]),
         .library(name: "RAVEBroadcast", targets: ["RAVEBroadcast"]),
         .library(name: "RAVESlideshowCore", targets: ["RAVESlideshowCore"]),
         .library(name: "RAVESlideshow", targets: ["RAVESlideshow"]),
@@ -106,6 +107,13 @@ let package = Package(
         // only and guarded.
         .target(name: "RAVECamera", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVECameraTests", dependencies: ["RAVECamera"]),
+        // The wearer's face from their Persona: the Persona camera's frames
+        // through Vision's face landmarks, solved into ARKit's 52 blend
+        // shapes (framework-free, `FaceSolver`), and those as VRChat OSC.
+        // spatial-ai-character puts the face on its performed avatar;
+        // Longwave's PC VR path is to send it to VRChat.
+        .target(name: "RAVEFaceTracking", dependencies: ["RAVECamera", .product(name: "DebugLog", package: "DebugTrace")]),
+        .testTarget(name: "RAVEFaceTrackingTests", dependencies: ["RAVEFaceTracking"]),
         // Publishing to an RTSP server (mediamtx): H.264 and Opus over
         // interleaved RTP on one TCP connection, with RTCP sender reports for
         // A/V sync. Lifted from Longwave's BroadcastCore when

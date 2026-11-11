@@ -93,6 +93,7 @@ is easy to skip.
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Now a thin RealityKit/SwiftUI player over `~/Projects/vergence` (public, cross-platform), which holds the pipeline: the Apple engine in `VergenceApple`, and the Foundation-only half in `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there. Vergence is optional for the package: without a `../vergence` checkout, Package.swift leaves out RAVEMedia, RAVESlideshow, RAVEFilm and RAVEFilmLab (`needsVergence`), so apps that use none of them resolve without it; add a target that imports RAVEMedia to that set |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers, the loopback video framing, a virtual camera one app publishes and another subscribes to, and the camera feeds a page's camera proxy relays (`RAVECameraFeed`: the Persona, a loopback subscription, `RAVEInProcessCamera`) |
+| `RAVEFaceTracking` | The wearer's face from their Persona. `RAVEPersonaFaceTracker` captures the Persona camera (`RAVEPersonaCamera`) or loops a file, runs Vision's `DetectFaceLandmarksRequest` one frame at a time (late frames dropped), keeps the newest `FaceLandmarks`. `FaceSolver` (framework-free) measures them in the face's own frame against a learnt or calibrated rest face and gives ARKit's 52 `FaceBlendShape`s (the ones a 2D face shows: lids, brows, jaw, smile/frown, pucker/funnel, stretch, mouth side) plus an `EyeLook` from the pupils. `VRChatFaceOSC` turns a reading into OSC messages: VRChat's own eye tracking and avatar parameters (VRCFaceTracking v2 names or ARKit names). Consumers: spatial-ai-character (perform mode's avatar face); Longwave's PC VR path is the planned second (VRChat over OSC). macOS 15+ for the Vision API |
 | `RAVEBroadcast` | Publishing to an RTSP server (mediamtx): `RAVERTSPPublisher` (ANNOUNCE/SETUP/RECORD, interleaved RTP over one TCP connection, Basic auth, optional RTSPS with a pinned certificate, RTCP sender reports, OPTIONS keepalive), `RAVEH264Packetizer` / `RAVEOpusPacketizer` (RFC 6184 FU-A, RFC 7587), `RAVESDPBuilder`, `RAVEBroadcastVideoEncoder` (RAVECamera's encoder reshaped for RTP: raw NALs, SPS/PPS in-band before each IDR) and `RAVEOpusEncoder` (AudioToolbox's native Opus; explicit RTP timestamps for a source on its own clock). Lifted from Longwave's `BroadcastCore` (2026-11-10) when spatial-ai-character's program feed became its second consumer; Longwave still compiles its own copy until it switches. Builds on every declared platform |
 | `RAVESlideshowCore` | Source-agnostic slideshow lifecycle (`RAVESlideshowEngine`), local sync payloads, display settings. Foundation + Observation only, builds on Linux |
 | `RAVESlideshow` | The SwiftUI render surfaces and RAVEMedia adapters over `RAVESlideshowCore`, which it re-exports so `import RAVESlideshow` reaches the engine |
@@ -1124,6 +1125,33 @@ Design points worth keeping:
   themselves in `RAVELiveObjects`, which an app's memory heartbeat prints: a count that only
   goes up is a leak named outright.
 
+### RAVEFaceTracking — the Persona's face is the system's face tracking
+
+visionOS gives apps no face tracking, but the one camera an app gets is the Persona, and the
+Persona's face is the system's live reading of the wearer's from the headset's inner cameras.
+So reading the Persona's face with Vision is face tracking, at one remove.
+
+- **Sides are geometric, never Vision's names.** Vision's `leftEye` is the eye on the image's
+  left (checked on a portrait and its mirror image, macOS 27), so the solver assigns sides by
+  position and a `mirroredImage` flag says which way round the picture is. An ordinary camera
+  shows the face's left on the image's right; whether the Persona frame does is checked on the
+  headset by a wink.
+- **Measures, not points.** Across distances are in eye spacings, up/down distances in the eye
+  line's height above the nose's base; both shrink together as the face turns or tilts, so
+  ratios hold. Each measure is read against a rest face: learnt from robust percentiles of the
+  last 300 frames (eyes' upper quarter, lips' lower part), or held on purpose (`calibrate`).
+- **The visionOS simulator's Vision is broken for this.** The default context fails ("Could
+  not create inference context"); pinned to the CPU with faces found first it runs, but every
+  landmark comes back around 10¹². The tracker rejects landmarks off the picture, so the
+  simulator reports no face. Real Vision on the Mac works through the same file path (about
+  17 ms a frame at 960×1200 after a 2 s first load): `FACE_IMAGE=… swift test --filter
+  PersonaFaceTrackerTests`.
+- **The v2 OSC names** follow VRCFaceTracking's simplified parameters for its avatar
+  templates (`FT/v2/JawOpen`, `EyeLidLeft` 0 shut / 0.75 open / 1 wide, `SmileFrownLeft`
+  −1…1, …); check against an avatar's own parameters before trusting one that doesn't move.
+  `/tracking/eye/LeftRightPitchYaw` is in VRChat's convention (degrees, pitch down, yaw right),
+  matching Longwave's broker, which already sends `CenterPitchYaw`.
+
 ### RAVELauncher — the screen is shared, what a tile does is not
 
 Lifted from Apparition's visionOS Home tab (2026-11-05) because a second launcher is planned:
@@ -1243,7 +1271,7 @@ the link list.
 | `xrTimer` | `RAVEUI`, `RAVEConsole` |
 | `Oneiros` (visionOS + macOS) | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics` |
 | `halflife-visionos/LambdaVision` | `RAVEConsole`, + Engine's `RAVEInput`, `RAVEDiagnostics`, `RAVERig` |
-| `spatial-ai-character` | `RAVEUI`, `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, `RAVEBroadcast` (the stream's program feed), `RAVEConsent`, + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
+| `spatial-ai-character` | `RAVEUI`, `RAVEConsole`, `RAVEBrowser`, `RAVECamera`, `RAVEBroadcast` (the stream's program feed), `RAVEConsent`, `RAVEFaceTracking` (through `CharacterKit`, which re-exports it), + Engine's `RAVEDiagnostics`, `RAVEPanel`, and `RAVERig` transitively through its own `CharacterKit` |
 | `Apparition` (visionOS + iOS + tvOS) | `RAVEUI`, `RAVECompanion`, `RAVELauncher` (the visionOS Home tab) |
 | `Nexus` (visionOS) | `RAVELauncher` (Home), + Engine's `RAVESharedSpace`; its modules use `RAVEWindowScope` |
 

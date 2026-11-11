@@ -28,6 +28,7 @@ one platform. tvOS 26 is declared for Hypnos on Apple TV; what tvOS lacks
 | `RAVEConsole` | shipping | On-device log viewer, GPU/system monitor, depth-model setup UI |
 | `RAVEMedia` | shipping | Core ML depth, windowed-stereo warp, shared graphic EQ |
 | `RAVECamera` | shipping | Persona camera capture, realtime H.264 encoder, AVCC helpers |
+| `RAVEFaceTracking` | new | The wearer's face from their Persona via Vision: ARKit's blend shapes, eye look, VRChat OSC |
 | `RAVESlideshow` | in extraction | Source-agnostic slideshow lifecycle, settings, local sync, render hooks |
 | `RAVEFilm` | shipping | Film player: HDR/Dolby Vision picture and Atmos objects on one clock |
 
