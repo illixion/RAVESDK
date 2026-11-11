@@ -863,7 +863,7 @@ public final class Pseudo3DStereoEngine {
         // picture that never started after Smooth Motion was toggled during
         // the load (device, 2026-11-02). The intent is the truth then.
         let wasPaused = isAnalysisHeld ? !intendsToPlay : player?.timeControlStatus == .paused
-        let wasMuted = player?.isMuted ?? startMuted
+        let wasMuted = player?.listenerIsMuted ?? startMuted
         if let player { startVolume = player.volume }
         let savedLoopA = loopA
         let savedLoopB = loopB
@@ -959,7 +959,6 @@ public final class Pseudo3DStereoEngine {
             : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": self.httpHeaderFields])
         let item = AVPlayerItem(asset: asset)
         item.applySpatialAudioPolicy(sceneIdentifier: self.spatialAudioSceneIdentifier)
-        item.attachAudioEQ { [weak self] in self?.onAudioEQResult?($0) }
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey as String: true
@@ -970,6 +969,11 @@ public final class Pseudo3DStereoEngine {
         player.applySpatialAudioPolicy(for: asset, sceneIdentifier: self.spatialAudioSceneIdentifier)
         player.isMuted = startMuted
         player.volume = startVolume
+        // The equalizer, now the item has its player: an HLS item's sound is played in its place.
+        item.attachAudioEQ(player: player) { [weak self, weak item] result in
+            guard let self, let item, self.player?.currentItem === item else { return }
+            self.onAudioEQResult?(result)
+        }
         // `play()` starts at the default rate, so every resume keeps the speed.
         player.defaultRate = startRate
         player.automaticallyWaitsToMinimizeStalling = true
@@ -1506,7 +1510,7 @@ public final class Pseudo3DStereoEngine {
                 currentTime: currentTime ?? player.currentTime().seconds,
                 duration: duration.isFinite ? duration : 0,
                 paused: isAnalysisHeld ? !intendsToPlay : player.timeControlStatus != .playing,
-                muted: player.isMuted,
+                muted: player.listenerIsMuted,
                 buffered: buffered,
                 waiting: !isAnalysisHeld && player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             )

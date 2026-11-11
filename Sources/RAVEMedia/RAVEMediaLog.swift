@@ -39,6 +39,8 @@ public enum RAVEMediaLog {
 
     /// Which spatial-audio experience each player gets, and what said so.
     public static let spatialAudio = DebugLogger(subsystem: subsystem, category: "SpatialAudio")
+    /// The audio equalizer: taps, and the stream path (`EQStreamPlayback`).
+    public static let audioEQ = DebugLogger(subsystem: subsystem, category: "AudioEQ")
 
     /// Per-stage intervals for the fake-3D pipeline (inference, stabilize, warp,
     /// transfer) — view in Instruments' os_signpost track to see where a pump

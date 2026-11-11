@@ -11,8 +11,9 @@
  with fMP4 and TS HLS, the tap attached through `item.tracks` after
  `readyToPlay`, before play, and through the asset: `prepare` never ran and no
  audio ever reached it. Progressive MP4 and MP3 over HTTP and files all work.
- So `attach` reports `.noAudioTrack` for such an item and leaves it
- untouched; a host shows that rather than pretending (see `RAVEAudioEQ`).
+ So HLS goes another way: `RAVEAudioEQ.attach(to:player:)` hands it to
+ `EQStreamPlayback`, which plays the stream's audio, read by the host
+ (`RAVEAudioEQ.streamSource`), through the EQ in the player's place.
 
  Only the processor is shared across tracks of one item's taps: each audio
  track gets its own `EQProcessor`, because only one plays at a time but each
@@ -30,12 +31,16 @@ import MediaToolbox
 public nonisolated enum EQAttachResult: Equatable, Sendable {
     /// The tap is on the item; it filters whenever the EQ is enabled.
     case attached
-    /// The item has no audio track an asset can load: HLS (never tappable), or a silent file.
+    /// HLS, which no tap reaches: the host's reader decodes the stream's audio and
+    /// `EQStreamPlayback` plays it through the EQ in the player's place, on its clock.
+    case streamed
+    /// The item has no audio track an asset can load and no reader for it: HLS
+    /// without `RAVEAudioEQ.streamSource`, or a silent file.
     case noAudioTrack
     /// The tap could not be created or attached.
     case failed(String)
 
-    public var isAttached: Bool { self == .attached }
+    public var isAttached: Bool { self == .attached || self == .streamed }
 }
 
 /// The tap's callbacks and the state they share. Retained by the `MTAudioProcessingTap`

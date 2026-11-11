@@ -151,7 +151,11 @@ struct RAVEAudioEQSaveTests {
         eq.settings.bands = [EQBandSetting(frequency: 1_000, gain: 1)]
         for gain in 2 ... 8 { eq.settings.bands[0].gain = Double(gain) } // a drag: many changes
         #expect(defaults.data(forKey: EQSettings.defaultsKey) == nil, "written during the drag")
-        try await Task.sleep(for: .milliseconds(500))
+        // Once written (a busy main actor, e.g. other suites' players, can hold the save back).
+        let deadline = Date().addingTimeInterval(5)
+        while defaults.data(forKey: EQSettings.defaultsKey) == nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         let saved = EQSettings.load(from: defaults)
         #expect(saved.bands.first?.gain == 8)
     }

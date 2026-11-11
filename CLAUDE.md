@@ -579,6 +579,13 @@ and re-exports Vergence, so the type names below still resolve through
 (called by the engine's init and by Hypnos at launch) sends those lines to DebugLog's `DebugLogger`
 with each value's privacy intact. The depth cache's cap is `VergencePolicy.depthCacheCap`.
 
+The audio EQ (`Audio/`, 2026-11-11; Hypnos is the consumer, Longwave's and Raven's were the
+originals) reaches a file-backed `AVPlayerItem` through an `MTAudioProcessingTap` and HLS, which no
+tap reaches, through `EQStreamPlayback`: the host's `RAVEAudioEQ.streamSource` reads and decodes the
+stream's audio and an `AVSampleBufferAudioRenderer` plays it through the EQ on the item's timebase
+while the player is muted under it. Hosts attach with `item.attachAudioEQ(player:)` once the item
+has its player, and read `AVPlayer.listenerIsMuted`, not `isMuted`, for a mute button.
+
 This is Spatial Stash's fake-3D pipeline, moved wholesale: monocular depth (Depth
 Anything V2) drives a per-eye warp that turns mono video into windowed stereo in an
 ordinary Shared-Space window. Unlike the other targets it is **not** a convergence of

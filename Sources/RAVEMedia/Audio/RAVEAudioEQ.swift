@@ -6,7 +6,10 @@
  in the defaults it is given), and every processor the app has running follows
  it live. Hosts attach it where they make audio:
 
- - `attach(to:)` for an `AVPlayerItem` (the tap, `EQAudioTap`; not HLS);
+ - `attach(to:player:)` for an `AVPlayerItem`: the tap (`EQAudioTap`) on a
+   file, or for HLS, which no tap reaches, the stream path (`EQStreamPlayback`:
+   the host's `streamSource` reads the audio, which is played through the EQ
+   in the player's place, on its clock);
  - `makeProcessor(channelCount:sampleRate:)` for a host that renders audio
    itself and calls `EQProcessor.process` (RAVEFilm's object audio).
 
@@ -37,6 +40,7 @@ public final class RAVEAudioEQ {
             }
             scheduleSave()
             pushToProcessors()
+            updateStreams()
         }
     }
 
@@ -46,6 +50,10 @@ public final class RAVEAudioEQ {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let processors = NSHashTable<EQProcessor>.weakObjects()
     @ObservationIgnored private let saveDelay: Duration
+    /// Reads an HLS item's audio for the stream path; without one, HLS stays unequalised.
+    @ObservationIgnored public var streamSource: EQStreamSource?
+    /// The HLS items being equalised, each until its item or player goes.
+    @ObservationIgnored public private(set) var streams: [EQStreamPlayback] = []
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored nonisolated(unsafe) private var resignObserver: NSObjectProtocol?
 
@@ -153,12 +161,36 @@ public final class RAVEAudioEQ {
     }
 
     /// Puts the EQ on `item`'s audio. Safe to call once playback has started (the mix applies
-    /// live). An item that is HLS, or has no audio, comes back `.noAudioTrack` and is untouched.
+    /// live). An HLS item, which no tap reaches, is equalised by playing its audio in `player`'s
+    /// place (`.streamed`) when there is a `streamSource` and a player; otherwise it comes back
+    /// `.noAudioTrack` and is untouched. `onResult` hears a later failure of the stream path.
     @discardableResult
-    public func attach(to item: AVPlayerItem) async -> EQAttachResult {
+    public func attach(to item: AVPlayerItem, player: AVPlayer? = nil,
+                       onResult: (@MainActor (EQAttachResult) -> Void)? = nil) async -> EQAttachResult {
         let (mix, result) = await audioMix(for: item.asset)
         if let mix { item.audioMix = mix }
-        return result
+        guard result == .noAudioTrack, let player, let streamSource else { return result }
+        return attachStream(to: item, player: player, source: streamSource, onResult: onResult)
+    }
+
+    /// The stream path for `item` (`EQStreamPlayback`), whatever the item is.
+    @discardableResult
+    func attachStream(to item: AVPlayerItem, player: AVPlayer, source: @escaping EQStreamSource,
+                      onResult: (@MainActor (EQAttachResult) -> Void)? = nil) -> EQAttachResult {
+        streams.removeAll { $0.item == nil || $0.player == nil || $0.item === item }
+        let playback = EQStreamPlayback(player: player, item: item, eq: self, source: source, onResult: onResult)
+        streams.append(playback)
+        RAVEMediaLog.audioEQ.info("Equalising an HLS stream through its own audio path")
+        return .streamed
+    }
+
+    /// The stream path for `item`, if it has one.
+    public func streamPlayback(for item: AVPlayerItem) -> EQStreamPlayback? {
+        streams.first { $0.item === item }
+    }
+
+    private func updateStreams() {
+        streams.removeAll { !$0.update() }
     }
 
     /// The audio mix that carries the EQ for `asset`: what `attach` sets on an item, for a host
@@ -193,16 +225,27 @@ public final class RAVEAudioEQ {
     }
 }
 
+extension AVPlayer {
+    /// Whether the listener has this player muted. That is `isMuted`, except while the
+    /// equalizer plays an HLS item's sound in the player's place (`EQStreamPlayback`), which
+    /// mutes the player itself: read this, not `isMuted`, for what a mute button shows.
+    @MainActor public var listenerIsMuted: Bool {
+        EQStreamPlayback.live.allObjects.first { $0.player === self && $0.isSounding }?.isListenerMuted ?? isMuted
+    }
+}
+
 extension AVPlayerItem {
     /// Puts the app's EQ (`RAVEMediaPolicy.audioEQ`) on this item's audio, once its tracks load,
-    /// and says what came of it. A no-op without an EQ. Call it right after creating the item,
-    /// like `applySpatialAudioPolicy`; the result is `.noAudioTrack` for HLS (see `EQAudioTap`).
+    /// and says what came of it. A no-op without an EQ. Call it once the item has its player,
+    /// like `applySpatialAudioPolicy`. HLS needs `player` (its sound is played in the player's
+    /// place, `.streamed`); without one it is `.noAudioTrack`. `onResult` may be called again
+    /// later, with `.failed`, if the stream path gives up.
     @MainActor
-    public func attachAudioEQ(onResult: (@MainActor (EQAttachResult) -> Void)? = nil) {
+    public func attachAudioEQ(player: AVPlayer? = nil, onResult: (@MainActor (EQAttachResult) -> Void)? = nil) {
         guard let eq = RAVEMediaPolicy.audioEQ else { return }
-        Task { @MainActor [weak self] in
+        Task { @MainActor [weak self, weak player] in
             guard let self else { return }
-            let result = await eq.attach(to: self)
+            let result = await eq.attach(to: self, player: player, onResult: onResult)
             onResult?(result)
         }
     }
