@@ -1182,6 +1182,11 @@ loads artwork, owns a clock or talks to a session.
   actions row, the transport. `RAVEMiniPlayerPlaceholder` is its shape with nothing playing.
 - `RAVEMiniPlayerBar` is the compact bar that hangs over a library: cover and labels in one tappable row (it opens the
   full player), controls under it, glass on visionOS and material elsewhere. The host animates its insertion.
+- **Both take their labels as text or as a view** (`labels:`; `RAVEMiniPlayerTextLabels` / `RAVEMiniPlayerBarTextLabels`
+  are what the text versions draw). A host that makes the names tappable or the title flickable (Hypnos's
+  `MusicTrackLabels`) draws its own. The bar's row opens the player through `onTapGesture`, not a `Button`, so buttons
+  and gestures inside the labels win over it instead of being swallowed; `accessibilityTitle` names the row for a
+  screen reader.
 - `RAVEMiniPlayerLayout.artworkHeight` / `topSlack` are Longwave's cover rules: the pane is the shape of the art, never
   taller than a square; on visionOS a window reserves `topSlack` of transparent space above its glass so it keeps one
   height while the cover changes shape (visionOS anchors a window's *centre* when its content resizes, so letting the

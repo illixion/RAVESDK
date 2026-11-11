@@ -10,6 +10,10 @@ import SwiftUI
 //
 //  - `RAVEMiniPlayerPanel`: the iTunes mini player. A window's content, or a popover's.
 //  - `RAVEMiniPlayerBar`: the compact one-row-and-controls bar that hangs over a library or under a window.
+//
+// Both draw their labels themselves from a title, a subtitle and a detail line, or take the labels as a view
+// (`labels:`) when the host makes the names tappable or the title flickable. `RAVEMiniPlayerTextLabels` and
+// `RAVEMiniPlayerBarTextLabels` are what the plain-text versions draw, for a host that wants to wrap them.
 //  - `RAVEMiniPlayerPlaceholder`: the panel's shape with nothing playing.
 //  - `RAVEMiniPlayerLayout`: the cover geometry, for hosts that size their own window.
 
@@ -42,14 +46,34 @@ public enum RAVEMiniPlayerLayout {
     }
 }
 
-/// The iTunes mini player: the cover across the full width, the song's labels, an optional row of actions
-/// (favorite, queue, more) and the transport.
-public struct RAVEMiniPlayerPanel<Artwork: View, Actions: View, Transport: View>: View {
-    private let width: CGFloat
-    private let artworkAspectRatio: CGFloat?
+/// The labels `RAVEMiniPlayerPanel` draws from plain text: the song, the artist and a quieter third line.
+public struct RAVEMiniPlayerTextLabels: View {
     private let title: String
     private let subtitle: String?
     private let detail: String?
+
+    public init(title: String, subtitle: String? = nil, detail: String? = nil) {
+        self.title = title
+        self.subtitle = subtitle
+        self.detail = detail
+    }
+
+    public var body: some View {
+        VStack(spacing: 2) {
+            Text(title).font(.title3.weight(.semibold)).lineLimit(1)
+            // A line is kept even when empty, so the panel doesn't change height from song to song.
+            Text(subtitle ?? " ").font(.body).foregroundStyle(.secondary).lineLimit(1)
+            if let detail { Text(detail).font(.subheadline).foregroundStyle(.tertiary).lineLimit(1) }
+        }
+    }
+}
+
+/// The iTunes mini player: the cover across the full width, the song's labels, an optional row of actions
+/// (favorite, queue, more) and the transport.
+public struct RAVEMiniPlayerPanel<Artwork: View, Labels: View, Actions: View, Transport: View>: View {
+    private let width: CGFloat
+    private let artworkAspectRatio: CGFloat?
+    private let labels: Labels
     private let artwork: Artwork
     private let actions: Actions
     private let transport: Transport
@@ -57,21 +81,17 @@ public struct RAVEMiniPlayerPanel<Artwork: View, Actions: View, Transport: View>
     /// - Parameters:
     ///   - width: the panel's width; the cover spans it.
     ///   - artworkAspectRatio: the cover's width over height, nil for square (see `RAVEMiniPlayerLayout`).
-    ///   - title: the song (or the status when nothing plays).
-    ///   - subtitle: the artist, or an error message.
-    ///   - detail: a quieter third line, such as the album.
     ///   - artwork: the cover (or a placeholder glyph). It is sized and clipped by the panel; give it no frame of its own.
+    ///   - labels: the song's labels, centred under the cover. Draw the whole block, including a line kept for an
+    ///     empty subtitle, so the panel doesn't change height from song to song.
     ///   - actions: a row of small buttons under the labels.
     ///   - transport: the controls, framed by the panel to its width less a gutter.
-    public init(width: CGFloat = 340, artworkAspectRatio: CGFloat? = nil, title: String, subtitle: String? = nil,
-                detail: String? = nil, @ViewBuilder artwork: () -> Artwork, @ViewBuilder actions: () -> Actions,
-                @ViewBuilder transport: () -> Transport) {
+    public init(width: CGFloat = 340, artworkAspectRatio: CGFloat? = nil, @ViewBuilder artwork: () -> Artwork,
+                @ViewBuilder labels: () -> Labels, @ViewBuilder actions: () -> Actions, @ViewBuilder transport: () -> Transport) {
         self.width = width
         self.artworkAspectRatio = artworkAspectRatio
-        self.title = title
-        self.subtitle = subtitle
-        self.detail = detail
         self.artwork = artwork()
+        self.labels = labels()
         self.actions = actions()
         self.transport = transport()
     }
@@ -81,14 +101,9 @@ public struct RAVEMiniPlayerPanel<Artwork: View, Actions: View, Transport: View>
             artwork
                 .frame(width: width, height: RAVEMiniPlayerLayout.artworkHeight(aspectRatio: artworkAspectRatio, width: width))
                 .clipped()
-            VStack(spacing: 2) {
-                Text(title).font(.title3.weight(.semibold)).lineLimit(1)
-                // A line is kept even when empty, so the panel doesn't change height from song to song.
-                Text(subtitle ?? " ").font(.body).foregroundStyle(.secondary).lineLimit(1)
-                if let detail { Text(detail).font(.subheadline).foregroundStyle(.tertiary).lineLimit(1) }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
+            labels
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
             actions
                 .padding(.top, 10)
             transport
@@ -101,7 +116,21 @@ public struct RAVEMiniPlayerPanel<Artwork: View, Actions: View, Transport: View>
     }
 }
 
-extension RAVEMiniPlayerPanel where Actions == EmptyView {
+extension RAVEMiniPlayerPanel where Labels == RAVEMiniPlayerTextLabels {
+    /// - Parameters:
+    ///   - title: the song (or the status when nothing plays).
+    ///   - subtitle: the artist, or an error message.
+    ///   - detail: a quieter third line, such as the album.
+    public init(width: CGFloat = 340, artworkAspectRatio: CGFloat? = nil, title: String, subtitle: String? = nil,
+                detail: String? = nil, @ViewBuilder artwork: () -> Artwork, @ViewBuilder actions: () -> Actions,
+                @ViewBuilder transport: () -> Transport) {
+        self.init(width: width, artworkAspectRatio: artworkAspectRatio, artwork: artwork,
+                  labels: { RAVEMiniPlayerTextLabels(title: title, subtitle: subtitle, detail: detail) },
+                  actions: actions, transport: transport)
+    }
+}
+
+extension RAVEMiniPlayerPanel where Labels == RAVEMiniPlayerTextLabels, Actions == EmptyView {
     public init(width: CGFloat = 340, artworkAspectRatio: CGFloat? = nil, title: String, subtitle: String? = nil,
                 detail: String? = nil, @ViewBuilder artwork: () -> Artwork, @ViewBuilder transport: () -> Transport) {
         self.init(width: width, artworkAspectRatio: artworkAspectRatio, title: title, subtitle: subtitle, detail: detail,
@@ -130,43 +159,65 @@ public struct RAVEMiniPlayerPlaceholder: View {
     }
 }
 
+/// The labels `RAVEMiniPlayerBar` draws from plain text.
+public struct RAVEMiniPlayerBarTextLabels: View {
+    private let title: String
+    private let subtitle: String?
+
+    public init(title: String, subtitle: String? = nil) {
+        self.title = title
+        self.subtitle = subtitle
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+            if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+        }
+    }
+}
+
 /// The compact mini player: the cover and labels in one tappable row (it opens the full player), the controls
 /// under it, on a surface of its own: glass on visionOS, material elsewhere. Hang it over a library (a bottom
 /// safe-area inset, a visionOS ornament's stack) and animate its insertion from the host.
-public struct RAVEMiniPlayerBar<Artwork: View, Controls: View>: View {
-    private let title: String
-    private let subtitle: String?
+///
+/// The row opens the full player when tapped anywhere that is not itself a control. A host's `labels` can hold
+/// buttons and gestures of their own (a tappable artist name, a flick to the next song): they win over the row.
+public struct RAVEMiniPlayerBar<Artwork: View, Labels: View, Controls: View>: View {
     private let artworkSize: CGFloat
     private let open: () -> Void
     private let artwork: Artwork
+    private let labels: Labels
     private let controls: Controls
+    private let accessibilityTitle: String?
 
-    public init(title: String, subtitle: String? = nil, artworkSize: CGFloat = 38, open: @escaping () -> Void,
-                @ViewBuilder artwork: () -> Artwork, @ViewBuilder controls: () -> Controls) {
-        self.title = title
-        self.subtitle = subtitle
+    /// - Parameter accessibilityTitle: what a screen reader calls the row ("Now Playing, <song>"); nil leaves it to the labels.
+    public init(artworkSize: CGFloat = 38, accessibilityTitle: String? = nil, open: @escaping () -> Void,
+                @ViewBuilder artwork: () -> Artwork, @ViewBuilder labels: () -> Labels, @ViewBuilder controls: () -> Controls) {
         self.artworkSize = artworkSize
+        self.accessibilityTitle = accessibilityTitle
         self.open = open
         self.artwork = artwork()
+        self.labels = labels()
         self.controls = controls()
     }
 
     public var body: some View {
         VStack(spacing: 2) {
-            Button(action: open) {
-                HStack(spacing: 10) {
-                    artwork
-                        .frame(width: artworkSize, height: artworkSize)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            HStack(spacing: 10) {
+                artwork
+                    .frame(width: artworkSize, height: artworkSize)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                labels
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: open)
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(named: "Open Player", open)
+            .modifier(RAVEMiniPlayerRowLabel(title: accessibilityTitle))
             controls
         }
         .padding(.horizontal, 6)
@@ -177,5 +228,22 @@ public struct RAVEMiniPlayerBar<Artwork: View, Controls: View>: View {
         #else
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
         #endif
+    }
+}
+
+extension RAVEMiniPlayerBar where Labels == RAVEMiniPlayerBarTextLabels {
+    public init(title: String, subtitle: String? = nil, artworkSize: CGFloat = 38, open: @escaping () -> Void,
+                @ViewBuilder artwork: () -> Artwork, @ViewBuilder controls: () -> Controls) {
+        self.init(artworkSize: artworkSize, accessibilityTitle: [title, subtitle].compactMap { $0 }.joined(separator: ", "), open: open,
+                  artwork: artwork, labels: { RAVEMiniPlayerBarTextLabels(title: title, subtitle: subtitle) }, controls: controls)
+    }
+}
+
+/// Names the bar's row for a screen reader when the host said how; otherwise its labels speak for themselves.
+private struct RAVEMiniPlayerRowLabel: ViewModifier {
+    let title: String?
+
+    func body(content: Content) -> some View {
+        if let title, !title.isEmpty { content.accessibilityLabel(title) } else { content }
     }
 }
