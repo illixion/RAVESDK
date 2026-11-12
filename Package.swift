@@ -208,7 +208,7 @@ let package = Package(
         // The "Hi, I'm Ixion" support card: a one-time welcome sheet and an inline card for
         // Settings that point at GitHub Sponsors. No dependencies, so any app links it. The
         // pose artwork lives once, in Sources/RAVESupport/Poses (see its README).
-        .target(name: "RAVESupport", resources: [.copy("Poses")]),
+        .target(name: "RAVESupport", dependencies: [.target(name: "RAVEMedia", condition: .when(platforms: [.visionOS]))], resources: [.copy("Poses")]),
         .testTarget(name: "RAVESupportTests", dependencies: ["RAVESupport"]),
         // A launcher screen: sections of app tiles whose buttons the app defines (open by
         // URL, start a JIT session, or run an app hosted in the same process), plus the

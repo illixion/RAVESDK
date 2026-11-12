@@ -42,10 +42,8 @@ public struct RAVESupportCard: View {
 
     public var body: some View {
         VStack(spacing: 16) {
-            if let image = pose.image {
-                image.resizable().scaledToFit().frame(maxHeight: 220)
-                    .accessibilityHidden(true)
-            }
+            RAVESupportArtwork(pose: pose)
+                .accessibilityHidden(true)
             Text(title).font(.title2.bold())
             Text(message).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)

@@ -45,6 +45,7 @@ public struct RAVEAIDepthPhotoView: View {
     /// How long an opacity change takes. RealityKit animates it, since
     /// SwiftUI's animations don't reach an entity's components.
     var fadeDuration: TimeInterval = 0.25
+    var onReady: (Bool) -> Void = { _ in }
 
     public struct Adjustments: Hashable, Sendable {
         public var brightness: Double
@@ -72,7 +73,8 @@ public struct RAVEAIDepthPhotoView: View {
         cornerRadius: CGFloat = 0,
         isFlipped: Bool = false,
         opacity: Double = 1,
-        fadeDuration: TimeInterval = 0.25
+        fadeDuration: TimeInterval = 0.25,
+        onReady: @escaping (Bool) -> Void = { _ in }
     ) {
         self.image = image
         self.depth = depth
@@ -82,6 +84,7 @@ public struct RAVEAIDepthPhotoView: View {
         self.isFlipped = isFlipped
         self.opacity = opacity
         self.fadeDuration = fadeDuration
+        self.onReady = onReady
     }
 
     /// Deepest the nearest content gets, in points. Input targets sit in
@@ -180,6 +183,7 @@ public struct RAVEAIDepthPhotoView: View {
         builtWidth = size.width
         // The first mesh fades in over the flat picture under it.
         if isFirst { fade(to: opacity) }
+        onReady(true)
     }
 
     /// Stepped by hand rather than with a RealityKit animation, so the

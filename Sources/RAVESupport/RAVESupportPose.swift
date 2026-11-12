@@ -28,6 +28,11 @@ public enum RAVESupportPose: String, CaseIterable, Sendable {
         return nil
     }
 
+    /// Optional normalized inverse depth, matched pixel-for-pixel to the PNG.
+    public var depthURL: URL? {
+        Bundle.module.url(forResource: rawValue + ".depth", withExtension: "png", subdirectory: "Poses")
+    }
+
     var image: Image? {
         guard let url, let data = try? Data(contentsOf: url) else { return nil }
         #if canImport(UIKit)

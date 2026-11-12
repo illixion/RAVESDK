@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Testing
 @testable import RAVESupport
 
@@ -61,5 +62,23 @@ import Testing
 
     @Test func missingArtworkIsNil() {
         for pose in RAVESupportPose.allCases { #expect(pose.url == nil || pose.url!.isFileURL) }
+    }
+
+    @Test func depthSamplesKeepOrientationAndIgnoreRowPadding() throws {
+        let provider = try #require(CGDataProvider(data: Data([0, 64, 9, 9, 128, 255, 9, 9]) as CFData))
+        let image = try #require(CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 8,
+            bytesPerRow: 4, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: [], provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        #expect(RAVESupportDepthRaster.samples(image, width: 2, height: 2) == [0, 64, 128, 255])
+        #expect(RAVESupportDepthRaster.samples(image, width: 3, height: 2) == nil)
+    }
+
+    @Test func colourImageCannotMasqueradeAsDepth() throws {
+        let provider = try #require(CGDataProvider(data: Data([255, 0, 0, 255]) as CFData))
+        let image = try #require(CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        #expect(RAVESupportDepthRaster.samples(image, width: 1, height: 1) == nil)
     }
 }
