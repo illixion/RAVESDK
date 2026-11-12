@@ -13,7 +13,7 @@ import SwiftUI
 public enum RAVESupportPose: String, CaseIterable, Sendable {
     /// Top of the one-time welcome sheet.
     case welcome
-    /// Top of the one-time "Enjoying this app?" nudge, a day after first use.
+    /// Top of the one-time "Thank you for staying" nudge, a day after first use. It is the last reminder.
     case nudge
     /// The inline card in an app's Settings or About screen.
     case card

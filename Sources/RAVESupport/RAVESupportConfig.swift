@@ -27,7 +27,7 @@ public struct RAVESupportConfig: Sendable {
         sponsorURL: URL = RAVESupportConfig.defaultSponsorURL,
         title: String = "Hi, I'm Ixion",
         message: String? = nil,
-        nudgeTitle: String = "Enjoying this app?",
+        nudgeTitle: String = "Thank you for staying",
         nudgeMessage: String? = nil
     ) {
         self.appName = appName
@@ -42,8 +42,10 @@ public struct RAVESupportConfig: Sendable {
             """
         self.nudgeTitle = nudgeTitle
         self.nudgeMessage = nudgeMessage ?? """
-            You've had \(appName) for a day now. If it's earned a place on your device, a small \
-            sponsorship on GitHub helps me keep making free software. This is the last time I'll ask.
+            Thank you for still using \(appName) after a day. It means a lot that it has earned a \
+            place on your device. If you'd like to help me keep making free software, sponsoring me \
+            on GitHub is the best way, and there's no pressure either way. This is the last reminder \
+            I'll ever send.
             """
     }
 }

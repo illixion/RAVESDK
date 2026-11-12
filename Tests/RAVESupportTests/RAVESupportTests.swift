@@ -55,8 +55,9 @@ import Testing
     @Test func defaultCopyNamesTheApp() {
         let c = RAVESupportConfig(appName: "Longwave", appID: "x")
         #expect(c.message.contains("Longwave"))
-        #expect(c.nudgeTitle == "Enjoying this app?")
+        #expect(c.nudgeTitle == "Thank you for staying")
         #expect(c.nudgeMessage.contains("Longwave"))
+        #expect(c.nudgeMessage.contains("last reminder"))
         #expect(c.sponsorURL.absoluteString == "https://github.com/sponsors/illixion")
     }
 

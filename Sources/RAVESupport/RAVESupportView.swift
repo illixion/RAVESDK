@@ -6,7 +6,8 @@
 //
 //      ContentView().raveSupportWelcome(RAVESupportConfig(appName: "Longwave", appID: "pro.longwave.ios"))
 //          a one-time "Hi, I'm Ixion" sheet the first time the app appears, then a one-time
-//          "Enjoying this app?" nudge once 24 hours have passed since that first use; never again
+//          "Thank you for staying" nudge once 24 hours have passed since that first use (a thank-you
+//          that says it is the last reminder); never again
 //
 //      RAVESupportCard(config)
 //          the same card inline, for Settings or About, always available
@@ -38,7 +39,7 @@ public struct RAVESupportCard: View {
     }
     private var title: String { kind == .nudge ? config.nudgeTitle : config.title }
     private var message: String { kind == .nudge ? config.nudgeMessage : config.message }
-    private var dismissLabel: String { kind == .nudge ? "Not now" : "Maybe later" }
+    private var dismissLabel: String { kind == .nudge ? "Close" : "Maybe later" }
 
     public var body: some View {
         VStack(spacing: 16) {
