@@ -133,7 +133,7 @@ public struct RAVESupportCard: View {
     private let textWidth: CGFloat = 360
     private let spacing: CGFloat = 28
     #else
-    private let artHeight: CGFloat = 560
+    private let artHeight: CGFloat = 440
     private let textWidth: CGFloat = 820
     private let spacing: CGFloat = 64
     #endif
