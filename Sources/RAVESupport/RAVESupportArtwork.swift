@@ -2,11 +2,11 @@ import SwiftUI
 #if os(visionOS)
 import CoreGraphics
 import ImageIO
-import RAVEMedia
 #endif
 
 /// The PNG owns the layout and fallback. Only visionOS loads the optional
-/// depth raster, using the existing transparent relief-photo renderer.
+/// depth raster, through RAVESupport's own copy of the transparent
+/// relief-photo renderer (`RAVESupportReliefView`), so it needs no RAVEMedia.
 struct RAVESupportArtwork: View {
     let pose: RAVESupportPose
     var maxHeight: CGFloat = 220
@@ -28,8 +28,8 @@ struct RAVESupportArtwork: View {
                 .opacity(spatialReady ? 0 : 1)
                 .overlay {
                     if let spatial {
-                        RAVEAIDepthPhotoView(image: spatial.image, depth: spatial.depth, contentID: pose.rawValue, fadeDuration: 0,
-                                                onReady: { spatialReady = $0 })
+                        RAVESupportReliefView(image: spatial.image, depth: spatial.depth, contentID: pose.rawValue,
+                                              onReady: { spatialReady = $0 })
                             .allowsHitTesting(false)
                     }
                 }
@@ -48,7 +48,7 @@ struct RAVESupportArtwork: View {
     #if os(visionOS)
     private struct Artwork: @unchecked Sendable {
         let image: CGImage
-        let depth: StillDepthMap
+        let depth: RAVESupportDepthMap
 
         static func load(colour: URL, depth: URL) -> Artwork? {
             guard let colourSource = CGImageSourceCreateWithURL(colour as CFURL, nil),
@@ -60,7 +60,7 @@ struct RAVESupportArtwork: View {
             // Bytes, not normalized floats: the relief mesh softens a byte map before building,
             // which hides the steps a stretched 8-bit map has.
             let stretched = RAVESupportDepthRaster.stretched(values, alpha: alpha, width: image.width, height: image.height)
-            return Artwork(image: image, depth: StillDepthMap(width: map.width, height: map.height, values: stretched))
+            return Artwork(image: image, depth: RAVESupportDepthMap(width: map.width, height: map.height, values: stretched))
         }
     }
     #endif
