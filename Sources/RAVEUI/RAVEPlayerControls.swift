@@ -115,10 +115,18 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     private let pinned: AnyView?
     /// Under the volume slider in its popover (a host's sound option).
     private let volumeAccessory: AnyView?
-    /// The slider's own value while a finger drags it: the host's volume
-    /// can come back a render late (or not at all while a host holds its
-    /// state still), and a slider bound only to it jumps back under the finger.
-    @State private var draggedVolume: Double?
+    /// What the volume popover shows, kept here rather than read from `state`:
+    /// the popover's content is handed over once, as a value, and in an
+    /// immersive host it is drawn in another attachment that nothing redraws
+    /// when this bar's state changes. A view that reads this model redraws on
+    /// its own, so the slider and the speaker follow a drag as it happens. It
+    /// also holds the value under the finger when the host's volume comes back
+    /// a render late (or not at all while a host holds its state still).
+    @State private var volumeModel = RAVEVolumeModel()
+    /// The volume when a drag that began on the speaker button started.
+    @State private var buttonDragStart: Double?
+    /// A drag from the button just ended: the release is not a tap.
+    @State private var buttonDragged = false
     @State private var scrubSeconds: Double?
     @State private var isScrubbing = false
     @State private var isAccessoryScrolling = false
@@ -168,6 +176,10 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             #endif
         }
         .onChange(of: showsMore || showsVolume) { _, shown in onMenuChanged(shown) }
+        .onChange(of: state.volume, initial: true) { _, volume in
+            if !volumeModel.isDragging { volumeModel.volume = volume ?? 1 }
+        }
+        .onChange(of: state.isMuted, initial: true) { _, muted in volumeModel.isMuted = muted }
         // A host bumps `menuDismissal` to close "More" (and the volume
         // popover) from outside, such as a tap on the picture behind it.
         .onChange(of: menuDismissal) { _, _ in
@@ -371,12 +383,19 @@ public struct RAVEPlayerControls<Accessories: View>: View {
     /// it opens a popover holding mute and the slider. Reported to the host
     /// like "More", so the chrome stays up while it is open. Without a host
     /// volume (and on tvOS) it is the mute button itself.
+    ///
+    /// Pressing the button and dragging sideways, without letting go, opens
+    /// the popover and sets the volume from the drag at once (the slider's own
+    /// scale: its length is a full sweep), so no second aim at a slider is
+    /// needed from a distance.
     @ViewBuilder private var volumeButton: some View {
         #if os(tvOS)
         muteControl
         #else
         if state.volume != nil, setVolume != nil {
             Button {
+                // The end of a drag is not a tap: it would close what it opened.
+                if buttonDragged { buttonDragged = false; return }
                 onInteraction()
                 showsVolume.toggle()
             } label: {
@@ -388,20 +407,34 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             .ravePlayerButtonStyle()
             .help("Volume")
             .accessibilityLabel("Volume")
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 6)
+                    .onChanged { drag in
+                        if buttonDragStart == nil {
+                            buttonDragStart = volumeModel.volume
+                            volumeModel.isDragging = true
+                            buttonDragged = true
+                            showsVolume = true
+                        }
+                        applyVolume((buttonDragStart ?? 0) + Double(drag.translation.width / Self.volumeSliderWidth))
+                    }
+                    .onEnded { _ in
+                        buttonDragStart = nil
+                        volumeModel.isDragging = false
+                        // The release may arrive as a tap; a later, real tap still toggles.
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(300))
+                            buttonDragged = false
+                        }
+                    }
+            )
             .ravePlayerPopover(isPresented: $showsVolume, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 12) {
-                        muteControl
-                        volumeSlider
-                    }
-                    if let volumeAccessory {
-                        Divider()
-                        volumeAccessory
-                    }
-                }
-                .fixedSize()
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                RAVEVolumePopover(
+                    model: volumeModel, sliderWidth: Self.volumeSliderWidth,
+                    setVolume: { applyVolume($0) },
+                    toggleMute: { onInteraction(); toggleMute() },
+                    accessory: volumeAccessory
+                )
                 // A tap on the picture must still reach it (see "More").
                 .presentationBackgroundInteraction(.enabled)
                 .presentationCompactAdaptation(.popover)
@@ -410,6 +443,22 @@ public struct RAVEPlayerControls<Accessories: View>: View {
             muteControl
         }
         #endif
+    }
+
+    /// One step of the volume, from the slider or a drag on the button.
+    /// Dragging while muted unmutes, the way a system volume control does.
+    private func applyVolume(_ value: Double) {
+        guard let setVolume else { return }
+        onInteraction()
+        let value = min(max(value, 0), 1)
+        // Once: the host's mute can read stale meanwhile, and toggling on
+        // each step flickers.
+        if volumeModel.isMuted, value > 0 {
+            volumeModel.isMuted = false
+            toggleMute()
+        }
+        volumeModel.volume = value
+        setVolume(value)
     }
 
     private var muteControl: some View {
@@ -428,34 +477,9 @@ public struct RAVEPlayerControls<Accessories: View>: View {
         }
     }
 
-    /// Beside mute, when the host has a volume. Dragging it while muted
-    /// unmutes, the way a system volume control does. tvOS has no Slider;
-    /// its remote's volume is the TV's.
-    @ViewBuilder private var volumeSlider: some View {
-        #if !os(tvOS)
-        if let volume = state.volume, let setVolume {
-            Slider(value: Binding(
-                get: { draggedVolume ?? volume },
-                set: { value in
-                    onInteraction()
-                    // Unmuted once per drag: the host's mute can read
-                    // stale meanwhile, and toggling on each step flickers.
-                    let unmutes = state.isMuted && value > 0 && (draggedVolume ?? 0) <= 0
-                    draggedVolume = value
-                    if unmutes { toggleMute() }
-                    setVolume(value)
-                }
-            ), in: 0 ... 1, onEditingChanged: { editing in
-                if !editing { draggedVolume = nil }
-            })
-            .frame(width: Self.volumeSliderWidth)
-            .accessibilityLabel("Volume")
-        }
-        #endif
-    }
-
     #if os(visionOS)
-    private static var volumeSliderWidth: CGFloat { 140 }
+    /// 1.5 times the other platforms': it is used from across a room.
+    private static var volumeSliderWidth: CGFloat { 210 }
     #else
     private static var volumeSliderWidth: CGFloat { 100 }
     #endif
@@ -824,3 +848,58 @@ private struct PlayerAccessoryScrollInteraction: ViewModifier {
         }
     }
 }
+
+/// The volume popover's state (see `RAVEPlayerControls.volumeModel`).
+@MainActor @Observable
+final class RAVEVolumeModel {
+    var volume: Double = 1
+    var isMuted = false
+    /// A finger is on the slider or the speaker button: the host's volume
+    /// does not overwrite the value under it.
+    var isDragging = false
+}
+
+#if !os(tvOS)
+/// Mute, the slider and the host's sound option. A view of its own, reading
+/// the model in its body, so it redraws as the volume moves wherever it is
+/// shown (a popover, or an attachment in an immersive space).
+private struct RAVEVolumePopover: View {
+    let model: RAVEVolumeModel
+    let sliderWidth: CGFloat
+    let setVolume: (Double) -> Void
+    let toggleMute: () -> Void
+    let accessory: AnyView?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                let title = model.isMuted ? "Unmute" : "Mute"
+                Button {
+                    toggleMute()
+                } label: {
+                    Label(title, systemImage: RAVEPlayerControls<EmptyView>.speakerSymbol(muted: model.isMuted, volume: model.volume))
+                        .labelStyle(.iconOnly).ravePlayerControlLabel()
+                        .font(.title2)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .ravePlayerButtonStyle()
+                .help(title)
+                .accessibilityLabel(title)
+                Slider(value: Binding(get: { model.volume }, set: { setVolume($0) }),
+                       in: 0 ... 1, onEditingChanged: { editing in
+                    model.isDragging = editing
+                })
+                .frame(width: sliderWidth)
+                .accessibilityLabel("Volume")
+            }
+            if let accessory {
+                Divider()
+                accessory
+            }
+        }
+        .fixedSize()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
+#endif
