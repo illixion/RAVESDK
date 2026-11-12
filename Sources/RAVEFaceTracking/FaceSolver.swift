@@ -22,6 +22,15 @@ public struct FaceSolver: Sendable {
         public var blinkFull: Float = 0.72
         /// Gap over the rest gap, past 1, for wide open.
         public var wideRange: Float = 0.35
+        /// Eyelids as a plain open / shut: an eye is shut (1) once it has closed
+        /// by `binaryThreshold` (1 − gap ÷ rest gap) and open (0) otherwise,
+        /// with no squints or wide eyes. For a face that has to be held wide
+        /// open to read right in the analogue mapping.
+        public var binaryEyelids = false
+        public var binaryThreshold: Float = 0.5
+        /// Each of these off leaves its shape at zero, in either mode.
+        public var squintsEnabled = true
+        public var wideEyesEnabled = true
         /// A brow's travel, in the vertical unit, for fully up and down.
         public var browRaise: Float = 0.07
         public var browLower: Float = 0.05
@@ -253,10 +262,16 @@ public struct FaceSolver: Sendable {
         for side in sides {
             let ratio = side.open / max(side.rest, 1e-4)
             let closure = 1 - ratio
+            if t.binaryEyelids {
+                out[side.blink] = closure >= t.binaryThreshold ? 1 : 0
+                out[side.squint] = 0
+                out[side.wide] = 0
+                continue
+            }
             let blink = smoothstep(t.blinkStart, t.blinkFull, closure)
             out[side.blink] = blink
-            out[side.squint] = unit(closure / max(t.blinkStart, 1e-4)) * (1 - blink)
-            out[side.wide] = unit((ratio - 1) / t.wideRange)
+            out[side.squint] = t.squintsEnabled ? unit(closure / max(t.blinkStart, 1e-4)) * (1 - blink) : 0
+            out[side.wide] = t.wideEyesEnabled ? unit((ratio - 1) / t.wideRange) : 0
         }
 
         // Brows.
