@@ -34,6 +34,10 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
     private enum Target {
         case nearby(RAVECompanionLocator.NearbyHost)
         case direct(RAVECompanionPairLink)
+        /// A host's pairing listener as a browser found it. No knock: the
+        /// listener is already up, for anyone, while the host's user has its
+        /// pairing screen open.
+        case endpoint(NWEndpoint, hostID: String)
     }
 
     private let locator: RAVECompanionLocator
@@ -60,6 +64,7 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
         switch target {
         case .nearby(let host): host.macID
         case .direct(let link): link.macID
+        case .endpoint(_, let hostID): hostID
         }
     }
 
@@ -85,6 +90,21 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
         self.sshPublicKey = sshPublicKey
     }
 
+    /// Pairs with a host whose pairing listener is already up and was found
+    /// by browsing for it (`endpoint` is the browse result's). `hostID` is the
+    /// id its record carries, checked against the host's hello; empty accepts
+    /// whichever host answers. For a host that listens while its own user has
+    /// a pairing screen open (a device approving a computer), where there is
+    /// no knock to send.
+    public init(locator: RAVECompanionLocator, endpoint: NWEndpoint, hostID: String = "", deviceName: String,
+                requested: Set<Grant>, sshPublicKey: String? = nil) {
+        self.locator = locator
+        self.target = .endpoint(endpoint, hostID: hostID)
+        self.deviceName = deviceName
+        self.requested = requested
+        self.sshPublicKey = sshPublicKey
+    }
+
     public func start() {
         guard state == .idle else { return }
         state = .waitingForHost
@@ -105,6 +125,8 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
         case .direct(let link):
             remainingAddresses = link.addresses
             dialNext(port: link.port)
+        case .endpoint(let endpoint, _):
+            connect(to: endpoint)
         }
     }
 
@@ -179,7 +201,11 @@ public final class RAVEPairingClient<Grant: Codable & Hashable & Sendable & RawR
         guard let match else { return }
         browser?.cancel()
         browser = nil
-        let connection = NWConnection(to: match.endpoint, using: .tcp)
+        connect(to: match.endpoint)
+    }
+
+    private func connect(to endpoint: NWEndpoint) {
+        let connection = NWConnection(to: endpoint, using: .tcp)
         self.connection = connection
         connection.stateUpdateHandler = { [weak self] state in
             Task { @MainActor [weak self] in

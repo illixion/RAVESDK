@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pairs this Mac with an app that offers debug access and reaches it (RAVEDebugAccess).
+# Builds the helper on first use, and again after its sources change, then runs it.
+# Usage: see `rave-debug --help`.
+set -e
+package=$(cd "$(dirname "$0")/.." && pwd)
+binary="$package/.build/release/rave-debug"
+stale=1
+if [ -x "$binary" ]; then
+  stale=$(find "$package/Sources/RAVEDebugAccess" "$package/Sources/RAVEDebugHelper" "$package/Sources/RAVECompanion" \
+            "$package/Package.swift" -newer "$binary" -print 2>/dev/null | head -1)
+fi
+if [ -n "$stale" ]; then
+  swift build -c release --package-path "$package" --product rave-debug >&2 || exit 1
+fi
+exec "$binary" "$@"

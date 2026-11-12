@@ -42,6 +42,9 @@ let package = Package(
         .library(name: "RAVESpatialAudio", targets: ["RAVESpatialAudio"]),
         .library(name: "RAVEDeviceSetup", targets: ["RAVEDeviceSetup"]),
         .library(name: "RAVECompanion", targets: ["RAVECompanion"]),
+        .library(name: "RAVEDebugAccess", targets: ["RAVEDebugAccess"]),
+        // The Mac half of RAVEDebugAccess; `Tools/rave-debug` builds and runs it.
+        .executable(name: "rave-debug", targets: ["RAVEDebugHelper"]),
         .library(name: "RAVEBrowser", targets: ["RAVEBrowser"]),
         .library(name: "RAVELLM", targets: ["RAVELLM"]),
         .library(name: "RAVEConsent", targets: ["RAVEConsent"]),
@@ -168,6 +171,20 @@ let package = Package(
         .testTarget(name: "RAVEDeviceSetupTests", dependencies: ["RAVEDeviceSetup"]),
         .target(name: "RAVECompanion", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
         .testTarget(name: "RAVECompanionTests", dependencies: ["RAVECompanion"], resources: [.copy("longwave-golden.json")]),
+        // Debugging an app from a paired computer: RAVECompanion's pairing with the
+        // device as the side that approves, and the TLS-PSK listener DebugTrace's
+        // server takes as a transport. The one target that links both.
+        .target(name: "RAVEDebugAccess", dependencies: [
+            "RAVECompanion",
+            .product(name: "DebugLog", package: "DebugTrace"),
+            .product(name: "DebugTraceServer", package: "DebugTrace"),
+        ]),
+        .testTarget(name: "RAVEDebugAccessTests", dependencies: [
+            "RAVEDebugAccess", "RAVECompanion",
+            .product(name: "DebugTrace", package: "DebugTrace"),
+            .product(name: "DebugTraceServer", package: "DebugTrace"),
+        ]),
+        .executableTarget(name: "RAVEDebugHelper", dependencies: ["RAVEDebugAccess"]),
         // A tool surface over a WKWebView the app already shows — navigate,
         // read (Mozilla's Readability, bundled), numbered elements, marked
         // snapshots, click/type/scroll — for a language model to use pages
