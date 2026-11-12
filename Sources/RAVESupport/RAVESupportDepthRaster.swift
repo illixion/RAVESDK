@@ -35,16 +35,31 @@ enum RAVESupportDepthRaster {
     }
 
     /// Stretches the subject's own depth over the whole byte range: its p2 becomes 1 and its p98 255,
-    /// clamped, and every pixel under `opaque` alpha becomes 0 (far). This is the per-image rule
-    /// Vergence's `StillDepthMap` applies to a model's estimate (p2 → 0, p98 → 255), restricted to
-    /// the pixels that show. It lives here rather than calling Vergence because RAVESupport builds
-    /// on every platform without that package.
+    /// clamped. This is the per-image rule Vergence's `StillDepthMap` applies to a model's estimate
+    /// (p2 → 0, p98 → 255), restricted to the pixels that show. It lives here rather than calling
+    /// Vergence because RAVESupport builds on every platform without that package.
     ///
     /// Mirror normalizes depth over the avatar's whole bounds, tail and off-frame body included,
     /// so the part in the picture can span as few as 20 of the 256 levels. Shown as is, that
     /// reads as a flat cut-out lifted off the card; stretched, the relief is the figure's own.
-    static func stretched(_ values: [UInt8], alpha: [UInt8], opaque: UInt8 = 128) -> [UInt8] {
-        guard values.count == alpha.count else { return values }
+    ///
+    /// Only pixels at `opaque` alpha or more count, and only they keep their own depth. Everything
+    /// else, the anti-aliased outline included, takes the depth of the nearest such pixel within
+    /// `grow` pixels (about 1.5% of the long side by default) and 0 (far) beyond. Captures before
+    /// 2026-11-12 averaged the outline's depth with the far background, and even a clean outline
+    /// is pulled towards far by the relief mesh's softening blur: either way the mesh's edge
+    /// triangles slid down to the card, stretching the faint outline pixels into a streaky fringe.
+    /// Grown past the outline, the surface holds its depth to the silhouette and the transparent
+    /// texels beyond it carry no picture.
+    static func stretched(_ values: [UInt8], alpha: [UInt8], width: Int, height: Int,
+                          opaque: UInt8 = 250, grow: Int? = nil) -> [UInt8] {
+        guard values.count == alpha.count, values.count == width * height else { return values }
+        let grown = grow ?? max(4, max(width, height) * 3 / 200)
+        return dilated(stretchedCore(values, alpha: alpha, opaque: opaque), alpha: alpha,
+                       width: width, height: height, opaque: opaque, steps: grown)
+    }
+
+    private static func stretchedCore(_ values: [UInt8], alpha: [UInt8], opaque: UInt8) -> [UInt8] {
         var bins = [Int](repeating: 0, count: 256)
         var total = 0
         for i in values.indices where alpha[i] >= opaque {
@@ -72,5 +87,47 @@ enum RAVESupportDepthRaster {
             let t = min(max((Double(values[i]) - lo) / (hi - lo), 0), 1)
             return UInt8((1 + t * 254).rounded())
         }
+    }
+
+    /// Grows the opaque core's depth outward one ring per step: each unfilled pixel next to filled
+    /// ones takes their mean. Pixels more than `steps` away stay 0.
+    private static func dilated(_ core: [UInt8], alpha: [UInt8], width: Int, height: Int,
+                                opaque: UInt8, steps: Int) -> [UInt8] {
+        var out = core
+        var filled = alpha.map { $0 >= opaque }
+        var frontier: [Int] = []
+        for i in out.indices where !filled[i] {
+            let x = i % width, y = i / width
+            if (x > 0 && filled[i - 1]) || (x < width - 1 && filled[i + 1])
+                || (y > 0 && filled[i - width]) || (y < height - 1 && filled[i + width]) { frontier.append(i) }
+        }
+        var step = 0
+        while step < steps, !frontier.isEmpty {
+            var ring: [(Int, UInt8)] = []
+            ring.reserveCapacity(frontier.count)
+            for i in frontier where !filled[i] {
+                let x = i % width, y = i / width
+                var sum = 0, n = 0
+                if x > 0, filled[i - 1] { sum += Int(out[i - 1]); n += 1 }
+                if x < width - 1, filled[i + 1] { sum += Int(out[i + 1]); n += 1 }
+                if y > 0, filled[i - width] { sum += Int(out[i - width]); n += 1 }
+                if y < height - 1, filled[i + width] { sum += Int(out[i + width]); n += 1 }
+                if n > 0 { ring.append((i, UInt8((sum + n / 2) / n))) }
+            }
+            // Committed after the whole ring is read, so a ring grows from the one before it only.
+            var next: [Int] = []
+            for (i, value) in ring where !filled[i] {
+                out[i] = value
+                filled[i] = true
+                let x = i % width, y = i / width
+                if x > 0, !filled[i - 1] { next.append(i - 1) }
+                if x < width - 1, !filled[i + 1] { next.append(i + 1) }
+                if y > 0, !filled[i - width] { next.append(i - width) }
+                if y < height - 1, !filled[i + width] { next.append(i + width) }
+            }
+            frontier = next
+            step += 1
+        }
+        return out
     }
 }

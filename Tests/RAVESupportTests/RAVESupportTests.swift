@@ -76,19 +76,29 @@ import Testing
     }
 
     @Test func depthStretchUsesTheSubjectsOwnRange() {
-        // A Mirror-style map: the subject spans levels 80…104 of 255, the background is 0.
+        // A Mirror-style row: the subject spans levels 80…104 of 255, the background is 0.
         let subject = (0..<100).map { UInt8(80 + $0 * 24 / 99) }
         let values = subject + [UInt8](repeating: 0, count: 50)
         let alpha = [UInt8](repeating: 255, count: 100) + [UInt8](repeating: 0, count: 50)
-        let out = RAVESupportDepthRaster.stretched(values, alpha: alpha)
+        let out = RAVESupportDepthRaster.stretched(values, alpha: alpha, width: 150, height: 1, grow: 4)
         let shown = out.prefix(100)
         #expect(shown.min()! <= 2 && shown.max()! >= 253)      // p2…p98 now spans the bytes
-        #expect(out.suffix(50).allSatisfy { $0 == 0 })          // transparent stays far
         #expect(zip(shown, shown.dropFirst()).allSatisfy { $0 <= $1 })   // order kept
+        #expect(out[100..<104].allSatisfy { $0 == out[99] })    // the edge's depth grows past it
+        #expect(out.suffix(46).allSatisfy { $0 == 0 })          // and beyond that it is far
+    }
+
+    @Test func outlineTakesTheSurfaceDepthNotItsOwn() {
+        // An old capture's outline: faint pixels whose depth sank towards the far background.
+        let values: [UInt8] = [100, 100, 120, 40, 10, 0]
+        let alpha: [UInt8] = [255, 255, 255, 140, 30, 0]
+        let out = RAVESupportDepthRaster.stretched(values, alpha: alpha, width: 6, height: 1, grow: 2)
+        #expect(out[3] == out[2] && out[4] == out[2])            // outline holds the surface's depth
+        #expect(out[5] == 0)                                     // past the grow distance: far
     }
 
     @Test func flatSubjectKeepsItsDepth() {
-        let out = RAVESupportDepthRaster.stretched([90, 90, 90, 7], alpha: [255, 255, 255, 0])
+        let out = RAVESupportDepthRaster.stretched([90, 90, 90, 7], alpha: [255, 255, 255, 0], width: 4, height: 1, grow: 0)
         #expect(out == [90, 90, 90, 0])
     }
 
@@ -109,7 +119,7 @@ import Testing
             let depth = try #require(CGImageSourceCreateWithURL(depthURL as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
             let values = try #require(RAVESupportDepthRaster.samples(depth, width: colour.width, height: colour.height))
             let alpha = try #require(RAVESupportDepthRaster.alpha(colour))
-            let shown = zip(RAVESupportDepthRaster.stretched(values, alpha: alpha), alpha).filter { $0.1 >= 128 }.map(\.0)
+            let shown = zip(RAVESupportDepthRaster.stretched(values, alpha: alpha, width: colour.width, height: colour.height), alpha).filter { $0.1 >= 250 }.map(\.0)
             #expect(Int(shown.max()!) - Int(shown.min()!) >= 240, "\(pose) relief still flat: \(shown.min()!)…\(shown.max()!) of \(shown.count), raw \(values.min()!)…\(values.max()!)")
         }
     }

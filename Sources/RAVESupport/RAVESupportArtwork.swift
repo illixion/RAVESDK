@@ -59,7 +59,7 @@ struct RAVESupportArtwork: View {
                   let alpha = RAVESupportDepthRaster.alpha(image) else { return nil }
             // Bytes, not normalized floats: the relief mesh softens a byte map before building,
             // which hides the steps a stretched 8-bit map has.
-            let stretched = RAVESupportDepthRaster.stretched(values, alpha: alpha)
+            let stretched = RAVESupportDepthRaster.stretched(values, alpha: alpha, width: image.width, height: image.height)
             return Artwork(image: image, depth: StillDepthMap(width: map.width, height: map.height, values: stretched))
         }
     }

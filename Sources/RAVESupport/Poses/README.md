@@ -33,11 +33,18 @@ relief is ready, then yields so its silhouette does not appear twice.
 
 Depth is 8-bit grayscale, exactly the colour image's dimensions and orientation:
 0 = far, 255 = near, inverse distance. It is raw data; do not colour-correct it.
-The card stretches it over the pixels the colour image shows (alpha ≥ 128), p2 to
-1 and p98 to 255, the per-image rule Vergence's `StillDepthMap` applies to a model's
+The card stretches it over the pixels the colour image draws solid (alpha ≥ 250), p2
+to 1 and p98 to 255, the per-image rule Vergence's `StillDepthMap` applies to a model's
 estimate, so the figure's own relief fills the view's depth whatever range the file
 uses. Older Mirror captures used about a tenth of the scale and looked flat without
-it; newer ones fit their range to the frame when they are taken. Resize/crop both images identically if optimizing
-bundle size, and preserve alpha in the colour image. No model, rig, or animation
+it; newer ones fit their range to the frame when they are taken. The outline and a
+few pixels past it then take the depth of the nearest solid pixel, so the relief's
+edge holds the surface's depth instead of sliding down to the card.
+
+Resize/crop both images identically if optimizing bundle size, preserve alpha in
+the colour image, and keep its Display P3 profile: a tool that drops it (PIL's
+`save` without `icc_profile=`) leaves the art read as sRGB, washed out. Captures
+before 2026-11-12 also have white outline pixels (a wrong un-premultiply in
+Mirror's PNG writer); Mirror now writes clean ones. No model, rig, or animation
 is bundled. These are **custom depth artwork**, not Apple's spatial HEIC format;
 Photos receives only the flat PNG. Share/copy both files to retain the depth.
