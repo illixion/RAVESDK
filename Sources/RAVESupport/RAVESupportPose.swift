@@ -8,6 +8,7 @@
 //  card is complete without one.
 //
 
+import ImageIO
 import SwiftUI
 
 public enum RAVESupportPose: String, CaseIterable, Sendable {
@@ -31,6 +32,17 @@ public enum RAVESupportPose: String, CaseIterable, Sendable {
     /// Optional normalized inverse depth, matched pixel-for-pixel to the PNG.
     public var depthURL: URL? {
         Bundle.module.url(forResource: rawValue + ".depth", withExtension: "png", subdirectory: "Poses")
+    }
+
+    /// Width over height of the artwork, nil when none has been added. Lets a layout size the picture
+    /// itself rather than leaving it to a proposal: in an `HStack` inside a sheet, a resizable image
+    /// is offered no width and collapses to nothing.
+    var aspectRatio: CGFloat? {
+        guard let url, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat, height > 0 else { return nil }
+        return width / height
     }
 
     var image: Image? {

@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ImageIO
 import Testing
 @testable import RAVESupport
 
@@ -72,6 +73,45 @@ import Testing
             decode: nil, shouldInterpolate: false, intent: .defaultIntent))
         #expect(RAVESupportDepthRaster.samples(image, width: 2, height: 2) == [0, 64, 128, 255])
         #expect(RAVESupportDepthRaster.samples(image, width: 3, height: 2) == nil)
+    }
+
+    @Test func depthStretchUsesTheSubjectsOwnRange() {
+        // A Mirror-style map: the subject spans levels 80…104 of 255, the background is 0.
+        let subject = (0..<100).map { UInt8(80 + $0 * 24 / 99) }
+        let values = subject + [UInt8](repeating: 0, count: 50)
+        let alpha = [UInt8](repeating: 255, count: 100) + [UInt8](repeating: 0, count: 50)
+        let out = RAVESupportDepthRaster.stretched(values, alpha: alpha)
+        let shown = out.prefix(100)
+        #expect(shown.min()! <= 2 && shown.max()! >= 253)      // p2…p98 now spans the bytes
+        #expect(out.suffix(50).allSatisfy { $0 == 0 })          // transparent stays far
+        #expect(zip(shown, shown.dropFirst()).allSatisfy { $0 <= $1 })   // order kept
+    }
+
+    @Test func flatSubjectKeepsItsDepth() {
+        let out = RAVESupportDepthRaster.stretched([90, 90, 90, 7], alpha: [255, 255, 255, 0])
+        #expect(out == [90, 90, 90, 0])
+    }
+
+    @Test func alphaKeepsOrientation() throws {
+        // 1×2 RGBA: top pixel opaque, bottom transparent.
+        let provider = try #require(CGDataProvider(data: Data([255, 0, 0, 255, 0, 0, 0, 0]) as CFData))
+        let image = try #require(CGImage(width: 1, height: 2, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        #expect(RAVESupportDepthRaster.alpha(image) == [255, 0])
+    }
+
+    @Test func bundledArtworkStretchesToTheFullRange() throws {
+        for pose in [RAVESupportPose.welcome, .nudge] {
+            guard let colourURL = pose.url, let depthURL = pose.depthURL else { continue }
+            let colour = try #require(CGImageSourceCreateWithURL(colourURL as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
+            let depth = try #require(CGImageSourceCreateWithURL(depthURL as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
+            let values = try #require(RAVESupportDepthRaster.samples(depth, width: colour.width, height: colour.height))
+            let alpha = try #require(RAVESupportDepthRaster.alpha(colour))
+            let shown = zip(RAVESupportDepthRaster.stretched(values, alpha: alpha), alpha).filter { $0.1 >= 128 }.map(\.0)
+            #expect(Int(shown.max()!) - Int(shown.min()!) >= 240, "\(pose) relief still flat: \(shown.min()!)…\(shown.max()!) of \(shown.count), raw \(values.min()!)…\(values.max()!)")
+        }
     }
 
     @Test func colourImageCannotMasqueradeAsDepth() throws {

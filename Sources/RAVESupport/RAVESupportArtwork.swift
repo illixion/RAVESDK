@@ -9,6 +9,10 @@ import RAVEMedia
 /// depth raster, using the existing transparent relief-photo renderer.
 struct RAVESupportArtwork: View {
     let pose: RAVESupportPose
+    var maxHeight: CGFloat = 220
+    /// Fixes the picture at `maxHeight` and its own aspect's width, for a row where nothing
+    /// proposes it a width (the wide sheets).
+    var fixedSize = false
     #if os(visionOS)
     @State private var spatial: Artwork?
     @State private var spatialReady = false
@@ -16,7 +20,10 @@ struct RAVESupportArtwork: View {
 
     var body: some View {
         if let image = pose.image {
-            image.resizable().scaledToFit().frame(maxHeight: 220)
+            image.resizable().scaledToFit()
+                .frame(width: fixedSize ? pose.aspectRatio.map { $0 * maxHeight } : nil,
+                       height: fixedSize ? maxHeight : nil)
+                .frame(maxHeight: maxHeight)
                 #if os(visionOS)
                 .opacity(spatialReady ? 0 : 1)
                 .overlay {
@@ -48,8 +55,12 @@ struct RAVESupportArtwork: View {
                   let image = CGImageSourceCreateImageAtIndex(colourSource, 0, nil),
                   let depthSource = CGImageSourceCreateWithURL(depth as CFURL, nil),
                   let map = CGImageSourceCreateImageAtIndex(depthSource, 0, nil),
-                  let values = RAVESupportDepthRaster.samples(map, width: image.width, height: image.height) else { return nil }
-            return Artwork(image: image, depth: StillDepthMap(width: map.width, height: map.height, values: values))
+                  let values = RAVESupportDepthRaster.samples(map, width: image.width, height: image.height),
+                  let alpha = RAVESupportDepthRaster.alpha(image) else { return nil }
+            // Bytes, not normalized floats: the relief mesh softens a byte map before building,
+            // which hides the steps a stretched 8-bit map has.
+            let stretched = RAVESupportDepthRaster.stretched(values, alpha: alpha)
+            return Artwork(image: image, depth: StillDepthMap(width: map.width, height: map.height, values: stretched))
         }
     }
     #endif

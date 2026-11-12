@@ -32,8 +32,12 @@ sized depth falls back to the flat image. The flat PNG remains visible until the
 relief is ready, then yields so its silhouette does not appear twice.
 
 Depth is 8-bit grayscale, exactly the colour image's dimensions and orientation:
-0 = far, 255 = near, normalized inverse distance over the subject's bounds. It is
-raw data; do not colour-correct it. Resize/crop both images identically if optimizing
+0 = far, 255 = near, inverse distance. It is raw data; do not colour-correct it.
+The card stretches it over the pixels the colour image shows (alpha ≥ 128), p2 to
+1 and p98 to 255, the per-image rule Vergence's `StillDepthMap` applies to a model's
+estimate, so the figure's own relief fills the view's depth whatever range the file
+uses. Older Mirror captures used about a tenth of the scale and looked flat without
+it; newer ones fit their range to the frame when they are taken. Resize/crop both images identically if optimizing
 bundle size, and preserve alpha in the colour image. No model, rig, or animation
 is bundled. These are **custom depth artwork**, not Apple's spatial HEIC format;
 Photos receives only the flat PNG. Share/copy both files to retain the depth.
