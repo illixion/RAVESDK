@@ -197,6 +197,20 @@ struct SyntheticFace {
         #expect(reading[.browOuterUpLeft] < 0.05)
     }
 
+    @Test func aBrowWanderingNearRestStaysAtRest() {
+        // A Persona's brows drift about 0.02 either way on a still face.
+        var solver = calibrated()
+        for drift in [Float(0.018), -0.018] {
+            var face = SyntheticFace()
+            face.browRaise = SIMD2(drift, drift)
+            let reading = settle(&solver, face, frames: 40)
+            #expect(reading[.browOuterUpLeft] < 0.02)
+            #expect(reading[.browInnerUp] < 0.02)
+            #expect(reading[.browDownLeft] < 0.02)
+            #expect(reading[.browDownRight] < 0.02)
+        }
+    }
+
     @Test func wideEyesAndBlinks() {
         var solver = calibrated()
         var wide = SyntheticFace()

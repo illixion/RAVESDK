@@ -33,7 +33,13 @@ public struct FaceSolver: Sendable {
         public var wideEyesEnabled = true
         /// A brow's travel, in the vertical unit, for fully up and down.
         public var browRaise: Float = 0.07
-        public var browLower: Float = 0.05
+        public var browLower: Float = 0.035
+        /// A brow this near its rest height is at rest. On a Persona the
+        /// brows wander about 0.02 either way on a face held still, slowly
+        /// enough that no filter removes it (worn on a Vision Pro,
+        /// 2026-11-12: brow shapes reached 0.3 with nothing moving); the
+        /// travels above are measured from the edge of this zone.
+        public var browDeadZone: Float = 0.02
         /// Lip gap, in the vertical unit, for the jaw fully open.
         public var jawRange: Float = 0.5
         /// How far opening the jaw lowers the corners by itself, per unit of
@@ -275,7 +281,11 @@ public struct FaceSolver: Sendable {
         }
 
         // Brows.
-        let inner = f.browInner - n.browInner, outer = f.browOuter - n.browOuter
+        func past(_ v: SIMD2<Float>) -> SIMD2<Float> {
+            func one(_ x: Float) -> Float { x > 0 ? max(0, x - t.browDeadZone) : min(0, x + t.browDeadZone) }
+            return SIMD2(one(v.x), one(v.y))
+        }
+        let inner = past(f.browInner - n.browInner), outer = past(f.browOuter - n.browOuter)
         out[.browInnerUp] = unit((inner.x + inner.y) / 2 / t.browRaise)
         out[.browOuterUpLeft] = unit(outer.x / t.browRaise)
         out[.browOuterUpRight] = unit(outer.y / t.browRaise)
