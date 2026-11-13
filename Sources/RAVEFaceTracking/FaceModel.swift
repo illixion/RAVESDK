@@ -124,11 +124,18 @@ public struct FaceLandmarks: Sendable, Equatable {
     public var roll: Float
     /// 0…1.
     public var confidence: Float
+    /// Blend shape scores from the reader's own model, when it has one (the
+    /// face mesh reader, `FaceReader.mesh`): 0…1 as the model gives them,
+    /// sides named for an ordinary picture (the face's left on the image's
+    /// right). `FaceSolver` takes the shapes from these and not from the
+    /// outlines; Vision's landmarks carry none.
+    public var modelShapes: [FaceBlendShape: Float]?
 
     public init(imageLeftEye: [SIMD2<Float>], imageRightEye: [SIMD2<Float>], imageLeftBrow: [SIMD2<Float>],
                 imageRightBrow: [SIMD2<Float>], imageLeftPupil: SIMD2<Float>?, imageRightPupil: SIMD2<Float>?,
                 outerLips: [SIMD2<Float>], innerLips: [SIMD2<Float>], nose: [SIMD2<Float>],
-                yaw: Float = 0, pitch: Float = 0, roll: Float = 0, confidence: Float = 1) {
+                yaw: Float = 0, pitch: Float = 0, roll: Float = 0, confidence: Float = 1,
+                modelShapes: [FaceBlendShape: Float]? = nil) {
         self.imageLeftEye = imageLeftEye
         self.imageRightEye = imageRightEye
         self.imageLeftBrow = imageLeftBrow
@@ -142,6 +149,7 @@ public struct FaceLandmarks: Sendable, Equatable {
         self.pitch = pitch
         self.roll = roll
         self.confidence = confidence
+        self.modelShapes = modelShapes
     }
 
     /// Every point, for drawing.
@@ -322,7 +330,8 @@ public struct FaceFeatures: Sendable, Equatable, Codable {
 /// One frame's face: the blend shape weights, where the pupils say the eyes
 /// look, and how sure the reading is.
 public struct FaceReading: Sendable, Equatable {
-    /// Only the shapes the solver measures; the rest are zero.
+    /// Only the shapes the solver measures (or, from the face mesh reader,
+    /// the ones its model scores); the rest are zero.
     public var shapes: [FaceBlendShape: Float] = [:]
     /// From the pupils, when Vision found them. Coarse: an eye tracker's gaze
     /// is better wherever there is one.

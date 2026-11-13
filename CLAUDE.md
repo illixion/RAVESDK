@@ -93,7 +93,7 @@ is easy to skip.
 | `RAVEConsole` | On-device log viewer over DebugTrace's log buffer, plus a GPU/process/thermal memory monitor |
 | `RAVEMedia` | Core ML depth, the offline depth converter, and the windowed-stereo warp. Now a thin RealityKit/SwiftUI player over `~/Projects/vergence` (public, cross-platform), which holds the pipeline: the Apple engine in `VergenceApple`, and the Foundation-only half in `VergenceCore` (`PackedStereoLayout`, `Pseudo3DSettings`, `DepthRefinement`/anchoring/budget/shot mapping, `DepthHistogram`), which RAVEMedia re-exports (`VergenceExports.swift`) so `import RAVEMedia` still reaches them; their tests run there. Vergence is optional for the package: without a `../vergence` checkout, Package.swift leaves out RAVEMedia, RAVESlideshow, RAVEFilm and RAVEFilmLab (`needsVergence`), so apps that use none of them resolve without it; add a target that imports RAVEMedia to that set |
 | `RAVECamera` | The Persona camera through `AVCaptureSession`, a realtime H.264 encoder, AVCC helpers, the loopback video framing, a virtual camera one app publishes and another subscribes to, and the camera feeds a page's camera proxy relays (`RAVECameraFeed`: the Persona, a loopback subscription, `RAVEInProcessCamera`) |
-| `RAVEFaceTracking` | The wearer's face from their Persona. `RAVEPersonaFaceTracker` captures the Persona camera (`RAVEPersonaCamera`) or loops a file, runs Vision's `DetectFaceLandmarksRequest` one frame at a time (late frames dropped), keeps the newest `FaceLandmarks`. `FaceSolver` (framework-free) measures them in the face's own frame against a learnt or calibrated rest face and gives ARKit's 52 `FaceBlendShape`s (the ones a 2D face shows: lids, brows, jaw, smile/frown, pucker/funnel, stretch, mouth side) plus an `EyeLook` from the pupils. `VRChatFaceOSC` turns a reading into OSC messages: VRChat's own eye tracking and avatar parameters (VRCFaceTracking v2 names or ARKit names). Consumers: spatial-ai-character (perform mode's avatar face); Longwave's PC VR path is the planned second (VRChat over OSC). macOS 15+ for the Vision API |
+| `RAVEFaceTracking` | The wearer's face from their Persona. `RAVEPersonaFaceTracker` captures the Persona camera (`RAVEPersonaCamera`) or loops a file, reads one frame at a time (late frames dropped) with the model `reader` names, and keeps the newest `FaceLandmarks`: Vision's `DetectFaceLandmarksRequest` (`.vision`, the default), or MediaPipe's face mesh and blend shape model through Core ML (`.mesh`, `FaceMeshReader`, three bundled models, 4.9 MB), which tells a wink from a blink. `FaceSolver` (framework-free) measures them in the face's own frame against a learnt or calibrated rest face and gives ARKit's 52 `FaceBlendShape`s (the ones a 2D face shows: lids, brows, jaw, smile/frown, pucker/funnel, stretch, mouth side) plus an `EyeLook` from the pupils; landmarks that carry a model's own scores (`modelShapes`, the mesh reader's) give the shapes from those instead, against their own rest values. `VRChatFaceOSC` turns a reading into OSC messages: VRChat's own eye tracking and avatar parameters (VRCFaceTracking v2 names or ARKit names). Consumers: spatial-ai-character (perform mode's avatar face); Longwave's PC VR path is the planned second (VRChat over OSC). macOS 15+ for the Vision API |
 | `RAVEBroadcast` | Publishing to an RTSP server (mediamtx): `RAVERTSPPublisher` (ANNOUNCE/SETUP/RECORD, interleaved RTP over one TCP connection, Basic auth, optional RTSPS with a pinned certificate, RTCP sender reports, OPTIONS keepalive), `RAVEH264Packetizer` / `RAVEOpusPacketizer` (RFC 6184 FU-A, RFC 7587), `RAVESDPBuilder`, `RAVEBroadcastVideoEncoder` (RAVECamera's encoder reshaped for RTP: raw NALs, SPS/PPS in-band before each IDR) and `RAVEOpusEncoder` (AudioToolbox's native Opus; explicit RTP timestamps for a source on its own clock). Lifted from Longwave's `BroadcastCore` (2026-11-10) when spatial-ai-character's program feed became its second consumer; Longwave still compiles its own copy until it switches. Builds on every declared platform |
 | `RAVESlideshowCore` | Source-agnostic slideshow lifecycle (`RAVESlideshowEngine`), local sync payloads, display settings. Foundation + Observation only, builds on Linux |
 | `RAVESlideshow` | The SwiftUI render surfaces and RAVEMedia adapters over `RAVESlideshowCore`, which it re-exports so `import RAVESlideshow` reaches the engine |
@@ -1141,6 +1141,29 @@ So reading the Persona's face with Vision is face tracking, at one remove.
   line's height above the nose's base; both shrink together as the face turns or tilts, so
   ratios hold. Each measure is read against a rest face: learnt from robust percentiles of the
   last 300 frames (eyes' upper quarter, lips' lower part), or held on purpose (`calibrate`).
+- **Vision cannot show a wink; the face mesh reader can.** Vision's landmark model fits both
+  eyes as one shape: on the headset the two eyes' openings agreed within 0.005 in every frame of
+  a two-minute recording, a held wink included (both 0.13 against a rest of 0.19), while the
+  Persona picture showed one eye shut. `RAVEPersonaFaceTracker.reader = .mesh` reads with
+  MediaPipe's Face Landmarker instead (BlazeFace, the 478-point mesh, the blend shape model;
+  Apache-2.0; converted to Core ML, `Sources/RAVEFaceTracking/ModelSource/README.md` has the
+  source, the route and the numbers). Its landmarks carry the model's 51 ARKit scores, and
+  `FaceSolver` takes the shapes from those: each against its learnt or calibrated rest value,
+  blinks on their own scale (`modelBlinkStart`, `modelBlinkFull`; a shut eye scores 0.55 to
+  0.75), sides swapped for a mirror image, the same 1€ smoothing. The outlines are still
+  measured, for the pupils' look (the mesh's iris centres) and the readout. Default is Vision
+  until the mesh is checked on a Persona; a failed model load falls back to Vision and says so in
+  `stats().lastError`. Switching reader needs `clearCalibration()`: the two measure differently.
+- **The mesh reader follows the face.** The detector runs only to find a face; after that each
+  frame's crop comes from the last frame's points, as MediaPipe does on video. About 3 ms a
+  frame on an M2's CPU (Vision: 9 ms). CPU by default, so it never queues behind an app's other
+  models; `FaceMeshReader(meshUnits:)` moves the mesh model.
+- **The blend shape model is sensitive to the crop and noisiest mid-range.** A still portrait
+  shifted a pixel or two with noise moves a brow score that rests near 0.8 by ±0.09, one that
+  rests near 0 by nothing. So scores are read against their rest value with a dead zone and are
+  not stretched to reach 1 from a high rest value (that multiplied the noise four or five times).
+  `Tuning.modelBrows = false` takes the brows from the mesh's outlines instead, which wander a
+  third as far as Vision's on a face whose brows show, and badly under a fringe.
 - **The visionOS simulator's Vision is broken for this.** The default context fails ("Could
   not create inference context"); pinned to the CPU with faces found first it runs, but every
   landmark comes back around 10¹². The tracker rejects landmarks off the picture, so the

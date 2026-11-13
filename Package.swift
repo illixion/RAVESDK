@@ -115,7 +115,14 @@ let package = Package(
         // shapes (framework-free, `FaceSolver`), and those as VRChat OSC.
         // spatial-ai-character puts the face on its performed avatar;
         // Longwave's PC VR path is to send it to VRChat.
-        .target(name: "RAVEFaceTracking", dependencies: ["RAVECamera", .product(name: "DebugLog", package: "DebugTrace")]),
+        .target(
+            name: "RAVEFaceTracking",
+            dependencies: ["RAVECamera", .product(name: "DebugLog", package: "DebugTrace")],
+            // ModelSource records where the face mesh reader's models come from and how they were converted.
+            exclude: ["ModelSource"],
+            // The three Core ML models, already compiled (`swift build` compiles none), and their licence.
+            resources: [.copy("Models")]
+        ),
         .testTarget(name: "RAVEFaceTrackingTests", dependencies: ["RAVEFaceTracking"]),
         // Publishing to an RTSP server (mediamtx): H.264 and Opus over
         // interleaved RTP on one TCP connection, with RTCP sender reports for

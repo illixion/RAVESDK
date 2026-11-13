@@ -1,0 +1,79 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "shortDescription" : "52 ARKit-style blend shape scores from 146 mesh points (MediaPipe face_blendshapes.tflite)",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 52)",
+        "shortDescription" : "",
+        "shape" : "[52]",
+        "name" : "blendshapes",
+        "type" : "MultiArray"
+      }
+    ],
+    "storagePrecision" : "Float32",
+    "modelParameters" : [
+
+    ],
+    "author" : "Google (MediaPipe Face Landmarker); Core ML conversion for RAVEFaceTracking",
+    "specificationVersion" : 8,
+    "license" : "Apache-2.0",
+    "mlProgramOperationTypeHistogram" : {
+      "Ios17.mul" : 42,
+      "Ios17.sqrt" : 9,
+      "Ios17.inverse" : 8,
+      "Ios17.transpose" : 17,
+      "Ios17.sub" : 9,
+      "Ios17.conv" : 19,
+      "Ios17.concat" : 1,
+      "Ios17.add" : 24,
+      "Ios17.realDiv" : 1,
+      "Ios16.reduceMean" : 18,
+      "Ios16.relu" : 8,
+      "Ios17.sliceByIndex" : 2,
+      "Ios16.sigmoid" : 1,
+      "Ios16.reduceSum" : 1,
+      "Ios17.squeeze" : 1,
+      "Ios17.reshape" : 24
+    },
+    "computePrecision" : "Mixed (Float32, Int32)",
+    "stateSchema" : [
+
+    ],
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "14.0",
+      "tvOS" : "17.0",
+      "visionOS" : "1.0",
+      "watchOS" : "10.0",
+      "iOS" : "17.0",
+      "macCatalyst" : "17.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 146 × 2)",
+        "shortDescription" : "",
+        "shape" : "[1, 146, 2]",
+        "name" : "points",
+        "type" : "MultiArray"
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.conversion_date" : "2026-11-13",
+      "com.github.apple.coremltools.source" : "torch==2.15.0",
+      "com.github.apple.coremltools.version" : "9.0",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript"
+    },
+    "generatedClassName" : "FaceBlendshapes",
+    "method" : "predict"
+  }
+]

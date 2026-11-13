@@ -1,12 +1,14 @@
 /*
- RAVEFaceTracking - the Persona's face, read by Vision.
+ RAVEFaceTracking - the Persona's face, read by Vision or by a face mesh.
 
  visionOS gives an app no face tracking, but the one camera it offers is the
  wearer's Persona, whose face is the system's own live reading of theirs from
  the cameras inside the headset. This captures it (`RAVEPersonaCamera`, the
  native frame), finds the face's landmarks on the device with Vision's
  `DetectFaceLandmarksRequest`, and keeps the newest for a caller to solve
- (`FaceSolver`) once per frame of its own.
+ (`FaceSolver`) once per frame of its own. `reader` picks the model: Vision,
+ or MediaPipe's face mesh and blend shapes through Core ML (`FaceMeshReader`),
+ which tells a wink from a blink where Vision cannot.
 
  One frame at a time: a frame that arrives while the last is still being read
  is dropped, never queued, so the reading is never behind. A file (a picture
@@ -45,6 +47,8 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
         public var sequence: Int
         /// Nil when the frame had no face.
         public var landmarks: FaceLandmarks?
+        /// The model that read this frame.
+        public var reader: FaceReader = .vision
         /// The frame's capture time, host clock seconds.
         public var capturedAt: Double
     }
@@ -80,6 +84,10 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
         public var formats: [String] = []
         public var activeFormat = ""
         public var orientation = "up"
+        /// The reader asked for, and the one that read the last frame (they
+        /// differ when the face mesh's models couldn't be loaded).
+        public var reader = FaceReader.vision.rawValue
+        public var activeReader = FaceReader.vision.rawValue
         public var lastError: String?
 
         public var dictionary: [String: Any] {
@@ -89,7 +97,8 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
                 "visionMs": r(lastMilliseconds), "visionMsAverage": r(averageMilliseconds),
                 "capturedFps": r(capturedRate), "processedFps": r(processedRate),
                 "size": size, "device": device, "formats": formats, "activeFormat": activeFormat,
-                "orientation": orientation, "lastError": lastError as Any,
+                "orientation": orientation, "reader": reader, "activeReader": activeReader,
+                "lastError": lastError as Any,
             ]
         }
     }
@@ -111,7 +120,35 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
         set { lock.withLock { _orientation = newValue; stats_.orientation = Self.name(newValue) } }
     }
 
+    /// Which model reads the face. Switch it any time: the next frame uses
+    /// it. The face mesh's models load on its first frame (a moment, off the
+    /// main thread); if they can't be loaded the tracker says so in
+    /// `stats().lastError`, keeps reading with Vision, and `activeReader`
+    /// stays `.vision`. Setting `.mesh` again tries once more.
+    ///
+    /// The two readers measure a face a little differently, so a solver's
+    /// learnt or calibrated rest face from one does not fit the other:
+    /// `FaceSolver.clearCalibration()` after switching.
+    public var reader: FaceReader {
+        get { lock.withLock { _reader } }
+        set {
+            lock.withLock {
+                _reader = newValue
+                meshFailed = false
+                meshNeedsReset = true
+                stats_.reader = newValue.rawValue
+            }
+        }
+    }
+    /// The model that read the last frame.
+    public var activeReader: FaceReader { lock.withLock { _activeReader } }
+
     private let lock = NSLock()
+    private var _reader = FaceReader.vision
+    private var _activeReader = FaceReader.vision
+    private var meshReader: FaceMeshReader?
+    private var meshFailed = false
+    private var meshNeedsReset = false
     private var _onState: (@Sendable (Change) -> Void)?
     private var _preferredFormat: FormatSize?
     private var _orientation: CGImagePropertyOrientation = .up
@@ -308,7 +345,10 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
     public func stop() {
         let (camera, timer) = lock.withLock { () -> (RAVEPersonaCamera?, DispatchSourceTimer?) in
             generation += 1
-            defer { self.camera = nil; self.fileTimer = nil; _latest = nil; lastBuffer = nil; lastLandmarks = nil }
+            defer {
+                self.camera = nil; self.fileTimer = nil; _latest = nil; lastBuffer = nil; lastLandmarks = nil
+                meshNeedsReset = true
+            }
             return (self.camera, self.fileTimer)
         }
         camera?.stop()
@@ -316,7 +356,7 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
         if camera != nil || timer != nil { say(.stopped) }
     }
 
-    // MARK: - Vision
+    // MARK: - Reading a frame
 
     private func take(_ buffer: CVPixelBuffer, at time: Double) {
         let now = CACurrentMediaTime()
@@ -342,6 +382,74 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
 
     private func read(_ buffer: CVPixelBuffer, orientation: CGImagePropertyOrientation, capturedAt: Double) async {
         let start = CACurrentMediaTime()
+        var landmarks: FaceLandmarks?
+        var failure: String?
+        var used = FaceReader.vision
+        if let mesh = meshForThisFrame() {
+            used = .mesh
+            do {
+                landmarks = try mesh.read(buffer, orientation: orientation)?.landmarks
+            } catch {
+                failure = "face mesh: \(error)"
+            }
+        } else {
+            (landmarks, failure) = await visionLandmarks(buffer, orientation: orientation)
+        }
+        let now = CACurrentMediaTime()
+        let elapsed = (now - start) * 1000
+        lock.withLock {
+            busy = false
+            sequence += 1
+            _latest = Latest(sequence: sequence, landmarks: landmarks, reader: used, capturedAt: capturedAt)
+            _activeReader = used
+            stats_.activeReader = used.rawValue
+            lastBuffer = buffer
+            lastLandmarks = landmarks
+            stats_.processed += 1
+            if landmarks != nil { stats_.faces += 1 }
+            if let failure { stats_.lastError = failure }
+            stats_.lastMilliseconds = elapsed
+            stats_.averageMilliseconds = stats_.averageMilliseconds == 0 ? elapsed : stats_.averageMilliseconds * 0.9 + elapsed * 0.1
+            processedTimes.append(now)
+            if processedTimes.count > 120 { processedTimes.removeFirst(processedTimes.count - 120) }
+        }
+    }
+
+    /// The face mesh reader when it is the one asked for and its models
+    /// load; nil for Vision. Loads them on first use, on the reading task.
+    private func meshForThisFrame() -> FaceMeshReader? {
+        let (wanted, failed, existing, reset) = lock.withLock { () -> (Bool, Bool, FaceMeshReader?, Bool) in
+            defer { meshNeedsReset = false }
+            return (_reader == .mesh, meshFailed, meshReader, meshNeedsReset)
+        }
+        guard wanted, !failed else { return nil }
+        if let existing {
+            if reset { existing.reset() }
+            return existing
+        }
+        let start = CACurrentMediaTime()
+        do {
+            let made = try FaceMeshReader()
+            let ms = Int((CACurrentMediaTime() - start) * 1000)
+            RAVEFaceTrackingLog.tracker.info("Face mesh models loaded in \(ms, privacy: .public) ms")
+            lock.withLock { meshReader = made }
+            return made
+        } catch {
+            // The error is one of Core ML's or `FaceMeshReader.Failure`: no user data in it.
+            RAVEFaceTrackingLog.tracker.error(
+                "Face mesh models failed to load, reading with Vision instead: \(String(describing: error), privacy: .public)")
+            lock.withLock {
+                meshFailed = true
+                stats_.lastError = "face mesh models failed to load (\(error)); reading with Vision"
+            }
+            return nil
+        }
+    }
+
+    // MARK: - Vision
+
+    private func visionLandmarks(_ buffer: CVPixelBuffer,
+                                 orientation: CGImagePropertyOrientation) async -> (FaceLandmarks?, String?) {
         var landmarks: FaceLandmarks?
         var failure: String?
         do {
@@ -386,22 +494,7 @@ public final class RAVEPersonaFaceTracker: @unchecked Sendable {
             failure! += " (revision \(simulatorRevision.map { "\($0)" } ?? "default"), devices \(MLComputeDevice.allComputeDevices))"
             #endif
         }
-        let now = CACurrentMediaTime()
-        let elapsed = (now - start) * 1000
-        lock.withLock {
-            busy = false
-            sequence += 1
-            _latest = Latest(sequence: sequence, landmarks: landmarks, capturedAt: capturedAt)
-            lastBuffer = buffer
-            lastLandmarks = landmarks
-            stats_.processed += 1
-            if landmarks != nil { stats_.faces += 1 }
-            if let failure { stats_.lastError = failure }
-            stats_.lastMilliseconds = elapsed
-            stats_.averageMilliseconds = stats_.averageMilliseconds == 0 ? elapsed : stats_.averageMilliseconds * 0.9 + elapsed * 0.1
-            processedTimes.append(now)
-            if processedTimes.count > 120 { processedTimes.removeFirst(processedTimes.count - 120) }
-        }
+        return (landmarks, failure)
     }
 
     static func inside(_ landmarks: FaceLandmarks, _ size: CGSize) -> Bool {

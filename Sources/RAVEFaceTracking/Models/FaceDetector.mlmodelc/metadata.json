@@ -1,0 +1,85 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "shortDescription" : "BlazeFace short-range face detector (MediaPipe face_detector.tflite)",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 896 × 16)",
+        "shortDescription" : "",
+        "shape" : "[896, 16]",
+        "name" : "regressors",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 896)",
+        "shortDescription" : "",
+        "shape" : "[896]",
+        "name" : "scores",
+        "type" : "MultiArray"
+      }
+    ],
+    "storagePrecision" : "Float16",
+    "modelParameters" : [
+
+    ],
+    "author" : "Google (MediaPipe Face Landmarker); Core ML conversion for RAVEFaceTracking",
+    "specificationVersion" : 8,
+    "license" : "Apache-2.0",
+    "mlProgramOperationTypeHistogram" : {
+      "Pad" : 15,
+      "Ios17.reshape" : 6,
+      "Ios17.cast" : 1,
+      "Ios17.conv" : 37,
+      "Ios17.mul" : 1,
+      "Ios16.relu" : 17,
+      "Ios17.add" : 17,
+      "Ios16.maxPool" : 3,
+      "Ios17.transpose" : 4,
+      "Ios17.concat" : 2
+    },
+    "computePrecision" : "Mixed (Float16, Float32, Int32)",
+    "stateSchema" : [
+
+    ],
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "14.0",
+      "tvOS" : "17.0",
+      "visionOS" : "1.0",
+      "watchOS" : "10.0",
+      "iOS" : "17.0",
+      "macCatalyst" : "17.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "height" : "128",
+        "colorspace" : "RGB",
+        "isOptional" : "0",
+        "width" : "128",
+        "isColor" : "1",
+        "formattedType" : "Image (Color 128 × 128)",
+        "hasSizeFlexibility" : "0",
+        "type" : "Image",
+        "shortDescription" : "",
+        "name" : "image"
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.conversion_date" : "2026-11-13",
+      "com.github.apple.coremltools.source" : "torch==2.15.0",
+      "com.github.apple.coremltools.version" : "9.0",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript"
+    },
+    "generatedClassName" : "FaceDetector",
+    "method" : "predict"
+  }
+]

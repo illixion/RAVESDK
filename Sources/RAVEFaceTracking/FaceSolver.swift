@@ -9,6 +9,12 @@ import simd
 /// the mouth's lower part, since it is mostly shut). `calibrate` takes it
 /// from a moment the performer holds still instead, and that holds until
 /// cleared.
+///
+/// Landmarks from the face mesh reader carry its model's own blend shape
+/// scores (`FaceLandmarks.modelShapes`), and then the shapes come from those:
+/// each score against its own value at rest, learnt or calibrated the same
+/// way, through the same smoothing. The outlines are still measured, for the
+/// pupils' look and the readout.
 public struct FaceSolver: Sendable {
 
     public struct Tuning: Sendable, Equatable, Codable {
@@ -68,6 +74,25 @@ public struct FaceSolver: Sendable {
         public var beta: Float = 6
         /// Seconds the reading eases out over once the face is lost.
         public var loseTime: Float = 0.35
+        /// For a reader whose model scores the shapes itself (the face
+        /// mesh). An eye's blink score, above its score at rest, where the
+        /// lid starts to close, and the score at which it is shut: the model
+        /// gives a shut eye 0.55 to 0.75, seldom more.
+        public var modelBlinkStart: Float = 0.05
+        public var modelBlinkFull: Float = 0.6
+        /// An open eye's blink score is never taken to be more than this,
+        /// whatever was learnt: an eye held shut stays shut, where a wink
+        /// held for ten seconds would otherwise become the face at rest.
+        public var modelBlinkRestLimit: Float = 0.3
+        /// Any other score this near its rest value is at rest, and what is
+        /// past that is multiplied by the gain.
+        public var modelDeadZone: Float = 0.03
+        public var modelGain: Float = 1
+        /// The brows from the model's scores. Off, they are measured from
+        /// the reader's outlines as Vision's are (`browRaise`, `browLower`,
+        /// `browDeadZone`), which on a still portrait wander a third as far
+        /// in the mesh as in Vision's landmarks.
+        public var modelBrows = true
 
         public init() {}
     }
@@ -77,6 +102,12 @@ public struct FaceSolver: Sendable {
     public var calibrated: FaceFeatures?
     /// The rest face the solver measures against now.
     public private(set) var neutral = FaceFeatures.typical
+    /// A reader's model scores at rest, measured on purpose with
+    /// `calibrate`; nil learns them.
+    public var calibratedModelShapes: [FaceBlendShape: Float]?
+    /// The model scores the solver takes as the face at rest now. Empty
+    /// until a reader with a model has been watched for a moment.
+    public private(set) var modelNeutral: [FaceBlendShape: Float] = [:]
     public private(set) var reading = FaceReading()
     /// Frames seen since the rest face was last learnt from scratch.
     public var learntFrames: Int { history.count }
@@ -85,7 +116,8 @@ public struct FaceSolver: Sendable {
     private var history: [FaceFeatures] = []
     private let historyLimit = 300
     private var sinceRelearn = 0
-    private var calibration: (remaining: Float, samples: [FaceFeatures])?
+    private var calibration: (remaining: Float, samples: [FaceFeatures], scores: [[FaceBlendShape: Float]])?
+    private var scoreHistory: [[FaceBlendShape: Float]] = []
     private var filters: [FaceBlendShape: FaceOneEuro] = [:]
     private var lookFilters = (left: FaceOneEuro(minCutoff: 3, beta: 2), right: FaceOneEuro(minCutoff: 3, beta: 2))
     private var lost: Float = 1
@@ -100,15 +132,18 @@ public struct FaceSolver: Sendable {
     /// Takes the rest face from the next `seconds` of frames: the performer
     /// relaxes and looks ahead meanwhile.
     public mutating func calibrate(seconds: Float = 1.5) {
-        calibration = (seconds, [])
+        calibration = (seconds, [], [])
     }
 
     /// Back to learning the rest face from scratch.
     public mutating func clearCalibration() {
         calibrated = nil
+        calibratedModelShapes = nil
         calibration = nil
         history.removeAll()
+        scoreHistory.removeAll()
         neutral = .typical
+        modelNeutral = [:]
     }
 
     public mutating func reset() {
@@ -143,10 +178,26 @@ public struct FaceSolver: Sendable {
         if lost > 0.5 { reset() }
         lost = 0
         presence = min(1, presence + dt / 0.2)
-        learn(features, deltaTime: dt)
+        // The model's sides are an ordinary picture's; a mirror image swaps them.
+        let scores = landmarks.modelShapes.map { scores in
+            tuning.mirroredImage
+                ? Dictionary(uniqueKeysWithValues: scores.map { ($0.key.mirrored, $0.value) }) : scores
+        }
+        learn(features, scores: scores, deltaTime: dt)
 
         let yaw = landmarks.yaw
-        var raw = shapes(from: steadied(features, yaw: yaw))
+        var raw: [FaceBlendShape: Float]
+        if let scores {
+            raw = shapes(fromModel: scores, yaw: yaw)
+            if !tuning.modelBrows {
+                let measured = shapes(from: steadied(features, yaw: yaw))
+                for brow in [FaceBlendShape.browDownLeft, .browDownRight, .browInnerUp, .browOuterUpLeft, .browOuterUpRight] {
+                    raw[brow] = measured[brow]
+                }
+            }
+        } else {
+            raw = shapes(from: steadied(features, yaw: yaw))
+        }
         // Smoothed, each part of the face at its own pace: lids are quick.
         for (shape, value) in raw {
             let cutoff: Float = switch shape {
@@ -178,14 +229,20 @@ public struct FaceSolver: Sendable {
 
     // MARK: - The rest face
 
-    private mutating func learn(_ features: FaceFeatures, deltaTime: Float) {
+    private mutating func learn(_ features: FaceFeatures, scores: [FaceBlendShape: Float]?, deltaTime: Float) {
         if var calibration {
             calibration.samples.append(features)
+            if let scores { calibration.scores.append(scores) }
             calibration.remaining -= deltaTime
             if calibration.remaining <= 0, !calibration.samples.isEmpty {
                 let measured = Self.rest(of: calibration.samples, held: true)
                 calibrated = measured
                 neutral = measured
+                if !calibration.scores.isEmpty {
+                    let rest = Self.rest(ofScores: calibration.scores, held: true)
+                    calibratedModelShapes = rest
+                    modelNeutral = rest
+                }
                 self.calibration = nil
             } else {
                 self.calibration = calibration
@@ -193,12 +250,48 @@ public struct FaceSolver: Sendable {
         }
         history.append(features)
         if history.count > historyLimit { history.removeFirst(history.count - historyLimit) }
-        guard calibrated == nil else { return }
-        sinceRelearn += 1
-        if history.count >= 20, sinceRelearn >= 10 {
-            sinceRelearn = 0
-            neutral = Self.rest(of: history, held: false)
+        if let scores {
+            scoreHistory.append(scores)
+            if scoreHistory.count > historyLimit { scoreHistory.removeFirst(scoreHistory.count - historyLimit) }
+            if let calibratedModelShapes {
+                modelNeutral = calibratedModelShapes
+            } else if modelNeutral.isEmpty {
+                // Until enough has been seen, the first frame is the rest face,
+                // its lids taken as open: a first frame mid-blink would otherwise
+                // hide every blink for a third of a second.
+                modelNeutral = scores
+                for shape in [FaceBlendShape.eyeBlinkLeft, .eyeBlinkRight] {
+                    modelNeutral[shape] = min(scores[shape] ?? 0, 0.25)
+                }
+            }
         }
+        sinceRelearn += 1
+        guard sinceRelearn >= 10 else { return }
+        sinceRelearn = 0
+        if calibrated == nil, history.count >= 20 { neutral = Self.rest(of: history, held: false) }
+        if calibratedModelShapes == nil, scoreHistory.count >= 20 {
+            modelNeutral = Self.rest(ofScores: scoreHistory, held: false)
+        }
+    }
+
+    /// The model's scores at rest from frames of them. Watched as they go,
+    /// the lids' lower quarter (a blink raises the score, and blinks are
+    /// short), the jaw's lower part, the middle of everything else.
+    static func rest(ofScores samples: [[FaceBlendShape: Float]], held: Bool) -> [FaceBlendShape: Float] {
+        var out: [FaceBlendShape: Float] = [:]
+        for shape in FaceBlendShape.allCases {
+            let values = samples.compactMap { $0[shape] }.sorted()
+            guard !values.isEmpty else { continue }
+            let q: Float = if held { 0.5 } else {
+                switch shape {
+                case .eyeBlinkLeft, .eyeBlinkRight, .eyeSquintLeft, .eyeSquintRight: 0.25
+                case .jawOpen: 0.15
+                default: 0.5
+                }
+            }
+            out[shape] = values[min(values.count - 1, max(0, Int(Float(values.count - 1) * q + 0.5)))]
+        }
+        return out
     }
 
     /// The rest face from frames of it. `held`: the performer held still, so
@@ -322,6 +415,48 @@ public struct FaceSolver: Sendable {
         let shift = f.mouthShift - n.mouthShift
         out[.mouthLeft] = unit(shift / t.shiftRange)
         out[.mouthRight] = unit(-shift / t.shiftRange)
+        return out
+    }
+
+    /// A reader's own scores (sides already the face's) as shapes: each
+    /// against its value at rest. The eyes' direction is left out, since it
+    /// is `look`'s to give.
+    func shapes(fromModel scores: [FaceBlendShape: Float], yaw: Float) -> [FaceBlendShape: Float] {
+        let t = tuning, n = modelNeutral
+        func unit(_ v: Float) -> Float { max(0, min(1, v)) }
+        var out: [FaceBlendShape: Float] = [:]
+        for (shape, score) in scores {
+            let rest = min(n[shape] ?? 0, 0.9)
+            switch shape {
+            case .eyeLookDownLeft, .eyeLookInLeft, .eyeLookOutLeft, .eyeLookUpLeft,
+                 .eyeLookDownRight, .eyeLookInRight, .eyeLookOutRight, .eyeLookUpRight:
+                continue
+            case .eyeBlinkLeft, .eyeBlinkRight:
+                let start = min(rest, t.modelBlinkRestLimit) + t.modelBlinkStart
+                let closure = unit((score - start) / max(max(t.modelBlinkFull, start + 0.15) - start, 1e-4))
+                out[shape] = t.binaryEyelids ? (closure >= t.binaryThreshold ? 1 : 0) : closure
+            default:
+                // Not stretched to reach 1 from a high rest score: that
+                // multiplies the score's own noise, which is largest mid-range.
+                out[shape] = unit((score - rest - t.modelDeadZone) * t.modelGain)
+            }
+        }
+        // Turned far enough that one eye is foreshortened, the near eye
+        // speaks for both, as with the outlines.
+        if abs(yaw) > t.profileYaw {
+            let farIsLeft = (yaw > 0) != t.mirroredImage
+            for near in [FaceBlendShape.eyeBlinkLeft, .eyeSquintLeft, .eyeWideLeft, .browDownLeft, .browOuterUpLeft] {
+                let from = farIsLeft ? near.mirrored : near
+                out[from.mirrored] = out[from]
+            }
+        }
+        for (blink, squint, wide) in [(FaceBlendShape.eyeBlinkLeft, FaceBlendShape.eyeSquintLeft, FaceBlendShape.eyeWideLeft),
+                                      (.eyeBlinkRight, .eyeSquintRight, .eyeWideRight)] {
+            // A closing lid is not a squint: the model scores both.
+            let closed = out[blink] ?? 0
+            out[squint] = t.squintsEnabled && !t.binaryEyelids ? (out[squint] ?? 0) * (1 - closed) : 0
+            out[wide] = t.wideEyesEnabled && !t.binaryEyelids ? (out[wide] ?? 0) : 0
+        }
         return out
     }
 
