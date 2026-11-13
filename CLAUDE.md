@@ -1270,7 +1270,13 @@ XCUITest tree. The wrapper owns the window ornament and receives its content
 through a preference: a native ornament inside the borrowed UIKit hierarchy
 loses its scene registration on return. Keep the media hierarchy's identity;
 refresh its hosting root only for scene changes, to avoid a chrome-preference
-feedback loop.
+feedback loop. A persistent container owns the content hosting controller and
+suppresses temporary appearance forwarding; move that container's controller
+and view together. Leaving the old controller parent while moving only its
+view crashes Metal-backed photo viewers with UIViewControllerHierarchyInconsistency.
+Send disappearance to the content only when its source window actually closes.
+Keep SceneStorage-backed action capture, URL handlers and approval presenters
+outside the wrapper so they remain attached to the SwiftUI scene lifecycle.
 
 ## Retained window content
 

@@ -21,6 +21,7 @@ public final class RAVEViewerHUDPortal {
     fileprivate var controls: HUDControlsValue?
     fileprivate var hudPhase: ScenePhase = .active
     fileprivate var size = CGSize(width: 1200, height: 900)
+    weak var controller: UIViewController?
     weak var source: UIView?
     weak var home: UIView?
     fileprivate static var active: RAVEViewerHUDPortal?
@@ -62,20 +63,33 @@ public final class RAVEViewerHUDPortal {
     func mount(in container: UIView) {
         guard let source else { return }
         isInHUD = true
-        source.removeFromSuperview()
-        container.addSubview(source)
+        moveSource(to: container)
+    }
+
+    private func moveSource(to container: UIView) {
+        guard let source else { return }
+        var responder: UIResponder? = container
+        while let current = responder, !(current is UIViewController) { responder = current.next }
+        let parent = responder as? UIViewController
+        let changingParent = controller != nil && controller?.parent !== parent
+        if changingParent {
+            controller?.willMove(toParent: nil)
+            source.removeFromSuperview()
+            controller?.removeFromParent()
+            if let controller, let parent { parent.addChild(controller) }
+        }
+        if source.superview !== container {
+            source.removeFromSuperview()
+            container.addSubview(source)
+        }
         source.frame = container.bounds
         source.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        if changingParent { controller?.didMove(toParent: parent) }
     }
 
     func restore() {
         let wasInHUD = isInHUD
-        if let source, let home {
-            source.removeFromSuperview()
-            home.addSubview(source)
-            source.frame = home.bounds
-            source.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        }
+        if let home { moveSource(to: home) }
         isInHUD = false
         if wasInHUD { returnGeneration += 1 }
         if Self.active === self { Self.active = nil }
@@ -194,12 +208,47 @@ private struct SourceSceneState: Equatable {
     }
 }
 
+/// The content controller stays a child of this container across handoffs.
+/// Suppress temporary appearance forwarding: a reparent is not a viewer close.
+final class RAVEViewerHUDContainerController: UIViewController {
+    let host: UIViewController
+    private var appeared = false
+    override var shouldAutomaticallyForwardAppearanceMethods: Bool { false }
+    init(host: UIViewController) {
+        self.host = host
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        addChild(host)
+        host.view.frame = view.bounds
+        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(host.view)
+        host.didMove(toParent: self)
+    }
+    func start() {
+        guard !appeared else { return }
+        appeared = true
+        host.beginAppearanceTransition(true, animated: false)
+        host.endAppearanceTransition()
+    }
+    func finish() {
+        guard appeared else { return }
+        appeared = false
+        host.beginAppearanceTransition(false, animated: false)
+        host.endAppearanceTransition()
+    }
+}
+
 private struct ViewerWindowMount<Content: View>: UIViewRepresentable {
     let portal: RAVEViewerHUDPortal
     let content: Content
 
     final class Coordinator {
         var controller: UIHostingController<HostedViewer<Content>>?
+        var containerController: RAVEViewerHUDContainerController?
         var root: HostedViewer<Content>?
         var sceneState: SourceSceneState?
         var returnGeneration = 0
@@ -220,18 +269,19 @@ private struct ViewerWindowMount<Content: View>: UIViewRepresentable {
             guard let container, let coordinator, let root = coordinator.root else { return }
             let controller = UIHostingController(rootView: root)
             controller.view.backgroundColor = .clear
-            controller.view.frame = container.bounds
-            controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            // Containment gives SwiftUI a real scene for ornaments, sheets,
-            // accessibility and responder routing. The controller stays owned
-            // by this window while only its live view is lent to the HUD.
+            let bridge = RAVEViewerHUDContainerController(host: controller)
+            bridge.view.frame = container.bounds
+            bridge.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             var responder: UIResponder? = container
             while let current = responder, !(current is UIViewController) { responder = current.next }
-            if let parent = responder as? UIViewController { parent.addChild(controller) }
-            container.addSubview(controller.view)
-            controller.didMove(toParent: controller.parent)
+            if let parent = responder as? UIViewController { parent.addChild(bridge) }
+            container.addSubview(bridge.view)
+            bridge.didMove(toParent: bridge.parent)
+            bridge.start()
             coordinator.controller = controller
-            portal.source = controller.view
+            coordinator.containerController = bridge
+            portal.controller = bridge
+            portal.source = bridge.view
             if container.bounds.width > 0 { portal.size = container.bounds.size }
         }
         return container
@@ -257,9 +307,11 @@ private struct ViewerWindowMount<Content: View>: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ container: UIView, coordinator: Coordinator) {
-        coordinator.controller?.willMove(toParent: nil)
-        coordinator.controller?.view.removeFromSuperview()
-        coordinator.controller?.removeFromParent()
+        coordinator.containerController?.finish()
+        coordinator.containerController?.willMove(toParent: nil)
+        coordinator.containerController?.view.removeFromSuperview()
+        coordinator.containerController?.removeFromParent()
+        coordinator.containerController = nil
         coordinator.controller = nil
     }
 }
