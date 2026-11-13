@@ -71,6 +71,10 @@ let port = option("--port").map { value -> UInt16 in
 }
 let computerName = option("--name") ?? Host.current().localizedName ?? "A Mac"
 let apps = RAVEDebugPairedApps()
+/// The running proxy, held for the life of the process: its listener answers only while it exists.
+@MainActor enum Running {
+    static var proxy: RAVEDebugProxy?
+}
 
 @MainActor func resolve(_ reference: String?) -> RAVEDebugPairedApp {
     guard let reference else { fail("which app? `rave-debug list` shows the paired ones") }
@@ -130,6 +134,7 @@ case "proxy":
     Task { @MainActor in
         do {
             let proxy = try RAVEDebugProxy(app: app, apps: apps, host: host, port: port)
+            Running.proxy = proxy
             let (port, token) = try await proxy.start()
             emit(["port": Int(port), "token": token, "app": app.summary])
             // Whoever started this owns it: when their end of the pipe closes, stop.

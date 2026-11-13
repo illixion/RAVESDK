@@ -81,6 +81,7 @@ import Testing
         #expect(apps.all() == [app])
         #expect(apps.app("abcdef")?.hostID == app.hostID)
         #expect(apps.app("apparition on apple vision pro")?.hostID == app.hostID)
+        #expect(apps.app("Apparition")?.hostID == app.hostID)
         #expect(apps.app("nothing") == nil)
         let file = directory.appendingPathComponent("\(app.hostID).json")
         let mode = try #require(try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)

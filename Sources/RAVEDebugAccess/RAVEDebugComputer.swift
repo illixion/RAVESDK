@@ -84,12 +84,16 @@ public struct RAVEDebugPairedApps: Sendable {
         }.sorted { $0.pairedAt < $1.pairedAt }
     }
 
-    /// By id, by an id's unique beginning, or by name (case-insensitive).
+    /// By id, by an id's unique beginning, or by name (case-insensitive): the whole name,
+    /// or the app's part of "<app> on <device>".
     public func app(_ reference: String) -> RAVEDebugPairedApp? {
         let apps = all()
         if let exact = apps.first(where: { $0.hostID == reference }) { return exact }
         let folded = reference.lowercased()
-        let matches = apps.filter { $0.hostID.lowercased().hasPrefix(folded) || $0.name.lowercased() == folded }
+        let matches = apps.filter {
+            let name = $0.name.lowercased()
+            return $0.hostID.lowercased().hasPrefix(folded) || name == folded || name.hasPrefix(folded + " on ")
+        }
         return matches.count == 1 ? matches[0] : nil
     }
 
