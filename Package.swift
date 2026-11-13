@@ -34,6 +34,7 @@ let package = Package(
         .library(name: "RAVEConsole", targets: ["RAVEConsole"]),
         .library(name: "RAVEMedia", targets: ["RAVEMedia"]),
         .library(name: "RAVECamera", targets: ["RAVECamera"]),
+        .library(name: "RAVEVoiceEngine", targets: ["RAVEVoiceEngine"]),
         .library(name: "RAVEFaceTracking", targets: ["RAVEFaceTracking"]),
         .library(name: "RAVEBroadcast", targets: ["RAVEBroadcast"]),
         .library(name: "RAVESlideshowCore", targets: ["RAVESlideshowCore"]),
@@ -109,6 +110,12 @@ let package = Package(
         // container arithmetic; the interruption notifications are iOS-family
         // only and guarded.
         .target(name: "RAVECamera", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
+        // One microphone and one output per process with voice processing between
+        // them: Raven's call bridge and spatial-ai-character's speech, mouth and
+        // dictation share it, which under Nexus (one process) is the only way echo
+        // cancellation hears everything that plays. See the file header.
+        .target(name: "RAVEVoiceEngine", dependencies: [.product(name: "DebugLog", package: "DebugTrace")]),
+        .testTarget(name: "RAVEVoiceEngineTests", dependencies: ["RAVEVoiceEngine"]),
         .testTarget(name: "RAVECameraTests", dependencies: ["RAVECamera"]),
         // The wearer's face from their Persona: the Persona camera's frames
         // through Vision's face landmarks, solved into ARKit's 52 blend
