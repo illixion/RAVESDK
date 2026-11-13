@@ -1248,6 +1248,30 @@ loads artwork, owns a clock or talks to a session.
   its own copy (it also carries a tech-info overlay on the cover and a volume row, both expressible through the
   `artwork` and `actions` slots) and is the next to adopt it; build `LongwaveMac` and `LongwaveiOS` when it does.
 
+## Viewer HUDs (visionOS)
+
+`RAVEViewerHUDScene` plus `.raveViewerHUDWindow()` lend the same live viewer
+hosting view to a head-following RealityKit attachment. Convolution's photo,
+shared-photo and slideshow windows and RoboFrame's slideshow use it. Supply
+app model environments to both content and wrapper (the source scene renders
+controls); keep window registration outside. `RAVEViewerHUDButton` enters HUD;
+`raveViewerControls` uses a scene ornament in
+a window and an inline bar in HUD. Return is always available in the HUD and
+in the source window. One viewer owns the HUD; cancellation and system dismissal
+restore its view. Never instantiate a second player for the handoff.
+
+Native window actions cross this hosting boundary through `raveWindowShell`;
+immersive actions are on `raveViewerHUD`. Pass explicit values, never copy
+`EnvironmentValues` wholesale. Use the HUD space's phase while it owns the view.
+Window geometry requests must stop in HUD (photo navigation reapplies deferred
+aspect changes on return). Use a declared SwiftUI `Attachment` for HUD controls:
+runtime-created component attachments render but are absent from the simulator's
+XCUITest tree. The wrapper owns the window ornament and receives its content
+through a preference: a native ornament inside the borrowed UIKit hierarchy
+loses its scene registration on return. Keep the media hierarchy's identity;
+refresh its hosting root only for scene changes, to avoid a chrome-preference
+feedback loop.
+
 ## Retained window content
 
 Hypnos's main gallery uses `raveRetainedWindowContent(sceneID:value:)` inside

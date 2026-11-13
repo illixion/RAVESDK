@@ -32,7 +32,7 @@ public final class RAVEWindowShell {
     fileprivate var token: UUID?
     fileprivate var scope: RAVEWindowScope
 
-    fileprivate init(_ values: EnvironmentValues) {
+    init(_ values: EnvironmentValues) {
         openWindow = values.openWindow
         dismissWindow = values.dismissWindow
         push = values.ravePushWindow
