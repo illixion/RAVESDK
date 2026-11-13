@@ -88,6 +88,13 @@ public struct FaceSolver: Sendable {
         /// past that is multiplied by the gain.
         public var modelDeadZone: Float = 0.03
         public var modelGain: Float = 1
+        /// The same for the brows' scores, and their 1€ cutoff. No dead
+        /// zone and the mouth's pace: the brows as the model gives them
+        /// (the owner's trial, 2026-11-13, after the mesh read a Persona
+        /// well). `modelDeadZone` and `browCutoff`'s values put back what
+        /// the other scores and Vision's brows get.
+        public var modelBrowDeadZone: Float = 0
+        public var modelBrowCutoff: Float = 3
         /// The brows from the model's scores. Off, they are measured from
         /// the reader's outlines as Vision's are (`browRaise`, `browLower`,
         /// `browDeadZone`), which on a still portrait wander a third as far
@@ -187,6 +194,7 @@ public struct FaceSolver: Sendable {
 
         let yaw = landmarks.yaw
         var raw: [FaceBlendShape: Float]
+        let browsFromModel = scores != nil && tuning.modelBrows
         if let scores {
             raw = shapes(fromModel: scores, yaw: yaw)
             if !tuning.modelBrows {
@@ -204,7 +212,7 @@ public struct FaceSolver: Sendable {
             case .eyeBlinkLeft, .eyeBlinkRight, .eyeWideLeft, .eyeWideRight, .eyeSquintLeft, .eyeSquintRight:
                 tuning.eyeCutoff
             case .browDownLeft, .browDownRight, .browInnerUp, .browOuterUpLeft, .browOuterUpRight:
-                tuning.browCutoff
+                browsFromModel ? tuning.modelBrowCutoff : tuning.browCutoff
             default: tuning.mouthCutoff
             }
             var filter = filters[shape] ?? FaceOneEuro(minCutoff: cutoff, beta: tuning.beta)
@@ -435,6 +443,8 @@ public struct FaceSolver: Sendable {
                 let start = min(rest, t.modelBlinkRestLimit) + t.modelBlinkStart
                 let closure = unit((score - start) / max(max(t.modelBlinkFull, start + 0.15) - start, 1e-4))
                 out[shape] = t.binaryEyelids ? (closure >= t.binaryThreshold ? 1 : 0) : closure
+            case .browDownLeft, .browDownRight, .browInnerUp, .browOuterUpLeft, .browOuterUpRight:
+                out[shape] = unit((score - rest - t.modelBrowDeadZone) * t.modelGain)
             default:
                 // Not stretched to reach 1 from a high rest score: that
                 // multiplies the score's own noise, which is largest mid-range.

@@ -254,10 +254,16 @@ import simd
     }
 
     @Test func scoresNearRestStayAtRestAndTheRestScale() {
-        var solver = calibrated()
+        // The brows have their own dead zone, none unless asked for.
+        var tuning = FaceSolver.Tuning()
+        tuning.modelBrowDeadZone = 0.03
+        var solver = calibrated(tuning: tuning)
         let near = settle(&solver, [.browDownLeft: 0.12, .browInnerUp: 0.07])
         #expect(near[.browDownLeft] == 0)
         #expect(near[.browInnerUp] == 0)
+        var unfiltered = calibrated()
+        let moved = settle(&unfiltered, [.browDownLeft: 0.12, .browInnerUp: 0.07])
+        #expect(moved[.browDownLeft] > 0.005 && moved[.browDownLeft] < 0.05)
         let far = settle(&solver, [.browDownLeft: 0.9, .jawOpen: 0.5, .mouthSmileLeft: 0.95])
         #expect(far[.browDownLeft] > 0.7)
         #expect(far[.jawOpen] > 0.4 && far[.jawOpen] < 0.6)
