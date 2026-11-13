@@ -95,6 +95,12 @@ public struct FaceSolver: Sendable {
         /// the other scores and Vision's brows get.
         public var modelBrowDeadZone: Float = 0
         public var modelBrowCutoff: Float = 3
+        /// How far above its rest a brow's score goes for a brow fully up or
+        /// down. The model barely moves a Persona's brows: worn 2026-11-13,
+        /// brows down topped out near 0.5 and the outer brows up near 0.07
+        /// (the score past rest, unscaled), whatever the real brow did.
+        public var modelBrowUpRange: Float = 0.08
+        public var modelBrowDownRange: Float = 0.45
         /// The brows from the model's scores. Off, they are measured from
         /// the reader's outlines as Vision's are (`browRaise`, `browLower`,
         /// `browDeadZone`), which on a still portrait wander a third as far
@@ -443,8 +449,10 @@ public struct FaceSolver: Sendable {
                 let start = min(rest, t.modelBlinkRestLimit) + t.modelBlinkStart
                 let closure = unit((score - start) / max(max(t.modelBlinkFull, start + 0.15) - start, 1e-4))
                 out[shape] = t.binaryEyelids ? (closure >= t.binaryThreshold ? 1 : 0) : closure
-            case .browDownLeft, .browDownRight, .browInnerUp, .browOuterUpLeft, .browOuterUpRight:
-                out[shape] = unit((score - rest - t.modelBrowDeadZone) * t.modelGain)
+            case .browDownLeft, .browDownRight:
+                out[shape] = unit((score - rest - t.modelBrowDeadZone) / max(t.modelBrowDownRange, 0.01) * t.modelGain)
+            case .browInnerUp, .browOuterUpLeft, .browOuterUpRight:
+                out[shape] = unit((score - rest - t.modelBrowDeadZone) / max(t.modelBrowUpRange, 0.01) * t.modelGain)
             default:
                 // Not stretched to reach 1 from a high rest score: that
                 // multiplies the score's own noise, which is largest mid-range.

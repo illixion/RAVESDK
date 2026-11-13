@@ -1164,7 +1164,10 @@ So reading the Persona's face with Vision is face tracking, at one remove.
   rests near 0 by nothing. So scores are read against their rest value with a dead zone and are
   not stretched to reach 1 from a high rest value (that multiplied the noise four or five times).
   The brows have their own, `modelBrowDeadZone` (0) and `modelBrowCutoff` (3 Hz): unfiltered on
-  trial since 2026-11-13, to see whether a Persona's brows hold still without it.
+  trial since 2026-11-13, to see whether a Persona's brows hold still without it. They are also
+  the one set of scores that is stretched: `modelBrowUpRange` (0.08) and `modelBrowDownRange`
+  (0.45) are the score past rest that counts as fully up or down, since a Persona's brows barely
+  move the model's scores (worn: down topped out near 0.5, outer up near 0.07).
   `Tuning.modelBrows = false` takes the brows from the mesh's outlines instead, which wander a
   third as far as Vision's on a face whose brows show, and badly under a fringe.
 - **The visionOS simulator's Vision is broken for this.** The default context fails ("Could
